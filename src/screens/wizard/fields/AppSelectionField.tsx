@@ -9,8 +9,13 @@ export type App = {
   description: string;
   image: string;
   requires: string[];
+  client_type: "public" | "confidential";
+  grant_type: "authorization_code" | "client_credentials";
   experimental?: boolean;
   download?: string;
+  client_id: string;
+  client_secret: string;
+  redirect_uris?: string[];
 };
 
 export const available_apps: App[] = [
@@ -21,6 +26,11 @@ export const available_apps: App[] = [
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
     requires: ["core", "rekuest", "mikro"],
+    client_id: "soinfosienfoisnefoisneofinsef",
+    client_secret: "soinfosienfoisnefoisneofinsef",
+    redirect_uris: ["http://localhost:8090"],
+    client_type: "public",
+    grant_type: "authorization_code",
   },
   {
     name: "doks",
@@ -29,6 +39,11 @@ export const available_apps: App[] = [
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
     requires: ["core", "mikro"],
+    client_id: "soinfosienfoisnefoisneofinsef",
+    client_secret: "soinfosienfoisnefoisneofinsef",
+    redirect_uris: ["http://localhost:8090"],
+    client_type: "public",
+    grant_type: "authorization_code",
   },
   {
     name: "MikroJ",
@@ -38,6 +53,39 @@ export const available_apps: App[] = [
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
     requires: ["core", "rekuest", "mikro"],
     download: "https://github.com/jhnnsrs/mikroj",
+    client_id: "soinfosienfoisnefoisneofinsef",
+    client_secret: "soinfosienfoisnefoisneofinsef",
+    redirect_uris: ["http://localhost:8090"],
+    client_type: "public",
+    grant_type: "authorization_code",
+  },
+  {
+    name: "MikroManager",
+    description: "The mikroscope",
+    long: "Enables support for Micro manager, a microscope control software",
+    image:
+      "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
+    requires: ["core", "rekuest", "mikro"],
+    download: "https://github.com/jhnnsrs/mikroj",
+    client_id: "soinfosienfoisnefoisneofinsef",
+    client_secret: "soinfosienfoisnefoisneofinsef",
+    redirect_uris: ["http://localhost:8090"],
+    client_type: "public",
+    grant_type: "authorization_code",
+  },
+  {
+    name: "MikroManager",
+    description: "The mikroscope",
+    long: "Enables support for Micro manager, a microscope control software",
+    image:
+      "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
+    requires: ["core", "rekuest", "mikro"],
+    download: "https://github.com/jhnnsrs/mikroj",
+    client_id: "soinfosienfoisnefoisneofinsef",
+    client_secret: "soinfosienfoisnefoisneofinsef",
+    redirect_uris: ["http://localhost:8090"],
+    client_type: "public",
+    grant_type: "authorization_code",
   },
   {
     name: "napari",
@@ -46,6 +94,11 @@ export const available_apps: App[] = [
     image: "http://localhost:8090/static/images/arkitekt.png",
     requires: ["core", "rekuest"],
     download: "https://github.com/jhnnsrs/mikro-napari",
+    client_id: "soinfosienfoisnefoisneofinsef",
+    client_secret: "soinfosienfoisnefoisneofinsef",
+    redirect_uris: ["http://localhost:8090"],
+    client_type: "public",
+    grant_type: "authorization_code",
   },
 ];
 
@@ -56,23 +109,18 @@ const is_required_by = (name: string, service: App) => {
 };
 
 export const AppSelectionField = ({ ...props }: any) => {
-  const [field, meta, helpers] = useField(props);
+  const [field, meta, helpers] = useField<App[]>(props);
   const { values } = useFormikContext<SetupValues>();
 
-  const toggleValue = async (service: App) => {
+  const toggleValue = async (app: App) => {
     if (field.value) {
-      if (field.value.find((i: string) => i === service.name)) {
-        helpers.setValue(
-          field.value.filter(
-            (i: string) =>
-              i !== service.name && is_required_by(i, service) === false
-          )
-        );
+      if (field.value.find((i) => i.name === app.name)) {
+        helpers.setValue(field.value.filter((i: App) => i.name !== app.name));
       } else {
-        helpers.setValue([...field.value, service.name, ...service.requires]);
+        helpers.setValue([...field.value, app]);
       }
     } else {
-      helpers.setValue([service.name]);
+      helpers.setValue([app]);
     }
     console.log(field.value);
   };
@@ -89,7 +137,7 @@ export const AppSelectionField = ({ ...props }: any) => {
             <button
               className={` @container relative disabled:text-gray-600 border rounded border-gray-400 cursor-pointer items-center justify-center p-6 ${
                 field.value &&
-                field.value.find((i: string) => i === app.name) &&
+                field.value.find((i: App) => i.name === app.name) &&
                 "bg-primary-300 border-primary-400 border-2 shadow-xl shadow-primary-300/20"
               }`}
               key={i}

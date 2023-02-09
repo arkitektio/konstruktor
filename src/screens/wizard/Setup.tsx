@@ -1,4 +1,10 @@
-import { FieldProps, FormikErrors, FormikHandlers, FormikValues } from "formik";
+import {
+  FieldProps,
+  FormikErrors,
+  FormikHandlers,
+  FormikHelpers,
+  FormikValues,
+} from "formik";
 import { FormikWizard, RenderProps } from "formik-wizard-form";
 import React from "react";
 import { useCommunication } from "../../communication/communication-context";
@@ -17,6 +23,8 @@ import { Done } from "./forms/Done";
 import { App } from "./fields/AppSelectionField";
 import { Service } from "./fields/ServiceSelectionField";
 import { AdverstisedHostsForm } from "./forms/AdverstisedHostsForm";
+import { Group, GroupsForm } from "./forms/GroupsForm";
+import { User, UsersForm } from "./forms/UsersForm";
 
 export type SetupValues = {
   name: string;
@@ -27,7 +35,23 @@ export type SetupValues = {
   apps: App[];
   bindings: string[];
   services: Service[];
-  appPath: string;
+  app_path: string;
+  groups: Group[];
+  users: User[];
+};
+
+export const basicSetup: SetupValues = {
+  name: "Default",
+  admin_username: "",
+  admin_password: "",
+  admin_email: "",
+  attention: false,
+  apps: [],
+  bindings: [],
+  services: [],
+  app_path: "",
+  groups: [{ name: "My Perfect Team", description: "My Perfect Team" }],
+  users: [],
 };
 
 export const Setup: React.FC<{}> = (props) => {
@@ -35,38 +59,39 @@ export const Setup: React.FC<{}> = (props) => {
   const { installApp } = useStorage();
   const navigate = useNavigate();
 
-  const handleSubmit = async (values: any) => {
-    if (values.appPath) {
+  const handleSubmit = async (
+    values: FormikValues,
+    formikHelpers: FormikHelpers<FormikValues>
+  ) => {
+    if (values.app_path) {
       let app = {
         name: values.name,
-        dirpath: values.appPath,
+        dirpath: values.app_path,
         yaml: stringify(values),
       };
+
+      formikHelpers.setSubmitting(true);
 
       let res = await call<any, { ok: string; error: string }>(
         "directory_init_cmd",
         app
       );
 
+      formikHelpers.setSubmitting(false);
+
       if (res.ok) {
         installApp(app);
         navigate("/");
+      }
+      if (res.error) {
+        alert(res.error);
       }
     }
   };
 
   return (
     <FormikWizard
-      initialValues={{
-        name: "Default",
-        admin_username: "",
-        admin_password: "",
-        admin_email: "",
-        attention: false,
-        apps: [],
-        services: [],
-        appPath: "",
-      }}
+      initialValues={basicSetup}
       onSubmit={handleSubmit}
       validateOnNext
       validateOnBlur
@@ -97,7 +122,7 @@ export const Setup: React.FC<{}> = (props) => {
         {
           component: AppStorage,
           validationSchema: Yup.object().shape({
-            appPath: Yup.string().required("App path is required"),
+            app_path: Yup.string().required("App path is required"),
           }),
         },
         {
@@ -124,7 +149,30 @@ export const Setup: React.FC<{}> = (props) => {
             admin_password: Yup.string().required("Password is required"),
           }),
         },
-
+        {
+          component: GroupsForm,
+          validationSchema: Yup.object().shape({
+            groups: Yup.array(
+              Yup.object().shape({
+                name: Yup.string().required("Username is required"),
+                description: Yup.string().required("Password is required"),
+              })
+            ).required("Desired Modules Required"),
+          }),
+        },
+        {
+          component: UsersForm,
+          validationSchema: Yup.object().shape({
+            users: Yup.array(
+              Yup.object().shape({
+                email: Yup.string().email().required("User Email is required"),
+                username: Yup.string().required("Username is required"),
+                password: Yup.string().required("Password is required"),
+                groups: Yup.array().required("Groups are required"),
+              })
+            ).required("Desired Modules Required"),
+          }),
+        },
         {
           component: Done,
         },
@@ -135,6 +183,7 @@ export const Setup: React.FC<{}> = (props) => {
         renderComponent,
         handlePrev,
         handleNext,
+        isSubmitting,
         isNextDisabled,
         isPrevDisabled,
       }: RenderProps) => {
@@ -160,7 +209,7 @@ export const Setup: React.FC<{}> = (props) => {
                 className="border rounded shadow-xl shadow-green-400/20 border-green-500 p-1 disabled:invisible"
                 onClick={handleNext}
               >
-                {"Next"}
+                {isSubmitting ? "Building ..." : "Next"}
               </button>
             </div>
           </div>
