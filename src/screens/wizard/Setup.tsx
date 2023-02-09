@@ -155,7 +155,7 @@ export const Setup: React.FC<{}> = (props) => {
             groups: Yup.array(
               Yup.object().shape({
                 name: Yup.string().required("Username is required"),
-                description: Yup.string().required("Password is required"),
+                description: Yup.string().required("Password iss required"),
               })
             ).required("Desired Modules Required"),
           }),
