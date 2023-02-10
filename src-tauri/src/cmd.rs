@@ -307,7 +307,13 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
     let output = if cfg!(target_os = "windows") {
         Command::new("docker")
             .current_dir(dir)
-            .args(["run", "--rm", "-v", dir_str.as_str(), "jhnnsrs/guss:prod"])
+            .args([
+                "run",
+                "--rm",
+                "-v",
+                format!("{}:/app/init", x.dirpath.as_str()).as_str(),
+                "jhnnsrs/guss:prod",
+            ])
             .output()
     } else {
         Command::new("docker")
@@ -322,7 +328,7 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
             println!("Error: {:?}", e);
             return InitializeAnswer {
                 ok: None,
-                error: Some(format!("Error running docker: {:?}", e)),
+                error: Some(format!("Error running docker: {:?}  {:?}", dir_str, e)),
             };
         }
     };
@@ -333,7 +339,10 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
     println!("Finished with the following {}", stderr);
     return InitializeAnswer {
         ok: Some(stdout),
-        error: Some(stderr),
+        error: Some(format!(
+            "Error running builder on buildpath {:?}  {:?}",
+            dir_str, stderr
+        )),
     };
 }
 
