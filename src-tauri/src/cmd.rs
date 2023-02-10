@@ -264,9 +264,31 @@ pub fn docker_version() -> String {
 pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
     println!("Did that here Here");
 
-    let dir = canonicalize(x.dirpath.clone()).unwrap();
+    let dir = match canonicalize(x.dirpath.clone()) {
+        Ok(dir) => dir,
+        Err(e) => {
+            println!("Error: {:?}", e);
+            return InitializeAnswer {
+                ok: None,
+                error: Some(format!("Error canocializing this: {:?}", e)),
+            };
+        }
+    };
+
     let config_path = dir.join("setup.yaml");
-    std::fs::write(config_path, x.yaml).unwrap();
+
+    let z = std::fs::write(config_path, x.yaml);
+    match z {
+        Ok(_) => {}
+        Err(e) => {
+            println!("Error: {:?}", e);
+            return InitializeAnswer {
+                ok: None,
+                error: Some(format!("Error Writing File: {:?}", e)),
+            };
+        }
+    };
+
     let dir_str: String = format!("{}:/app/init", dir.to_str().unwrap().to_string());
     println!("Mounting on {}", dir_str);
     let output = if cfg!(target_os = "windows") {
@@ -274,13 +296,22 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
             .current_dir(dir)
             .args(["run", "--rm", "-v", dir_str.as_str(), "jhnnsrs/guss:prod"])
             .output()
-            .expect("failed to execute process")
     } else {
         Command::new("docker")
             .current_dir(dir)
             .args(["run", "--rm", "-v", dir_str.as_str(), "jhnnsrs/guss:prod"])
             .output()
-            .expect("failed to execute process")
+    };
+
+    let output = match output {
+        Ok(output) => output,
+        Err(e) => {
+            println!("Error: {:?}", e);
+            return InitializeAnswer {
+                ok: None,
+                error: Some(format!("Error running docker: {:?}", e)),
+            };
+        }
     };
 
     let stdout = String::from_utf8(output.stdout).unwrap();
