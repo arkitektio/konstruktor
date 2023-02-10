@@ -289,7 +289,20 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
         }
     };
 
-    let dir_str: String = format!("{}:/app/init", dir.to_str().unwrap().to_string());
+    let dir_str: String = format!(
+        "{}:/app/init",
+        match dir.clone().into_os_string().into_string() {
+            Ok(dir_str) => dir_str,
+            Err(e) => {
+                println!("Error: {:?}", e);
+                return InitializeAnswer {
+                    ok: None,
+                    error: Some(format!("Error converting to to ostring: {:?}", e)),
+                };
+            }
+        }
+    );
+
     println!("Mounting on {}", dir_str);
     let output = if cfg!(target_os = "windows") {
         Command::new("docker")

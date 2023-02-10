@@ -25,6 +25,8 @@ import { Service } from "./fields/ServiceSelectionField";
 import { AdverstisedHostsForm } from "./forms/AdverstisedHostsForm";
 import { Group, GroupsForm } from "./forms/GroupsForm";
 import { User, UsersForm } from "./forms/UsersForm";
+import { ScaleForm } from "./forms/ScaleForm";
+import { Scale, scaleOptions } from "./fields/ScaleField";
 
 export type SetupValues = {
   name: string;
@@ -38,6 +40,7 @@ export type SetupValues = {
   app_path: string;
   groups: Group[];
   users: User[];
+  scale: Scale;
 };
 
 export const basicSetup: SetupValues = {
@@ -52,6 +55,7 @@ export const basicSetup: SetupValues = {
   app_path: "",
   groups: [{ name: "My Perfect Team", description: "My Perfect Team" }],
   users: [],
+  scale: scaleOptions[0],
 };
 
 export const Setup: React.FC<{}> = (props) => {
@@ -99,6 +103,9 @@ export const Setup: React.FC<{}> = (props) => {
       validateOnChange
       activeStepIndex={0}
       steps={[
+        {
+          component: ScaleForm,
+        },
         {
           component: Greeting,
         },
