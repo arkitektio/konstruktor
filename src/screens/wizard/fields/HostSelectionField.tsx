@@ -13,7 +13,6 @@ import { SetupValues } from "../Setup";
 export type Binding = {
   name: string;
   host: string;
-  ip: string;
 };
 
 export const HostSelectionField = ({ ...props }: { name: string }) => {
@@ -26,7 +25,15 @@ export const HostSelectionField = ({ ...props }: { name: string }) => {
   useEffect(() => {
     console.log("AdverstisedHostsForm");
     invoke("list_network_interfaces", { v4: true })
-      .then((res) => setAvailableBindings(res as Binding[]))
+      .then((res) => {
+        let x = (res as Binding[]).reduce(
+          (prev, curr) =>
+            prev.find((b) => b.host == curr.host) ? prev : [...prev, curr],
+          [] as Binding[]
+        );
+
+        setAvailableBindings(x);
+      })
       .catch((err) => console.error(err));
   }, []);
 
@@ -53,7 +60,7 @@ export const HostSelectionField = ({ ...props }: { name: string }) => {
             <button
               className={` @container relative disabled:text-gray-600 border rounded border-gray-400 cursor-pointer items-center justify-center p-6 ${
                 field.value &&
-                field.value.find((i: Binding) => i.name === binding.name) &&
+                field.value.find((i: Binding) => i.host === binding.host) &&
                 "bg-primary-300 border-primary-400 border-2 shadow-xl shadow-primary-300/20"
               }`}
               key={i}
@@ -63,10 +70,12 @@ export const HostSelectionField = ({ ...props }: { name: string }) => {
                 <div className="font-bold text-center @xs:underline">
                   {binding.host}
                 </div>
+                <div className="font-light text-xs text-center">
+                  Network interface
+                </div>
                 <div className="font-light text-sm text-center">
                   {binding.name}
                 </div>
-                <div className="text-sm font-bold mt-2">{binding.ip}</div>
               </div>
             </button>
           );

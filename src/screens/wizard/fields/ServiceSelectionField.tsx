@@ -3,74 +3,120 @@ import React from "react";
 
 export type Service = {
   name: string;
+  interface: string;
   long: string;
   description: string;
   image: string;
   requires: string[];
   experimental?: boolean;
+  is_backend?: boolean;
+  extras: {};
 };
 
 export const available_services: Service[] = [
   {
-    name: "core",
+    name: "redis",
+    interface: "redis",
+    description: "The pubsub",
+    long: "This allows you to publish and subscribe to events",
+    image: "redis:latest",
+    requires: [],
+    is_backend: true,
+    extras: {},
+  },
+  {
+    name: "postgres",
+    interface: "db",
+    description: "The database",
+    long: "Storing your structured data",
+    image: "jhnnsrs/daten:prod",
+    requires: [],
+    is_backend: true,
+    extras: {},
+  },
+  {
+    name: "minio",
+    interface: "minio",
+    description: "The database",
+    long: "Storing your minio data",
+    image: "minio/minio:RELEASE.2023-02-10T18-48-39Z",
+    requires: [],
+    is_backend: true,
+    extras: {},
+  },
+  {
+    name: "rabbitmq",
+    interface: "rabbitmq",
+    description: "The backbone",
+    long: "This allows you to publish and subscribe to events",
+    image: "jhnnsrs/mister:fancy",
+    requires: [],
+    is_backend: true,
+    extras: {},
+  },
+  {
+    name: "lok",
+    interface: "lok",
     description: "The core",
     long: "This includes authorization, authentificaiton, config management, and more",
-    image:
-      "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: [],
+    image: "jhnnsrs/lok:prod",
+    requires: ["redis", "db", "minio"],
+    extras: {},
   },
   {
     name: "mikro",
+    interface: "mikro",
     description: "The datalayer",
     long: "Enables you to store, organize and monitor microscopy data",
-    image:
-      "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: ["core"],
+    image: "jhnnsrs/mikro:prod",
+    requires: ["redis", "lok", "db", "minio"],
+    extras: {},
   },
   {
     name: "rekuest",
+    interface: "rekuest",
     description: "The broker",
     long: "Allows you to call enabled bioimage apps from the platform",
-    image: "http://localhost:8090/static/images/arkitekt.png",
-    requires: ["core"],
+    image: "jhnnsrs/rekuest:prod",
+    requires: ["redis", "rabbitmq", "lok", "db"],
+    extras: {},
   },
+
   {
     name: "fluss",
+    interface: "fluss",
     description: "The designer",
     long: "Allows you to design universal workflows spanning multiple apps",
-    image: "http://localhost:8090/static/images/arkitekt.png",
-    requires: ["core", "rekuest"],
+    image: "jhnnsrs/fluss:prod",
+    requires: ["redis", "lok", "rekuest", "rabbitmq", "db", "minio"],
+    extras: {},
   },
   {
     name: "port",
+    interface: "port",
     description: "The virtualizer",
     long: "Enables one click install of github repos as internal apps",
-    image: "http://localhost:8090/static/images/arkitekt.png",
-    requires: ["core", "rekuest"],
+    image: "jhnnsrs/port:prod",
+    requires: ["redis", "lok", "rekuest", "rabbitmq", "db"],
     experimental: true,
+    extras: {},
   },
   {
     name: "hub",
+    interface: "hub",
     description: "The hub",
     long: "Access this compuer resources from anywhere in nice juypter notebooks",
-    image: "http://localhost:8090/static/images/arkitekt.png",
-    requires: ["core"],
+    image: "jhnnsrs/hub:prod",
+    requires: ["lok"],
     experimental: true,
-  },
-  {
-    name: "vscode",
-    description: "The code",
-    long: "Access your computer resources and data from anywhere in nice vscode environemnts (uses third party)",
-    image: "https://logowik.com/content/uploads/images/coder1889.jpg",
-    requires: ["core"],
-    experimental: true,
+    extras: {},
   },
 ];
 
-const is_required_by = (name: string, service: Service) => {
+const is_required_by = (interfacex: string, service: Service) => {
   return available_services
-    .find((s) => s.name === name)
-    ?.requires.some((r) => r === service.name);
+    .find((s) => s.interface === interfacex)
+    ?.requires.some((r) => r === service.interface);
 };
 
 export const ServiceSelectionField = ({ ...props }: any) => {
@@ -78,12 +124,12 @@ export const ServiceSelectionField = ({ ...props }: any) => {
 
   const toggleValue = async (service: Service) => {
     if (field.value) {
-      if (field.value.find((i: Service) => i.name === service.name)) {
+      if (field.value.find((i: Service) => i.interface === service.interface)) {
         helpers.setValue(
           field.value.filter(
             (i: Service) =>
-              i.name !== service.name &&
-              is_required_by(i.name, service) === false
+              i.interface !== service.interface &&
+              is_required_by(i.interface, service) === false
           )
         );
       } else {
@@ -91,7 +137,7 @@ export const ServiceSelectionField = ({ ...props }: any) => {
           ...field.value,
           service,
           ...available_services.filter((s) =>
-            service.requires.includes(s.name)
+            service.requires.includes(s.interface)
           ),
         ]);
       }

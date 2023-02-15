@@ -326,6 +326,13 @@
   dependencies:
     client-only "^0.0.1"
 
+"@jhnnsrs/fakts@^0.1.0":
+  version "0.1.0"
+  resolved "https://registry.yarnpkg.com/@jhnnsrs/fakts/-/fakts-0.1.0.tgz#2b08139398e01ece35070fac337d30d18e368fde"
+  integrity sha512-c49MFQi7WeiE/k4ZslbMChNV4hXPfroLwW5/DPpaVVS7Mx08XA3z71bqjCzrnpMmbpo3K2PMuC08rnG/OfolYA==
+  dependencies:
+    cancelable-promise "^4.3.0"
+
 "@jridgewell/gen-mapping@^0.1.0":
   version "0.1.1"
   resolved "https://registry.yarnpkg.com/@jridgewell/gen-mapping/-/gen-mapping-0.1.1.tgz#e5d2e450306a9491e3bd77e323e38d7aff315996"
@@ -591,6 +598,11 @@ camelcase-css@^2.0.1:
   version "2.0.1"
   resolved "https://registry.yarnpkg.com/camelcase-css/-/camelcase-css-2.0.1.tgz#ee978f6947914cc30c6b44741b6ed1df7f043fd5"
   integrity sha512-QOSvevhslijgYwRx6Rv7zKdMF8lbRmx+uQGx2+vDc+KI/eBnsy9kit5aj23AgGu3pa4t9AgwbnXWqS+iOY+2aA==
+
+cancelable-promise@^4.3.0:
+  version "4.3.1"
+  resolved "https://registry.yarnpkg.com/cancelable-promise/-/cancelable-promise-4.3.1.tgz#957b62382435e74dfb2a038517f53205e0c631c6"
+  integrity sha512-A/8PwLk/T7IJDfUdQ68NR24QHa8rIlnN/stiJEBo6dmVUkD4K14LswG0w3VwdeK/o7qOwRUR1k2MhK5Rpy2m7A==
 
 caniuse-lite@^1.0.30001426, caniuse-lite@^1.0.30001449:
   version "1.0.30001451"

@@ -7,10 +7,13 @@ export type App = {
   name: string;
   long: string;
   description: string;
+  identifier: string;
+  version: string;
+  scopes: string[];
   image: string;
   requires: string[];
   client_type: "public" | "confidential";
-  grant_type: "authorization_code" | "client_credentials";
+  grant_type: "authorization-code" | "client-credentials";
   experimental?: boolean;
   download?: string;
   client_id: string;
@@ -21,84 +24,89 @@ export type App = {
 export const available_apps: App[] = [
   {
     name: "orkestrator",
+    identifier: "github.io.jhnnsrs.orkestrator",
+    version: "latest",
     description: "The interface",
     long: "Orkestrator is the default interface for the platform, enabling you to visualize and control your data and apps",
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: ["core", "rekuest", "mikro"],
-    client_id: "soinfosienfoisnefoisneofinsef",
-    client_secret: "soinfosienfoisnefoisneofinsef",
-    redirect_uris: ["http://localhost:8090"],
+    requires: ["lok", "rekuest", "mikro"],
+    client_id: "snfoinosinefsef",
+    client_secret: "9noinfpuisenfpsiuenfpiosenfiusef",
+    redirect_uris: [
+      "http://localhost:8090",
+      "http://localhost:6789/callback",
+      "http://localhost:6789",
+    ],
     client_type: "public",
-    grant_type: "authorization_code",
+    grant_type: "authorization-code",
+    scopes: ["read", "write"],
   },
   {
     name: "doks",
+    identifier: "github.io.jhnnsrs.doks",
+    version: "latest",
     description: "The documentation",
     long: "This allows you to play around with your own data on the developer documentation. This app will not be able to modify your data",
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: ["core", "mikro"],
-    client_id: "soinfosienfoisnefoisneofinsef",
-    client_secret: "soinfosienfoisnefoisneofinsef",
+    requires: ["lok", "mikro"],
+    client_id: "soinfosienfsfosefghsegfisnefoisneofinsef",
+    client_secret: "soinfoefsefssdfienfoisnefoisneofinsef",
     redirect_uris: ["http://localhost:8090"],
     client_type: "public",
-    grant_type: "authorization_code",
+    grant_type: "authorization-code",
+    scopes: ["read", "write"],
   },
   {
     name: "MikroJ",
+    identifier: "github.io.jhnnsrs.mikroj",
+    version: "latest",
     description: "The Workhorse",
     long: "Enables support for ImageJ and its makros",
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: ["core", "rekuest", "mikro"],
+    requires: ["lok", "rekuest", "mikro"],
     download: "https://github.com/jhnnsrs/mikroj",
-    client_id: "soinfosienfoisnefoisneofinsef",
-    client_secret: "soinfosienfoisnefoisneofinsef",
+    client_id: "soinfosienfoisnseghsggegefoisneofinsef",
+    client_secret: "soinfosienesfseffoisnefoisneofinsef",
     redirect_uris: ["http://localhost:8090"],
     client_type: "public",
-    grant_type: "authorization_code",
+    grant_type: "authorization-code",
+    scopes: ["read", "write"],
   },
   {
     name: "MikroManager",
+    identifier: "github.io.jhnnsrs.mikromanager",
+    version: "latest",
     description: "The mikroscope",
     long: "Enables support for Micro manager, a microscope control software",
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: ["core", "rekuest", "mikro"],
+    requires: ["lok", "rekuest", "mikro"],
     download: "https://github.com/jhnnsrs/mikroj",
-    client_id: "soinfosienfoisnefoisneofinsef",
-    client_secret: "soinfosienfoisnefoisneofinsef",
+    client_id: "soinfosienfoaswdasdasdisnefoisneofinsef",
+    client_secret: "soinfosiengeesegegfoisnefoisneofinsef",
     redirect_uris: ["http://localhost:8090"],
     client_type: "public",
-    grant_type: "authorization_code",
-  },
-  {
-    name: "MikroManager",
-    description: "The mikroscope",
-    long: "Enables support for Micro manager, a microscope control software",
-    image:
-      "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-    requires: ["core", "rekuest", "mikro"],
-    download: "https://github.com/jhnnsrs/mikroj",
-    client_id: "soinfosienfoisnefoisneofinsef",
-    client_secret: "soinfosienfoisnefoisneofinsef",
-    redirect_uris: ["http://localhost:8090"],
-    client_type: "public",
-    grant_type: "authorization_code",
+    grant_type: "authorization-code",
+    scopes: ["read", "write"],
   },
   {
     name: "napari",
+    identifier: "github.io.jhnnsrs.mikro-napari",
+    version: "latest",
     description: "The viewer",
     long: "Napari is a python based image viewer that is used by many bioimage researchers",
     image: "http://localhost:8090/static/images/arkitekt.png",
-    requires: ["core", "rekuest"],
+    requires: ["lok", "rekuest"],
     download: "https://github.com/jhnnsrs/mikro-napari",
-    client_id: "soinfosienfoisnefoisneofinsef",
-    client_secret: "soinfosienfoisnefoisneofinsef",
+    client_id: "soinfosienfoissgsegsegtbsynefoisneofinsef",
+    client_secret: "soinfosienfoissdfsdfnefoisneofinsef",
     redirect_uris: ["http://localhost:8090"],
     client_type: "public",
-    grant_type: "authorization_code",
+    grant_type: "authorization-code",
+    scopes: ["read", "write"],
   },
 ];
 

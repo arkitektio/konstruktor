@@ -6,7 +6,7 @@ import { useStorage } from "../storage/storage-context";
 import { Logo } from "../layout/Logo";
 
 export const Home: React.FC<{}> = (props) => {
-  const { apps } = useStorage();
+  const { apps, deleteApp, deleteAllApps } = useStorage();
 
   return (
     <div className="w-full p-6">
@@ -48,6 +48,12 @@ export const Home: React.FC<{}> = (props) => {
         >
           Setup new App
         </Link>
+        <button
+          onClick={() => deleteAllApps()}
+          className="border rounded p-3 border-gray-400 font-light mt-2"
+        >
+          Delete all apps
+        </button>
       </div>
     </div>
   );

@@ -64,11 +64,11 @@ export const Setup: React.FC<{}> = (props) => {
   const navigate = useNavigate();
 
   const handleSubmit = async (
-    values: FormikValues,
+    values: SetupValues,
     formikHelpers: FormikHelpers<FormikValues>
   ) => {
     if (values.app_path) {
-      let app = {
+      let sendapp = {
         name: values.name,
         dirpath: values.app_path,
         yaml: stringify(values),
@@ -78,13 +78,13 @@ export const Setup: React.FC<{}> = (props) => {
 
       let res = await call<any, { ok: string; error: string }>(
         "directory_init_cmd",
-        app
+        sendapp
       );
 
       formikHelpers.setSubmitting(false);
 
       if (res.ok) {
-        installApp(app);
+        installApp(values);
         navigate("/");
       }
       if (res.error) {
@@ -133,12 +133,6 @@ export const Setup: React.FC<{}> = (props) => {
           }),
         },
         {
-          component: AdverstisedHostsForm,
-          validationSchema: Yup.object().shape({
-            bindings: Yup.array().min(1).required("Bindings required"),
-          }),
-        },
-        {
           component: AttentionSuperuser,
           validationSchema: Yup.object().shape({
             attention: Yup.bool()
@@ -180,6 +174,14 @@ export const Setup: React.FC<{}> = (props) => {
             ).required("Desired Modules Required"),
           }),
         },
+
+        {
+          component: AdverstisedHostsForm,
+          validationSchema: Yup.object().shape({
+            bindings: Yup.array().min(1).required("Bindings required"),
+          }),
+        },
+
         {
           component: Done,
         },

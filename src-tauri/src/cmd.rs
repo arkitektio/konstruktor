@@ -194,7 +194,6 @@ pub struct ListNetworkInterfaceRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Interface {
-    ip: String,
     name: String,
     host: String,
 }
@@ -224,9 +223,13 @@ pub async fn list_network_interfaces(v4: bool) -> Result<Vec<Interface>, String>
             println!("Host: {:?}", host);
 
             interfaces.push(Interface {
-                ip: itf.addr.unwrap().ip().to_string(),
                 name: itf.name.clone(),
                 host: host,
+            });
+
+            interfaces.push(Interface {
+                name: itf.name.clone() + "-ip",
+                host: itf.addr.unwrap().ip().to_string(),
             });
         }
     }
@@ -328,7 +331,7 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
             println!("Error: {:?}", e);
             return InitializeAnswer {
                 ok: None,
-                error: Some(format!("Error running docker: {:?}  {:?}", dir_str, e)),
+                error: Some(format!("Error running docker: {:?}", e)),
             };
         }
     };
@@ -339,10 +342,7 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
     println!("Finished with the following {}", stderr);
     return InitializeAnswer {
         ok: Some(stdout),
-        error: Some(format!(
-            "Error running builder on buildpath {:?}  {:?}",
-            dir_str, stderr
-        )),
+        error: Some(format!("Error running builder {:?}", stderr)),
     };
 }
 
