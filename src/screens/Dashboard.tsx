@@ -141,11 +141,7 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
         >
           {advertise ? "Active" : "Not Active"}
         </button>
-        <FaktsProvider
-          identifier={app.apps}
-          store={app.name + "fakts"}
-          endpoint={{ name: app.name, base_url: "http://localhost:8000/f/" }}
-        >
+        <FaktsProvider>
           <FaktsGuard>
             <div className="font-light mt-2">Status of App</div>
             <Health />

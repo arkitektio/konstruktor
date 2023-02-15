@@ -64,7 +64,7 @@ export const Setup: React.FC<{}> = (props) => {
   const navigate = useNavigate();
 
   const handleSubmit = async (
-    values: SetupValues,
+    values: FormikValues,
     formikHelpers: FormikHelpers<FormikValues>
   ) => {
     if (values.app_path) {
@@ -84,7 +84,7 @@ export const Setup: React.FC<{}> = (props) => {
       formikHelpers.setSubmitting(false);
 
       if (res.ok) {
-        installApp(values);
+        installApp(values as SetupValues);
         navigate("/");
       }
       if (res.error) {
