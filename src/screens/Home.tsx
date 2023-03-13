@@ -27,11 +27,12 @@ export const Home: React.FC<{}> = (props) => {
                 Available apps
               </div>
               <div className="grid grid-cols-2 gap-2 p-3">
-                {apps.map((app) => (
-                  <div className="border rounded border-gray-300 p-5">
-                    <Link to={`/dashboard/${app.name}`}>
-                      Dashboard for {app.name}
-                    </Link>
+                {apps.map((app, index) => (
+                  <div
+                    className="border rounded border-gray-300 p-5"
+                    key={index}
+                  >
+                    <Link to={`/dashboard/${app.name}`}>{app.name}</Link>
                   </div>
                 ))}
               </div>

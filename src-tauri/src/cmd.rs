@@ -1,9 +1,14 @@
+use bollard::container::ListContainersOptions;
 use bollard::image::ListImagesOptions;
 use bollard::{Docker, API_DEFAULT_VERSION};
 use dns_lookup::lookup_addr;
+use network_interface::Addr;
 use network_interface::NetworkInterface;
 use network_interface::NetworkInterfaceConfig;
+use network_interface::V4IfAddr;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
 use std::fs::canonicalize;
 use std::net::UdpSocket;
 use std::process::Command;
@@ -41,6 +46,20 @@ pub struct DockerInfo {
 pub struct Endpoint {
     #[serde(default)]
     docker_addr: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Beacon {
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BeaconSignal {
+    #[serde(default)]
+    url: String,
+    bind: String,
+    broadcast: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -82,6 +101,21 @@ pub struct StopAnswer {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Container {
+    id: Option<String>,
+    names: Option<Vec<String>>,
+    image: Option<String>,
+    labels: Option<HashMap<String, String, RandomState>>,
+    status: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ContainerQuery {
+    containers: Vec<Container>,
+}
+
 #[command]
 pub fn hello_world_test(event: String) -> Option<String> {
     let stdout = hello_world(event);
@@ -116,47 +150,82 @@ pub async fn test_docker(event: String) -> Option<String> {
 }
 
 #[command]
-pub async fn advertise_endpoint(event: String) -> Option<String> {
-    let x: Endpoint = serde_json::from_str(event.as_str()).unwrap();
+pub async fn advertise_endpoint(signals: Vec<BeaconSignal>) -> Option<String> {
+    for beacon in signals {
+        let serde_json = serde_json::to_string(&Beacon { url: beacon.url }).unwrap();
 
-    let socket: UdpSocket = UdpSocket::bind("0.0.0.0:0").unwrap();
-    socket.set_read_timeout(Some(Duration::new(5, 0))).unwrap();
-    socket.set_broadcast(true).unwrap();
-    println!("Connected on port {}", x.docker_addr);
-    println!("Broadcast: {:?}", socket.broadcast());
-    println!("Timeout: {:?}", socket.read_timeout());
+        let bind_ip = beacon.bind;
+        let bind_addr = format!("{}:0", bind_ip.to_string());
+        let broadcast_ip = beacon.broadcast.unwrap();
+        let broadcast_addr = format!("{}:45678", broadcast_ip.to_string());
 
-    let call: Vec<u8> = "packer.get_buf()?".as_bytes().to_vec();
-    println!("Sending call, {} bytes", call.len());
-    socket.send_to(&call, "255.255.255.255:45678").unwrap();
+        let socket: UdpSocket = UdpSocket::bind(bind_addr).unwrap();
+        socket.set_read_timeout(Some(Duration::new(5, 0))).unwrap();
+        socket.set_broadcast(true).unwrap();
 
-    let info = AdvertiseOk {
-        ok: "ok".to_string(),
-    };
+        println!("Broadcast: {:?}", broadcast_addr);
+        println!("Timeout: {:?}", socket.read_timeout());
 
-    Some(serde_json::to_string(&info).unwrap())
+        let call: Vec<u8> = format!("beacon-fakts{}", serde_json).as_bytes().to_vec();
+        println!("Sending call, {} bytes", call.len());
+        socket.send_to(&call, broadcast_addr).unwrap();
+    }
+
+    Some("ok".to_string())
 }
 
 #[command]
-pub async fn nana_test(event: String) -> Option<String> {
+pub async fn nana_test(deployment: String) -> Option<ContainerQuery> {
     let docker = Docker::connect_with_local_defaults().expect("Failed to connect to docker");
 
     let version = docker.version().await.unwrap();
-    let images = &docker
-        .list_images(Some(ListImagesOptions::<String> {
+
+    let string;
+    let searchString = {
+        string = format!("arkitekt.{}.service", deployment);
+        string.as_str()
+    };
+
+    let mut filters = HashMap::new();
+    filters.insert("label", vec![searchString]);
+
+    let containers = &docker
+        .list_containers(Some(ListContainersOptions {
             all: true,
+            filters,
             ..Default::default()
         }))
         .await
         .unwrap();
 
-    let mut x = String::new();
+    let mut x: Vec<Container> = Vec::new();
 
-    for image in images {
-        x = image.id.clone();
+    for c in containers {
+        x.push(Container {
+            id: c.id.clone(),
+            names: c.names.clone(),
+            image: c.image.clone(),
+            status: c.status.clone(),
+            labels: c.labels.clone(),
+            state: c.state.clone(),
+        })
     }
 
-    Some(x)
+    Some(ContainerQuery { containers: x })
+}
+
+#[command]
+pub async fn restart_container(containerId: String) -> Option<String> {
+    let docker = Docker::connect_with_local_defaults().expect("Failed to connect to docker");
+
+    println!("Restarting container {}...", containerId.as_str());
+    &docker
+        .restart_container(containerId.as_str(), None)
+        .await
+        .unwrap();
+
+    println!("Restarted container {}...", containerId.as_str());
+    Some("ok".to_string())
 }
 
 #[command]
@@ -194,8 +263,10 @@ pub struct ListNetworkInterfaceRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Interface {
+    broadcast: Option<String>,
     name: String,
     host: String,
+    bind: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -214,23 +285,41 @@ pub async fn list_network_interfaces(v4: bool) -> Result<Vec<Interface>, String>
         println!("{:?}", itf);
 
         let v4 = match itf.addr {
-            Some(addr) => addr.ip().is_ipv4(),
-            None => false,
+            Some(addr) => match addr {
+                Addr::V4(t) => Some(t),
+                _ => None,
+            },
+            None => None,
         };
 
-        if v4 {
-            let host = lookup_addr(&itf.addr.unwrap().ip()).unwrap();
-            println!("Host: {:?}", host);
+        match v4 {
+            Some(v4) => {
+                let bind = itf.addr.unwrap().ip().to_string();
+                let host = lookup_addr(&itf.addr.unwrap().ip()).unwrap();
+                println!("Host: {:?}", host);
 
-            interfaces.push(Interface {
-                name: itf.name.clone(),
-                host: host,
-            });
+                let broadcast = match v4.broadcast {
+                    Some(b) => Some(b.to_string()),
+                    None => None,
+                };
 
-            interfaces.push(Interface {
-                name: itf.name.clone() + "-ip",
-                host: itf.addr.unwrap().ip().to_string(),
-            });
+                interfaces.push(Interface {
+                    broadcast: broadcast.clone(),
+                    name: itf.name.clone(),
+                    host: host.clone(),
+                    bind: itf.addr.unwrap().ip().to_string(),
+                });
+
+                if (host != bind) {
+                    interfaces.push(Interface {
+                        broadcast: broadcast.clone(),
+                        name: itf.name.clone() + "-ip",
+                        host: itf.addr.unwrap().ip().to_string(),
+                        bind: itf.addr.unwrap().ip().to_string(),
+                    });
+                }
+            }
+            None => {}
         }
     }
 

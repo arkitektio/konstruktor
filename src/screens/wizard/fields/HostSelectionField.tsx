@@ -13,6 +13,7 @@ import { SetupValues } from "../Setup";
 export type Binding = {
   name: string;
   host: string;
+  broadcast: string;
 };
 
 export const HostSelectionField = ({ ...props }: { name: string }) => {

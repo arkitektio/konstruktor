@@ -44,7 +44,7 @@ export type SetupValues = {
 };
 
 export const basicSetup: SetupValues = {
-  name: "Default",
+  name: "default",
   admin_username: "",
   admin_password: "",
   admin_email: "",
@@ -53,14 +53,14 @@ export const basicSetup: SetupValues = {
   bindings: [],
   services: [],
   app_path: "",
-  groups: [{ name: "My Perfect Team", description: "My Perfect Team" }],
+  groups: [{ name: "myteam", description: "My Perfect Team" }],
   users: [],
   scale: scaleOptions[0],
 };
 
 export const Setup: React.FC<{}> = (props) => {
   const { call } = useCommunication();
-  const { installApp } = useStorage();
+  const { installApp, apps } = useStorage();
   const navigate = useNavigate();
 
   const handleSubmit = async (
@@ -98,21 +98,41 @@ export const Setup: React.FC<{}> = (props) => {
       initialValues={basicSetup}
       onSubmit={handleSubmit}
       validateOnNext
-      validateOnBlur
       validateOnMount
       validateOnChange
       activeStepIndex={0}
       steps={[
         {
-          component: ScaleForm,
-        },
-        {
           component: Greeting,
+          validationSchema: Yup.object().shape({
+            name: Yup.string()
+              .required("Name is required")
+              .min(3, "Name must be at least 3 characters")
+              .max(20, "Name must be at most 20 characters")
+              .test(
+                "unique",
+                "Another app with this already exists",
+                (value) => {
+                  return !apps.find((app) => app.name === value);
+                }
+              )
+              .lowercase("Lowercase only")
+              .matches(/^[a-z]+$/, "Lowercase only"),
+          }),
         },
         {
           component: CheckDocker,
         },
 
+        {
+          component: ScaleForm,
+        },
+        {
+          component: AppStorage,
+          validationSchema: Yup.object().shape({
+            app_path: Yup.string().required("App path is required"),
+          }),
+        },
         {
           component: ServiceSelection,
           validationSchema: Yup.object().shape({
@@ -123,13 +143,6 @@ export const Setup: React.FC<{}> = (props) => {
           component: AppSelection,
           validationSchema: Yup.object().shape({
             apps: Yup.array().required("Desired Modules Required"),
-          }),
-        },
-
-        {
-          component: AppStorage,
-          validationSchema: Yup.object().shape({
-            app_path: Yup.string().required("App path is required"),
           }),
         },
         {
@@ -155,10 +168,22 @@ export const Setup: React.FC<{}> = (props) => {
           validationSchema: Yup.object().shape({
             groups: Yup.array(
               Yup.object().shape({
-                name: Yup.string().required("Username is required"),
+                name: Yup.string()
+                  .lowercase()
+                  .matches(/^[a-z]+$/, "No special characters allowd")
+                  .required("Username is required"),
                 description: Yup.string().required("Password iss required"),
               })
-            ).required("Desired Modules Required"),
+            )
+              .required("Desired Modules Required")
+              .test(
+                "unique",
+                "Group names must be unique",
+                (groups: Group[]) => {
+                  let names = groups.map((g) => g.name);
+                  return names.length === new Set(names).size;
+                }
+              ),
           }),
         },
         {
@@ -171,7 +196,12 @@ export const Setup: React.FC<{}> = (props) => {
                 password: Yup.string().required("Password is required"),
                 groups: Yup.array().required("Groups are required"),
               })
-            ).required("Desired Modules Required"),
+            )
+              .required("Desired Modules Required")
+              .test("unique", "Usernames must be unique", (users: User[]) => {
+                let names = users.map((g) => g.username);
+                return names.length === new Set(names).size;
+              }),
           }),
         },
 
@@ -206,13 +236,22 @@ export const Setup: React.FC<{}> = (props) => {
               <div className="flex-initial"></div>
             </div>
             <div className="bg-red flex-initial text-center pb-3 gap-2 grid grid-cols-2">
-              <button
-                disabled={isPrevDisabled}
-                className="border rounded shadow-xl shadow-cyan-400/20 border-cyan-500 p-1 disabled:invisible"
-                onClick={handlePrev}
-              >
-                Prev
-              </button>
+              {currentStepIndex == 0 ? (
+                <Link
+                  to="/"
+                  className="border rounded shadow-xl shadow-cyan-400/20 border-cyan-500 p-1 disabled:invisible"
+                >
+                  Go back
+                </Link>
+              ) : (
+                <button
+                  disabled={isPrevDisabled}
+                  className="border rounded shadow-xl shadow-cyan-400/20 border-cyan-500 p-1 disabled:invisible"
+                  onClick={handlePrev}
+                >
+                  Prev
+                </button>
+              )}
               <button
                 disabled={isNextDisabled}
                 className="border rounded shadow-xl shadow-green-400/20 border-green-500 p-1 disabled:invisible"

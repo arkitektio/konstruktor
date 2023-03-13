@@ -326,10 +326,10 @@
   dependencies:
     client-only "^0.0.1"
 
-"@jhnnsrs/fakts@^0.1.0":
-  version "0.1.0"
-  resolved "https://registry.yarnpkg.com/@jhnnsrs/fakts/-/fakts-0.1.0.tgz#2b08139398e01ece35070fac337d30d18e368fde"
-  integrity sha512-c49MFQi7WeiE/k4ZslbMChNV4hXPfroLwW5/DPpaVVS7Mx08XA3z71bqjCzrnpMmbpo3K2PMuC08rnG/OfolYA==
+"@jhnnsrs/fakts@^0.1.1":
+  version "0.1.1"
+  resolved "https://registry.yarnpkg.com/@jhnnsrs/fakts/-/fakts-0.1.1.tgz#4d8abafe41e8b2f4158d5e8b6c73d944a10ac2df"
+  integrity sha512-ToKIfyvqCeJoBUISwEFYOAzgPPjxM0VAczve4B8VTb/+1MCCn7EPviJhckzpnmTz7O5UX5zziaN5xxvXgXrLlg==
   dependencies:
     cancelable-promise "^4.3.0"
 
@@ -1104,6 +1104,11 @@ react-fast-compare@^2.0.1:
   version "2.0.4"
   resolved "https://registry.yarnpkg.com/react-fast-compare/-/react-fast-compare-2.0.4.tgz#e84b4d455b0fec113e0402c329352715196f81f9"
   integrity sha512-suNP+J1VU1MWFKcyt7RtjiSWUjvidmQSlqu+eHslq+342xCbGTYmC0mEhPCOHxlW0CywylOC1u2DFAT+bv4dBw==
+
+react-icons@^4.8.0:
+  version "4.8.0"
+  resolved "https://registry.yarnpkg.com/react-icons/-/react-icons-4.8.0.tgz#621e900caa23b912f737e41be57f27f6b2bff445"
+  integrity sha512-N6+kOLcihDiAnj5Czu637waJqSnwlMNROzVZMhfX68V/9bu9qHaMIJC4UdozWoOk57gahFCNHwVvWzm0MTzRjg==
 
 react-is@^16.7.0:
   version "16.13.1"

@@ -14,14 +14,22 @@
     "allowlist": {
       "all": false,
       "shell": {
-        "all": false,
-        "open": true
+        "all": true,
+        "open": true,
+        "execute": true,
+        "sidecar": true,
+        "scope": [{
+          "cmd": "docker",
+          "args": true,
+          "name": "docker"
+        }]
       },
       "dialog": {
         "all": true, 
         "open": true, 
         "save": true 
       }
+    
     },
     "bundle": {
       "active": true,

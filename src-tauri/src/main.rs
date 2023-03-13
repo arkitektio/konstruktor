@@ -16,6 +16,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             cmd::hello_world_test,
             cmd::nana_test,
+            cmd::restart_container,
             cmd::test_docker,
             cmd::docker_version_cmd,
             cmd::directory_init_cmd,
