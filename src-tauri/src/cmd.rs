@@ -22,6 +22,10 @@ pub struct RequestBody {
     name: String,
 }
 
+fn docker_command() -> String {
+    "docker".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 enum DockerConnectionStrategy {
@@ -344,7 +348,7 @@ pub fn hello_world(event: String) -> String {
 }
 
 pub fn docker_version() -> String {
-    let output = Command::new("docker")
+    let output = Command::new(docker_command())
         .arg("version")
         .output()
         .expect("failed to execute s");
@@ -397,7 +401,7 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
 
     println!("Mounting on {}", dir_str);
     let output = if cfg!(target_os = "windows") {
-        Command::new("docker")
+        Command::new(docker_command())
             .current_dir(dir)
             .args([
                 "run",
@@ -408,7 +412,7 @@ pub fn directory_init(x: InitializeRequest) -> InitializeAnswer {
             ])
             .output()
     } else {
-        Command::new("docker")
+        Command::new(docker_command())
             .current_dir(dir)
             .args(["run", "--rm", "-v", dir_str.as_str(), "jhnnsrs/guss:prod"])
             .output()
@@ -440,15 +444,15 @@ pub fn directory_up(x: UpRequest) -> UpAnswer {
 
     let dir = canonicalize(x.dirpath.clone()).unwrap();
     let output = if cfg!(target_os = "windows") {
-        Command::new("docker-compose")
+        Command::new(docker_command())
             .current_dir(dir)
-            .args(["up", "-d"])
+            .args(["compose", "up", "-d"])
             .output()
             .expect("failed to execute process")
     } else {
-        Command::new("docker-compose")
+        Command::new(docker_command())
             .current_dir(dir)
-            .args(["up", "-d"])
+            .args(["compose", "up", "-d"])
             .output()
             .expect("failed to execute process")
     };
