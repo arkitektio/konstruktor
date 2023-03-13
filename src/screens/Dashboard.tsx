@@ -196,7 +196,7 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
 
   const app_up = () => {
     runDocker(["compose", "up", "-d"]).then((child) => {
-      log(`command spawned with PID ${child.pid}`);
+      log(`command spawned with PID ${child.code}`);
     });
   };
 

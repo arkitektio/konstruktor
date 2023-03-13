@@ -10,19 +10,8 @@ import { Setup } from "./screens/wizard/Setup";
 import { StorageProvider } from "./storage/storage-provider";
 import { Command } from "@tauri-apps/api/shell";
 
-let t = new Command("docker", "version");
 
 function App() {
-  const x = async () => {
-    try {
-      let m = await t.execute();
-      alert(m.stderr);
-      alert(m.stdout);
-      console.log(m.stdout);
-    } catch (e) {
-      alert(e);
-    }
-  };
 
   return (
     <CommunicationProvider>
