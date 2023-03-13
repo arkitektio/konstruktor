@@ -16,13 +16,10 @@
       "shell": {
         "all": true,
         "open": true,
-        "execute": true,
-        "sidecar": true,
-        "scope": [{
-          "cmd": "docker",
-          "args": true,
-          "name": "docker"
-        }]
+        "scope": [
+          {"name": "/usr/local/bin/docker", "cmd": "docker", "args": true},
+          {"name": "docker", "cmd": "docker", "args": true}
+        ]
       },
       "dialog": {
         "all": true, 
@@ -63,6 +60,11 @@
         "digestAlgorithm": "sha256",
         "timestampUrl": ""
       }
+    },
+
+    "systemTray": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
     },
     "security": {
       "csp": null
