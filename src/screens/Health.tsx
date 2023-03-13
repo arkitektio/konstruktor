@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { ResponsiveGrid } from '../layout/ResponsiveGrid'
-import { useFakts } from '../fakts/fakts-config'
+import { useFakts } from '@jhnnsrs/fakts'
 
 export type HealthReturn = {
   name: string
