@@ -1,7 +1,12 @@
 import { A } from "@tauri-apps/api/cli-3e179c0b";
 import { useField, useFormik, useFormikContext } from "formik";
-import React from "react";
+import React, { useEffect } from "react";
+import { Hover } from "../../../layout/Hover";
 import { SetupValues } from "../Setup";
+import napari from "../../../assets/logo-napari.png";
+import fiji from "../../../assets/logo-fiji.png";
+import mikrom from "../../../assets/logo-mikromanager.png";
+import arkitektm from "../../../assets/logo-arkitekt.png";
 
 export type App = {
   name: string;
@@ -63,7 +68,7 @@ export const available_apps: App[] = [
     identifier: "github.io.jhnnsrs.mikroj",
     version: "latest",
     description: "The Workhorse",
-    long: "Enables support for ImageJ and its makros",
+    long: "Enables support for ImageJ and its macros",
     image:
       "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
     requires: ["lok", "rekuest", "mikro"],
@@ -110,6 +115,19 @@ export const available_apps: App[] = [
   },
 ];
 
+const logoForApp = (name: string) => {
+  switch (name) {
+    case "MikroJ":
+      return fiji;
+    case "MikroManager":
+      return mikrom;
+    case "napari":
+      return napari;
+    default:
+      return arkitektm;
+  }
+};
+
 const is_required_by = (name: string, service: App) => {
   return available_apps
     .find((s) => s.name === name)
@@ -135,7 +153,7 @@ export const AppSelectionField = ({ ...props }: any) => {
 
   return (
     <>
-      <div className="grid grid-cols-3 @xl:grid-cols-6 gap-2 ">
+      <Hover className="grid grid-cols-3 @xl:grid-cols-4 gap-2 ">
         {available_apps.map((app, i) => {
           let disabled = app.requires.some(
             (r) => !values?.services?.find((s) => s.name === r)
@@ -143,32 +161,38 @@ export const AppSelectionField = ({ ...props }: any) => {
 
           return (
             <button
-              className={` @container relative disabled:text-gray-600 border rounded border-gray-400 cursor-pointer items-center justify-center p-6 ${
-                field.value &&
-                field.value.find((i: App) => i.name === app.name) &&
-                "bg-primary-300 border-primary-400 border-2 shadow-xl shadow-primary-300/20"
+              className={` @container overflow-hidden hovercard group relative disabled:opacity-20 bg-slate-800 disabled:border-slate-200 border items-start flex rounded cursor-pointer  ${
+                field.value && field.value.find((i: App) => i.name === app.name)
+                  ? " border-slate-200 "
+                  : "shadow-primary-300/20 border-slate-400 opacity-40 "
               }`}
               key={i}
               onClick={() => toggleValue(app)}
               disabled={disabled}
             >
-              <div className="flex flex-col items-center justify-center p-6 @xl:underline">
-                <div className="font-bold text-center @xs:underline">
-                  {app.name}
+              <div className="items-start p-3">
+                <div className="flex flex-row justify-between">
+                  <img
+                    className="text-sm text-start h-20"
+                    src={logoForApp(app.name)}
+                  />
                 </div>
-                <div className="font-light text-center">{app.description}</div>
-                <div className="text-sm">{app.long}</div>
-                {app.experimental && (
-                  <div className="text-sm mt-2 border-red-300 border p-1 rounded rounded-md">
-                    Experimental
-                  </div>
-                )}
+                <div className="font-bold text-start flex-row flex justify-between">
+                  <div className="my-auto">{app.name}</div>
+                  {app.experimental && (
+                    <div className="text-xs border-red-300 border p-1 rounded rounded-md">
+                      Exp
+                    </div>
+                  )}
+                </div>
+                <div className="font-light  text-start">{app.description}</div>
+                <div className="text-sm  text-start mt-1">{app.long}</div>
               </div>
               {disabled && (
                 <>
-                  <div className="absolute inset-0 bg-gray-700 opacity-0 hover:opacity-100 z-0">
-                    <div className="flex flex-col absolute inset-0 flex items-center justify-center text-slate-200 z-20">
-                      <div className=" text-center">
+                  <div className="absolute bottom-0 inset-0 bg-gradient-to-t w-full from-black to-transparent opacity-0 group-hover:opacity-100 z-0 rounded rounded-md items-end flex flex-row">
+                    <div className="text-white text-center w-full flex flex-col ">
+                      <div className="text-white text-center w-full ">
                         Disabled because of missing services
                       </div>
                       <div className="text-sm">{app.requires.join(", ")}</div>
@@ -179,7 +203,7 @@ export const AppSelectionField = ({ ...props }: any) => {
             </button>
           );
         })}
-      </div>
+      </Hover>
 
       {meta.touched && meta.error ? (
         <div className="error">{meta.error}</div>

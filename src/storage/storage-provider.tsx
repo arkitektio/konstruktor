@@ -19,13 +19,14 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const deleteApp = async (app: SetupValues) => {
-    let newapps = availableApps.filter((c) => c.app_path == app.app_path);
+    let newapps = availableApps.filter((c) => c.app_path != app.app_path);
 
     await forage.setItem({
       key: "installed_apps",
       value: JSON.stringify(newapps),
     })();
-    setAvailableApps(newapps);
+    setAvailableApps(() => newapps);
+    return newapps;
   };
 
   const deleteAllApps = async () => {
@@ -35,7 +36,8 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
       key: "installed_apps",
       value: JSON.stringify(newapps),
     })();
-    setAvailableApps(newapps);
+    setAvailableApps(() => newapps);
+    return newapps;
   };
 
   useEffect(() => {

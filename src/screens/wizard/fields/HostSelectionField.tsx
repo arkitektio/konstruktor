@@ -8,35 +8,20 @@ import {
   useFormikContext,
 } from "formik";
 import React, { useEffect } from "react";
+import { Binding, useBindings } from "../../../interface/context";
+import { Hover } from "../../../layout/Hover";
 import { SetupValues } from "../Setup";
+import { GrBeacon } from "react-icons/gr";
 
-export type Binding = {
+export const HostSelectionField = ({
+  ...props
+}: {
   name: string;
-  host: string;
-  broadcast: string;
-};
-
-export const HostSelectionField = ({ ...props }: { name: string }) => {
+  availableBindings: Binding[];
+}) => {
   const [field, meta, helpers] = useField(props.name);
+  const { bindings } = useBindings();
   const { values } = useFormikContext<SetupValues>();
-  const [availableBindings, setAvailableBindings] = React.useState<Binding[]>(
-    []
-  );
-
-  useEffect(() => {
-    console.log("AdverstisedHostsForm");
-    invoke("list_network_interfaces", { v4: true })
-      .then((res) => {
-        let x = (res as Binding[]).reduce(
-          (prev, curr) =>
-            prev.find((b) => b.host == curr.host) ? prev : [...prev, curr],
-          [] as Binding[]
-        );
-
-        setAvailableBindings(x);
-      })
-      .catch((err) => console.error(err));
-  }, []);
 
   const toggleValue = async (binding: Binding) => {
     if (field.value) {
@@ -55,33 +40,37 @@ export const HostSelectionField = ({ ...props }: { name: string }) => {
 
   return (
     <>
-      <div className="grid grid-cols-3 @xl:grid-cols-6 gap-2 ">
-        {availableBindings.map((binding, i) => {
+      <Hover className="grid grid-cols-1 @lg:grid-cols-3 @xl:grid-cols-4 gap-2 ">
+        {bindings.map((binding, i) => {
           return (
             <button
-              className={` @container relative disabled:text-gray-600 border rounded border-gray-400 cursor-pointer items-center justify-center p-6 ${
+              className={` @container overflow-hidden hovercard group relative disabled:opacity-20 bg-slate-800 disabled:border-slate-200 border items-start flex rounded cursor-pointer  ${
                 field.value &&
-                field.value.find((i: Binding) => i.host === binding.host) &&
-                "bg-primary-300 border-primary-400 border-2 shadow-xl shadow-primary-300/20"
+                field.value.find((i: Binding) => i.host === binding.host)
+                  ? " border-slate-200 "
+                  : "shadow-primary-300/20 border-slate-400 opacity-40 "
               }`}
               key={i}
               onClick={() => toggleValue(binding)}
             >
-              <div className="flex flex-col items-center justify-center p-6 @xl:underline">
-                <div className="font-bold text-center @xs:underline">
-                  {binding.host}
+              <div className="items-start p-3 w-full">
+                <div className="font-bold text-start flex-row flex justify-between">
+                  <div className="my-auto">{binding.host}</div>
+                  <GrBeacon
+                    className={` ${
+                      field.value &&
+                      field.value.find((i: Binding) => i.host === binding.host)
+                        ? "color-primary-500"
+                        : "opacity-0"
+                    }`}
+                  />
                 </div>
-                <div className="font-light text-xs text-center">
-                  Network interface
-                </div>
-                <div className="font-light text-sm text-center">
-                  {binding.name}
-                </div>
+                <div className="font-light  text-start">{binding.name}</div>
               </div>
             </button>
           );
         })}
-      </div>
+      </Hover>
 
       {meta.touched && meta.error ? (
         <div className="error">{meta.error}</div>

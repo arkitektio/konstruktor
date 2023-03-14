@@ -6,7 +6,7 @@ import {
   FormikValues,
 } from "formik";
 import { FormikWizard, RenderProps } from "formik-wizard-form";
-import React from "react";
+import React, { useEffect } from "react";
 import { useCommunication } from "../../communication/communication-context";
 import * as Yup from "yup";
 import { Link, useNavigate } from "react-router-dom";
@@ -20,13 +20,17 @@ import { AppStorage } from "./forms/AppStorage";
 import { AppSelection } from "./forms/AppSelection";
 import { AttentionSuperuser } from "./forms/AttentionSuperuser";
 import { Done } from "./forms/Done";
-import { App } from "./fields/AppSelectionField";
-import { Service } from "./fields/ServiceSelectionField";
+import { App, available_apps } from "./fields/AppSelectionField";
+import { available_services, Service } from "./fields/ServiceSelectionField";
 import { AdverstisedHostsForm } from "./forms/AdverstisedHostsForm";
 import { Group, GroupsForm } from "./forms/GroupsForm";
 import { User, UsersForm } from "./forms/UsersForm";
 import { ScaleForm } from "./forms/ScaleForm";
 import { Scale, scaleOptions } from "./fields/ScaleField";
+import { Hover } from "../../layout/Hover";
+import { Binding, useBindings } from "../../interface/context";
+import { invoke } from "@tauri-apps/api";
+import { Command } from "@tauri-apps/api/shell";
 
 export type SetupValues = {
   name: string;
@@ -35,7 +39,7 @@ export type SetupValues = {
   admin_email: string;
   attention: boolean;
   apps: App[];
-  bindings: string[];
+  bindings: Binding[];
   services: Service[];
   app_path: string;
   groups: Group[];
@@ -43,25 +47,26 @@ export type SetupValues = {
   scale: Scale;
 };
 
-export const basicSetup: SetupValues = {
-  name: "default",
-  admin_username: "",
-  admin_password: "",
-  admin_email: "",
-  attention: false,
-  apps: [],
-  bindings: [],
-  services: [],
-  app_path: "",
-  groups: [{ name: "myteam", description: "My Perfect Team" }],
-  users: [],
-  scale: scaleOptions[0],
-};
-
 export const Setup: React.FC<{}> = (props) => {
   const { call } = useCommunication();
   const { installApp, apps } = useStorage();
+  const { bindings } = useBindings();
   const navigate = useNavigate();
+
+  const basicSetup: SetupValues = {
+    name: "default",
+    admin_username: "",
+    admin_password: "",
+    admin_email: "",
+    attention: false,
+    apps: available_apps.filter((a) => a.name != "hub"),
+    bindings: bindings,
+    services: available_services.filter((s) => s.name != "hub"),
+    app_path: "",
+    groups: [{ name: "myteam", description: "My standard team" }],
+    users: [],
+    scale: scaleOptions[0],
+  };
 
   const handleSubmit = async (
     values: FormikValues,
@@ -75,6 +80,9 @@ export const Setup: React.FC<{}> = (props) => {
       };
 
       formikHelpers.setSubmitting(true);
+
+      const command = new Command("docker", ["pull", "jhnnsrs/guss:prod"], {});
+      let child = await command.execute();
 
       let res = await call<any, { ok: string; error: string }>(
         "directory_init_cmd",
@@ -123,10 +131,6 @@ export const Setup: React.FC<{}> = (props) => {
         {
           component: CheckDocker,
         },
-
-        {
-          component: ScaleForm,
-        },
         {
           component: AppStorage,
           validationSchema: Yup.object().shape({
@@ -170,12 +174,21 @@ export const Setup: React.FC<{}> = (props) => {
               Yup.object().shape({
                 name: Yup.string()
                   .lowercase()
-                  .matches(/^[a-z]+$/, "No special characters allowd")
+                  .matches(/^[a-z]+$/, "Only lowercase letters allowed")
                   .required("Username is required"),
-                description: Yup.string().required("Password iss required"),
+                description: Yup.string().required(
+                  "A short description iss required"
+                ),
               })
             )
-              .required("Desired Modules Required")
+              .required("At least one group is required")
+              .test(
+                "length",
+                "At least one group is required",
+                (groups: Group[]) => {
+                  return (groups?.length || 0) > 0;
+                }
+              )
               .test(
                 "unique",
                 "Group names must be unique",
@@ -191,13 +204,22 @@ export const Setup: React.FC<{}> = (props) => {
           validationSchema: Yup.object().shape({
             users: Yup.array(
               Yup.object().shape({
-                email: Yup.string().email().required("User Email is required"),
+                email: Yup.string()
+                  .email("Must be a valid email")
+                  .required("User Email is required"),
                 username: Yup.string().required("Username is required"),
                 password: Yup.string().required("Password is required"),
                 groups: Yup.array().required("Groups are required"),
               })
             )
-              .required("Desired Modules Required")
+              .required("At least one user is required")
+              .test(
+                "length",
+                "At least one user is required",
+                (users: User[]) => {
+                  return (users?.length || 0) > 0;
+                }
+              )
               .test("unique", "Usernames must be unique", (users: User[]) => {
                 let names = users.map((g) => g.username);
                 return names.length === new Set(names).size;
@@ -235,18 +257,18 @@ export const Setup: React.FC<{}> = (props) => {
               </div>
               <div className="flex-initial"></div>
             </div>
-            <div className="bg-red flex-initial text-center pb-3 gap-2 grid grid-cols-2">
+            <Hover className="bg-red flex-initial text-center pb-3 gap-2 grid grid-cols-2">
               {currentStepIndex == 0 ? (
                 <Link
                   to="/"
-                  className="border rounded shadow-xl shadow-cyan-400/20 border-cyan-500 p-1 disabled:invisible"
+                  className="border rounded hovercard shadow-xl shadow-md w-full text-center shadow-cyan-200/10 border-cyan-200 p-1 disabled:invisible"
                 >
                   Go back
                 </Link>
               ) : (
                 <button
                   disabled={isPrevDisabled}
-                  className="border rounded shadow-xl shadow-cyan-400/20 border-cyan-500 p-1 disabled:invisible"
+                  className="border rounded hovercard shadow-md w-full text-center  shadow-cyan-200/10 border-cyan-200  p-1 disabled:invisible"
                   onClick={handlePrev}
                 >
                   Prev
@@ -254,12 +276,12 @@ export const Setup: React.FC<{}> = (props) => {
               )}
               <button
                 disabled={isNextDisabled}
-                className="border rounded shadow-xl shadow-green-400/20 border-green-500 p-1 disabled:invisible"
+                className="border rounded hovercard shadow-md w-full text-center  shadow-cyan-200/10 border-green-200 p-1 disabled:invisible"
                 onClick={handleNext}
               >
                 {isSubmitting ? "Building ..." : "Next"}
               </button>
-            </div>
+            </Hover>
           </div>
         );
       }}

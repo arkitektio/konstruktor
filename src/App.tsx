@@ -9,25 +9,28 @@ import { Home } from "./screens/Home";
 import { Setup } from "./screens/wizard/Setup";
 import { StorageProvider } from "./storage/storage-provider";
 import { Command } from "@tauri-apps/api/shell";
-
+import { BindingsProvider } from "./interface/provider";
+import { LogScreen } from "./screens/LogScreen";
 
 function App() {
-
   return (
     <CommunicationProvider>
-      <BeaconProvider>
-        <StorageProvider>
-          <div className="h-screen bg-slate-900 text-white text-justify w-screen flex @container">
-            <BrowserRouter>
-              <Routes>
-                <Route path="/" element={<Home />} />
-                <Route path="/setup" element={<Setup />} />
-                <Route path="/dashboard/:id" element={<DashboardScreen />} />
-              </Routes>
-            </BrowserRouter>
-          </div>
-        </StorageProvider>
-      </BeaconProvider>
+      <BindingsProvider>
+        <BeaconProvider>
+          <StorageProvider>
+            <div className="h-screen bg-back-900 text-white w-screen flex @container h-full overflow-y-hidden">
+              <BrowserRouter>
+                <Routes>
+                  <Route path="/" element={<Home />} />
+                  <Route path="/setup" element={<Setup />} />
+                  <Route path="/dashboard/:id" element={<DashboardScreen />} />
+                  <Route path="/logs/:id" element={<LogScreen />} />
+                </Routes>
+              </BrowserRouter>
+            </div>
+          </StorageProvider>
+        </BeaconProvider>
+      </BindingsProvider>
     </CommunicationProvider>
   );
 }

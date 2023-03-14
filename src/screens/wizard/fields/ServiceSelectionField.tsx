@@ -1,5 +1,14 @@
 import { useField } from "formik";
 import React from "react";
+import { Hover } from "../../../layout/Hover";
+import logod from "../../../assets/logo-docker.png";
+import jupyter from "../../../assets/logo-jupyter.png";
+import minio from "../../../assets/logo-minio.png";
+import postgres from "../../../assets/logo-postgres.png";
+import redis from "../../../assets/logo-redis.png";
+import rabbitmq from "../../../assets/logo-rabbitmq.png";
+import openid from "../../../assets/logo-openid.png";
+import arkitektm from "../../../assets/logo-arkitekt.png";
 
 export type Service = {
   name: string;
@@ -18,7 +27,7 @@ export const available_services: Service[] = [
     name: "redis",
     interface: "redis",
     description: "The pubsub",
-    long: "This allows you to publish and subscribe to events",
+    long: "This allows services to publish and subscribe to events",
     image: "redis:latest",
     requires: [],
     is_backend: true,
@@ -28,7 +37,7 @@ export const available_services: Service[] = [
     name: "postgres",
     interface: "db",
     description: "The database",
-    long: "Storing your structured data",
+    long: "Storing your meta data",
     image: "jhnnsrs/daten:prod",
     requires: [],
     is_backend: true,
@@ -37,8 +46,8 @@ export const available_services: Service[] = [
   {
     name: "minio",
     interface: "minio",
-    description: "The database",
-    long: "Storing your minio data",
+    description: "The storage",
+    long: "Storing your images and files",
     image: "minio/minio:RELEASE.2023-02-10T18-48-39Z",
     requires: [],
     is_backend: true,
@@ -48,7 +57,7 @@ export const available_services: Service[] = [
     name: "rabbitmq",
     interface: "rabbitmq",
     description: "The backbone",
-    long: "This allows you to publish and subscribe to events",
+    long: "Taking care of the reliable communication between the apps",
     image: "jhnnsrs/mister:fancy",
     requires: [],
     is_backend: true,
@@ -98,7 +107,6 @@ export const available_services: Service[] = [
     long: "Enables one click install of github repos as internal apps",
     image: "jhnnsrs/port:prod",
     requires: ["redis", "lok", "rekuest", "rabbitmq", "db"],
-    experimental: true,
     extras: {},
   },
   {
@@ -108,10 +116,28 @@ export const available_services: Service[] = [
     long: "Access this compuer resources from anywhere in nice juypter notebooks",
     image: "jhnnsrs/hub:prod",
     requires: ["lok"],
-    experimental: true,
     extras: {},
   },
 ];
+
+export const logoForService = (service: Service) => {
+  switch (service.name) {
+    case "redis":
+      return redis;
+    case "postgres":
+      return postgres;
+    case "minio":
+      return minio;
+    case "hub":
+      return jupyter;
+    case "rabbitmq":
+      return rabbitmq;
+    case "port":
+      return logod;
+    default:
+      return arkitektm;
+  }
+};
 
 const is_required_by = (interfacex: string, service: Service) => {
   return available_services
@@ -149,32 +175,39 @@ export const ServiceSelectionField = ({ ...props }: any) => {
 
   return (
     <>
-      <div className="grid grid-cols-3 @xl:grid-cols-6 gap-2">
+      <Hover className="grid grid-cols-3 @xl:grid-cols-4 gap-2">
         {available_services.map((app, i) => (
           <div
-            className={` @container  border rounded border-gray-400 cursor-pointer ${
+            className={` @container hovercard cursor-pointer border border-1 bg-slate-800 ${
               field.value &&
-              field.value.find((i: Service) => i.name === app.name) &&
-              "bg-primary-300 border-primary-400 border-2 shadow-xl shadow-primary-300/20"
+              field.value.find((i: Service) => i.name === app.name)
+                ? " border-slate-200 "
+                : "shadow-primary-300/20 border-slate-400 opacity-40 "
             }`}
             key={i}
             onClick={() => toggleValue(app)}
           >
-            <div className="flex flex-col items-center justify-center p-6 @xl:underline">
-              <div className="font-bold text-center @xs:underline">
-                {app.name}
+            <div className="items-start p-3">
+              <div className="flex flex-row justify-between">
+                <img
+                  className="text-sm text-start h-20"
+                  src={logoForService(app)}
+                />
               </div>
-              <div className="font-light text-center">{app.description}</div>
-              <div className="text-sm">{app.long}</div>
-              {app.experimental && (
-                <div className="text-sm mt-2 border-red-300 border p-1 rounded rounded-md">
-                  Experimental
-                </div>
-              )}
+              <div className="font-bold text-start flex-row flex justify-between">
+                <div className="my-auto">{app.name}</div>
+                {app.experimental && (
+                  <div className="text-xs border-red-300 border p-1 rounded rounded-md">
+                    Exp
+                  </div>
+                )}
+              </div>
+              <div className="font-light  text-start">{app.description}</div>
+              <div className="text-sm  text-start mt-1">{app.long}</div>
             </div>
           </div>
         ))}
-      </div>
+      </Hover>
 
       {meta.touched && meta.error ? (
         <div className="error">{meta.error}</div>

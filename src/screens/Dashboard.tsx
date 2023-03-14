@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api";
 import React, { useEffect, useState } from "react";
 import { TbReload } from "react-icons/tb";
 import { GrBeacon } from "react-icons/gr";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useCommunication } from "../communication/communication-context";
 import { ResponsiveGrid } from "../layout/ResponsiveGrid";
 import { useStorage } from "../storage/storage-context";
@@ -11,6 +11,7 @@ import { SetupValues } from "./wizard/Setup";
 import { useBeacon } from "../beacon/context";
 
 import { Command } from "@tauri-apps/api/shell";
+import { Hover } from "../layout/Hover";
 
 export enum DockerConnectionStrategy {
   LOCAL = "LOCAL",
@@ -94,13 +95,21 @@ const getContainerColor = (container: Container) => {
 
 export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
   const { call } = useCommunication();
+  const { deleteApp } = useStorage();
+  const navigate = useNavigate();
   const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null);
   const [advertise, setAdvertise] = useState<boolean>(false);
   const [services, setServices] = useState<Service[]>([]);
   const { advertisedSignals, toggleSignal } = useBeacon();
   const [rollingLog, setRollingLog] = useState<string[]>([]);
+  const [retrigger, setRetrigger] = useState<boolean>(false);
+  const [starting, setStarting] = useState<boolean>(false);
+  const [stopping, setStopping] = useState<boolean>(false);
+  const [pulling, setPulling] = useState<boolean>(false);
+  const [downing, setDowning] = useState<boolean>(false);
+
   const lok_port = 8000;
-  let deployment = "default";
+  let deployment = app.name;
   const [bindings, setAvailableBindings] = useState<BeaconInterface[]>([]);
 
   const [restartingContainers, setRestartingContainers] = useState<string[]>(
@@ -194,12 +203,6 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
     });
   };
 
-  const app_up = () => {
-    runDocker(["compose", "up", "-d"]).then((child) => {
-      log(`command spawned with PID ${child.code}`);
-    });
-  };
-
   const runDocker = async (args: string[]) => {
     const command = new Command("docker", args, {
       cwd: app.app_path,
@@ -215,68 +218,77 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
     return child;
   };
 
+  const app_up = () => {
+    setStarting(true);
+    runDocker(["compose", "up", "-d"]).then((child) => {
+      log(`command spawned with PID ${child.code}`);
+      if (child.code == 0) {
+        setStarting(false);
+      }
+      if (child.code == 1) {
+        setStarting(false);
+        alert(child.stderr);
+      }
+    });
+  };
+
   const app_stop = () => {
+    setStopping(true);
     runDocker(["compose", "stop"]).then((child) => {
       log(`command spawned with PID ${child.code}`);
+      if (child.code == 0) {
+        setStopping(false);
+      }
+      if (child.code == 1) {
+        setStopping(false);
+        alert(child.stderr);
+      }
     });
   };
 
   const app_pull = () => {
+    setPulling(true);
     runDocker(["compose", "pull"]).then((child) => {
       log(`command spawned with PID ${child.code}`);
+      if (child.code == 0) {
+        setPulling(false);
+      }
+      if (child.code == 1) {
+        setPulling(false);
+        alert(child.stderr);
+      }
+    });
+  };
+
+  const deleteAppAndBack = () => {
+    deleteApp(app).then((res) => {
+      navigate("/");
     });
   };
 
   const app_down = () => {
+    setDowning(true);
     runDocker(["compose", "down"]).then((child) => {
       log(`command spawned with PID ${child.code}`);
-    });
-  };
-
-  const app_logs = () => {
-    runDocker(["compose", "logs"]).then((child) => {
-      log(`command spawned with PID ${child.code}`);
+      if (child.code == 0) {
+        setDowning(false);
+      }
+      if (child.code == 1) {
+        setDowning(false);
+        alert(child.stderr);
+      }
     });
   };
 
   return (
-    <div className="h-full w-full">
-      <div className="text-xl flex flex-row bg-gray-800 text-white shadow-xl mb-2 p-2 ">
+    <div className="h-full w-full relative">
+      <div className="text-xl flex flex-row bg-back-800 text-white shadow-xl mb-2 p-2 ">
         <div className="flex-1 my-auto ">
           <Link to="/">{"< Home"}</Link>
         </div>
         <div className="flex-grow my-auto text-center">{app.name}</div>
-        <div className="flex-1 flex flex-row justify-end gap-2">
-          <button
-            onClick={() => app_up()}
-            className="bg-green-500 border border-green-700 p-1 rounded text-white"
-          >
-            Start{" "}
-          </button>
-          <button
-            onClick={() => app_stop()}
-            className="bg-red-400 border border-red-700 p-1 rounded text-white"
-          >
-            Stop{" "}
-          </button>
-          <button
-            onClick={() => app_down()}
-            className="bg-red-400 border border-red-700 p-1 rounded text-white"
-          >
-            Down{" "}
-          </button>
-          <button
-            onClick={() => app_logs()}
-            className="bg-red-400 border border-red-700 p-1 rounded text-white"
-          >
-            Logs{" "}
-          </button>
-          <button
-            onClick={() => app_pull()}
-            className="bg-red-400 border border-red-700 p-1 rounded text-white"
-          >
-            Pull{" "}
-          </button>
+        <div className="flex-1 my-auto text-right">
+          <Link to={`/logs/${app.name}`}>Logs</Link>
         </div>
       </div>
       <div className="flex flex-col h-full p-2  overflow-y-scroll">
@@ -303,18 +315,30 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
                   GB
                 </div>
               </div>
+
+              <button
+                onClick={() => app_pull()}
+                className="bg-red-400 border border-red-700 p-1 rounded text-white"
+                disabled={services.length > 0}
+              >
+                {pulling ? "Updating...." : "Update"}
+              </button>
+              <button
+                onClick={() => deleteAppAndBack()}
+                className="bg-red-400 border border-red-700 p-1 rounded text-white"
+                disabled={services.length > 0}
+              >
+                Delete app
+              </button>
             </div>
-            <div className="flex flex-col gap-2">
-              <div className="font-bold">
-                {advertisedSignals.length > 0 && <GrBeacon />}
-              </div>
-            </div>
+            <div className="flex flex-col gap-2"></div>
           </div>
         </div>
         <div className="font-light mt-2">Status of Deployment</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 xl:grid-cols-6 gap-2 mt-2">
-          {services.map((c) => (
+          {services.map((c, index) => (
             <div
+              key={index}
               className={`shadow shadow-lg border border-1 white p-2 p-3  text-slate-800 bg-slate-100 rounded rounded-md `}
             >
               <div className="flex flex-row justify-between">
@@ -363,8 +387,9 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 xl:grid-cols-6 gap-2 mt-1">
           {bindings
             .filter((c) => c.broadcast)
-            .map((c) => (
+            .map((c, index) => (
               <div
+                key={index}
                 className={`group border border-1 border-slate-400  p-1 rounded text-slate-700 cursor-pointer ${
                   is_advertised(c) ? "bg-slate-100" : "bg-zinc-400 opacity-20"
                 } ${is_advertised(c) && advertise ? "" : ""}`}
@@ -391,14 +416,28 @@ export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
             ))}
         </div>
         <div className="font-light mt-2">Log on</div>
-        <pre>
-          {rollingLog.map((l) => (
-            <>
-              {l}
-              <br />
-            </>
-          ))}
-        </pre>
+        <Hover className="absolute bottom-0 right-0 flex-1 flex flex-row justify-end gap-2">
+          {!pulling && (
+            <button
+              onClick={() => app_up()}
+              className="border-green-200 hovercard border border-green-700 p-1 rounded text-white"
+            >
+              {starting ? "Starting" : "Start"}
+            </button>
+          )}
+          <button
+            onClick={() => app_stop()}
+            className="border-red-200 hovercard border p-1 rounded text-white"
+          >
+            {stopping ? "Stopping" : "Stop"}
+          </button>
+          <button
+            onClick={() => app_down()}
+            className="border-red-200 hovercard border border-red-700 p-1 rounded text-white"
+          >
+            {downing ? "Removing" : "Remove"}
+          </button>
+        </Hover>
       </div>
     </div>
   );

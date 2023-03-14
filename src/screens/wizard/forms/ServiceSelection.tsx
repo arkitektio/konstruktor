@@ -11,6 +11,8 @@ export const ServiceSelection: React.FC<StepProps> = (props) => {
       <div className="text-center mt-6">
         Arkitekt is build around services that provide specific functionality.
         Depending on your usecase you might want not install all of them.
+        <br />
+        <br /> If you are unsure, just leave the selected, selected.
       </div>
       <div className="mt-5 ">
         <ServiceSelectionField name="services" />

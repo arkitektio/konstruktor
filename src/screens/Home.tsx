@@ -4,6 +4,7 @@ import { forage } from "@tauri-apps/tauri-forage";
 import { useEffect, useState } from "react";
 import { useStorage } from "../storage/storage-context";
 import { Logo } from "../layout/Logo";
+import { Hover } from "../layout/Hover";
 
 export const Home: React.FC<{}> = (props) => {
   const { apps, deleteApp, deleteAllApps } = useStorage();
@@ -23,19 +24,19 @@ export const Home: React.FC<{}> = (props) => {
         <div>
           {apps.length > 0 ? (
             <div className="flex flex-col items-center">
-              <div className="font-light text-center w-full">
+              <div className="font-light text-center w-full mt-2">
                 Available apps
               </div>
-              <div className="grid grid-cols-2 gap-2 p-3">
+              <Hover className="flex flex-wrap col flex-row gap-2 mt-2">
                 {apps.map((app, index) => (
                   <div
-                    className="border rounded border-gray-300 p-5"
+                    className="hovercard border rounded border-gray-300 p-5"
                     key={index}
                   >
                     <Link to={`/dashboard/${app.name}`}>{app.name}</Link>
                   </div>
                 ))}
-              </div>
+              </Hover>
             </div>
           ) : (
             <div className="text-center">
@@ -43,18 +44,14 @@ export const Home: React.FC<{}> = (props) => {
             </div>
           )}
         </div>
-        <Link
-          to="/setup"
-          className="border rounded p-3 border-gray-400 font-light mt-2"
-        >
-          Setup new App
-        </Link>
-        <button
-          onClick={() => deleteAllApps()}
-          className="border rounded p-3 border-gray-400 font-light mt-2"
-        >
-          Delete all apps
-        </button>
+        <Hover className="flex flex-row items-center gap-2">
+          <Link
+            to="/setup"
+            className="border rounded p-3 border-gray-400 font-light mt-8"
+          >
+            Setup new App
+          </Link>
+        </Hover>
       </div>
     </div>
   );
