@@ -252,7 +252,7 @@ export const Setup: React.FC<{}> = (props) => {
           <div className="flex-grow flex flex-col p-5">
             <div className="flex flex-grow">
               <div className="flex-none"></div>
-              <div className="flex-grow flex text-justify">
+              <div className="flex-grow flex text-justify overflow-y-scroll">
                 {renderComponent()}
               </div>
               <div className="flex-initial"></div>

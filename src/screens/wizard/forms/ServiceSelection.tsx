@@ -14,7 +14,7 @@ export const ServiceSelection: React.FC<StepProps> = (props) => {
         <br />
         <br /> If you are unsure, just leave the selected, selected.
       </div>
-      <div className="mt-5 ">
+      <div className="mt-5 overflow-y-scroll">
         <ServiceSelectionField name="services" />
       </div>
     </div>

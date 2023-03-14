@@ -4,8 +4,8 @@ import type { StepProps } from "../types";
 
 export const AdminUserForm: React.FC<StepProps> = ({ errors }) => {
   return (
-    <div className="text-center w-full p-9">
-      <div className="font-light text-3xl mt-4">About the Superuser...</div>
+    <div className="w-80 text-center p-9 mx-auto">
+      <div className="font-light text-3xl mt-4">The super user</div>
       <div className="font-bold mt-5 text-red-200 border-red-200 border p-2 my-auto rounded rounded-md">
         Again NEVER login with this user account in one of your apps! This
         account is only for managing and accessing the admin panels within
