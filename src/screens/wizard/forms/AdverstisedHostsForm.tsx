@@ -5,15 +5,6 @@ import { HostSelectionField } from "../fields/HostSelectionField";
 import type { StepProps } from "../types";
 
 export const AdverstisedHostsForm: React.FC<StepProps> = (props) => {
-  const { call } = useCommunication();
-
-  useEffect(() => {
-    console.log("AdverstisedHostsForm");
-    invoke("list_network_interfaces", { v4: true })
-      .then((res) => console.log(res))
-      .catch((err) => console.error(err));
-  }, []);
-
   return (
     <div className="text-center h-full my-7">
       <div className="font-light text-3xl mt-4">Bear with us...</div>

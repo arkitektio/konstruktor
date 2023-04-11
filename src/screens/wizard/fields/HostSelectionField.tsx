@@ -13,12 +13,7 @@ import { Hover } from "../../../layout/Hover";
 import { SetupValues } from "../Setup";
 import { GrBeacon } from "react-icons/gr";
 
-export const HostSelectionField = ({
-  ...props
-}: {
-  name: string;
-  availableBindings: Binding[];
-}) => {
+export const HostSelectionField = ({ ...props }: { name: string }) => {
   const [field, meta, helpers] = useField(props.name);
   const { bindings } = useBindings();
   const { values } = useFormikContext<SetupValues>();
@@ -64,6 +59,7 @@ export const HostSelectionField = ({
                         : "opacity-0"
                     }`}
                   />
+                  {!binding.successfull_dns ? <>DNS Lookup failed</> : null}
                 </div>
                 <div className="font-light  text-start">{binding.name}</div>
               </div>
