@@ -6,7 +6,7 @@ export type DivProps = React.DetailedHTMLProps<
 >;
 
 export const Hover = ({ children, ...props }: DivProps) => {
-  const parent = useRef(null);
+  const parent = useRef<any>(null);
 
   useEffect(() => {
     parent.current && autoAnimate(parent.current);

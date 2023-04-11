@@ -16,6 +16,7 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
       value: JSON.stringify(newapps),
     })();
     setAvailableApps(newapps);
+    return newapps;
   };
 
   const deleteApp = async (app: SetupValues) => {
