@@ -13,6 +13,7 @@ export const BindingsProvider = ({
     console.log("AdverstisedHostsForm");
     invoke("list_network_interfaces", { v4: true })
       .then((res) => {
+        console.log(res);
         let x = (res as Binding[]).reduce(
           (prev, curr) =>
             prev.find((b) => b.host == curr.host) ? prev : [...prev, curr],

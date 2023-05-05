@@ -111,6 +111,12 @@ export const Setup: React.FC<{}> = (props) => {
       activeStepIndex={0}
       steps={[
         {
+          component: AdverstisedHostsForm,
+          validationSchema: Yup.object().shape({
+            bindings: Yup.array().min(1).required("Bindings required"),
+          }),
+        },
+        {
           component: Greeting,
           validationSchema: Yup.object().shape({
             name: Yup.string()
@@ -224,13 +230,6 @@ export const Setup: React.FC<{}> = (props) => {
                 let names = users.map((g) => g.username);
                 return names.length === new Set(names).size;
               }),
-          }),
-        },
-
-        {
-          component: AdverstisedHostsForm,
-          validationSchema: Yup.object().shape({
-            bindings: Yup.array().min(1).required("Bindings required"),
           }),
         },
 

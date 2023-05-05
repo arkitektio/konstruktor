@@ -14,7 +14,10 @@ use std::net::UdpSocket;
 use std::process::Command;
 use std::str;
 use std::time::Duration;
+use tauri::async_runtime;
 use tauri::command;
+use tokio;
+use tokio::time::timeout;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestBody {
@@ -271,6 +274,7 @@ pub struct Interface {
     name: String,
     host: String,
     bind: String,
+    successfull_dns: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -281,7 +285,7 @@ pub struct ListNetworkInterfaceAnswer {
 
 #[command]
 pub async fn list_network_interfaces(v4: bool) -> Result<Vec<Interface>, String> {
-    let network_interfaces = NetworkInterface::show().unwrap();
+    let network_interfaces = NetworkInterface::show().unwrap().clone();
 
     let mut interfaces = Vec::new();
 
@@ -298,29 +302,51 @@ pub async fn list_network_interfaces(v4: bool) -> Result<Vec<Interface>, String>
 
         match v4 {
             Some(v4) => {
-                let bind = itf.addr.unwrap().ip().to_string();
-                let host = lookup_addr(&itf.addr.unwrap().ip()).unwrap();
-                println!("Host: {:?}", host);
+                let bind = itf.addr.unwrap().ip().clone();
 
-                let broadcast = match v4.broadcast {
-                    Some(b) => Some(b.to_string()),
-                    None => None,
-                };
+                let handle = tauri::async_runtime::spawn_blocking(move || {
+                    let host = lookup_addr(&bind).unwrap();
+                    println!("Host: {:?}", host);
 
-                interfaces.push(Interface {
-                    broadcast: broadcast.clone(),
-                    name: itf.name.clone(),
-                    host: host.clone(),
-                    bind: itf.addr.unwrap().ip().to_string(),
+                    let broadcast = match v4.broadcast {
+                        Some(b) => Some(b.to_string()),
+                        None => None,
+                    };
+
+                    (broadcast, host)
                 });
 
-                if (host != bind) {
-                    interfaces.push(Interface {
-                        broadcast: broadcast.clone(),
-                        name: itf.name.clone() + "-ip",
-                        host: itf.addr.unwrap().ip().to_string(),
-                        bind: itf.addr.unwrap().ip().to_string(),
-                    });
+                match tokio::time::timeout(std::time::Duration::from_secs(3), handle).await {
+                    Ok(handle) => {
+                        let (broadcast, host) = handle.unwrap();
+
+                        interfaces.push(Interface {
+                            broadcast: broadcast.clone(),
+                            name: itf.name.clone(),
+                            host: host.clone(),
+                            bind: itf.addr.unwrap().ip().to_string(),
+                            successfull_dns: true,
+                        });
+
+                        if (host != bind.to_string()) {
+                            interfaces.push(Interface {
+                                broadcast: broadcast.clone(),
+                                name: itf.name.clone() + "-ip",
+                                host: itf.addr.unwrap().ip().to_string(),
+                                bind: itf.addr.unwrap().ip().to_string(),
+                                successfull_dns: true,
+                            });
+                        }
+                    }
+                    Err(_) => {
+                        interfaces.push(Interface {
+                            broadcast: None,
+                            name: itf.name.clone(),
+                            host: itf.addr.unwrap().ip().to_string(),
+                            bind: itf.addr.unwrap().ip().to_string(),
+                            successfull_dns: false,
+                        });
+                    }
                 }
             }
             None => {}

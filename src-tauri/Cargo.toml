@@ -21,6 +21,8 @@ network-interface = "0.1.6"
 dns-lookup = "1.0.8"
 thiserror = "1"
 strip-ansi-escapes = "0.1"
+async-dns = "0.1.0"
+tokio = "1.27.0"
 
 [features]
 # by default Tauri runs in production mode

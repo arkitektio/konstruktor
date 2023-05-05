@@ -8,16 +8,16 @@ export type App = {
 
 export type StorageContextType = {
   apps: SetupValues[];
-  installApp: (app: SetupValues) => void;
-  deleteApp: (app: SetupValues) => void;
-  deleteAllApps: () => void;
+  installApp: (app: SetupValues) => Promise<SetupValues[]>;
+  deleteApp: (app: SetupValues) => Promise<SetupValues[]>;
+  deleteAllApps: () => Promise<SetupValues[]>;
 };
 
 export const StorageContext = React.createContext<StorageContextType>({
   apps: [],
-  installApp: (app) => null,
-  deleteApp: (app) => null,
-  deleteAllApps: () => undefined,
+  installApp: async (app) => [app],
+  deleteApp: async (app) => [],
+  deleteAllApps: async () => [],
 });
 
 export const useStorage = () => useContext(StorageContext);

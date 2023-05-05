@@ -4,6 +4,7 @@ export type Binding = {
   name: string;
   host: string;
   broadcast: string;
+  successfull_dns: boolean;
 };
 
 export interface BindingContextType {
