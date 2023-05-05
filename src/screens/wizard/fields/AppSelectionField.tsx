@@ -161,7 +161,7 @@ export const AppSelectionField = ({ ...props }: any) => {
 
           return (
             <button
-              className={` @container overflow-hidden hovercard group relative disabled:opacity-20 bg-slate-800 disabled:border-slate-200 border items-start flex rounded cursor-pointer  ${
+              className={` @container overflow-hidden hovercard group relative disabled:opacity-20 bg-back-800 disabled:border-slate-200 border items-start flex rounded cursor-pointer  ${
                 field.value && field.value.find((i: App) => i.name === app.name)
                   ? " border-slate-200 "
                   : "shadow-primary-300/20 border-slate-400 opacity-40 "

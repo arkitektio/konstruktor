@@ -1,16 +1,13 @@
 import { useEffect, useRef } from "react";
-import autoAnimate from "@formkit/auto-animate";
+
 export type DivProps = React.DetailedHTMLProps<
   React.HTMLAttributes<HTMLDivElement>,
   HTMLDivElement
 >;
 
 export const Hover = ({ children, ...props }: DivProps) => {
-  const parent = useRef(null);
+  const parent = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    parent.current && autoAnimate(parent.current);
-  }, [parent]);
   return (
     <div
       ref={parent}

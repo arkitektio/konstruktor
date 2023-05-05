@@ -178,7 +178,7 @@ export const ServiceSelectionField = ({ ...props }: any) => {
       <Hover className="grid grid-cols-3 @xl:grid-cols-4 gap-2">
         {available_services.map((app, i) => (
           <div
-            className={` @container hovercard cursor-pointer border border-1 bg-slate-800 ${
+            className={` @container hovercard cursor-pointer border border-1 bg-back-800 ${
               field.value &&
               field.value.find((i: Service) => i.name === app.name)
                 ? " border-slate-200 "
