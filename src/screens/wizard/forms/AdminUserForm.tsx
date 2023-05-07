@@ -5,8 +5,8 @@ import type { StepProps } from "../types";
 export const AdminUserForm: React.FC<StepProps> = ({ errors }) => {
   return (
     <div className="w-80 text-center p-9 mx-auto">
-      <div className="font-light text-3xl mt-4">The super user</div>
-      <div className="font-bold mt-5 text-red-200 border-red-200 border p-2 my-auto rounded rounded-md">
+      <div className="font-light text-9xl text-center ">🦸‍♂️</div>
+      <div className="mt-5  p-2 my-auto">
         Again NEVER login with this user account in one of your apps! This
         account is only for managing and accessing the admin panels within
         arkitekt.
@@ -25,7 +25,7 @@ export const AdminUserForm: React.FC<StepProps> = ({ errors }) => {
               </div>
             )}
           </ErrorMessage>
-          <div className="font-light text-xs my-1">Full name</div>
+          <div className="font-light text-xs my-1">the login name</div>
         </div>
         <div className="font-light text-xl my-1 mt-3">Email address</div>
         <Field

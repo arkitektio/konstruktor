@@ -11,24 +11,36 @@ import { StorageProvider } from "./storage/storage-provider";
 import { Command } from "@tauri-apps/api/shell";
 import { BindingsProvider } from "./interface/provider";
 import { LogScreen } from "./screens/LogScreen";
+import { SettingsProvider } from "./settings/settings-provider";
+import { Settings } from "./screens/Settings";
 
 function App() {
   return (
     <CommunicationProvider>
       <BindingsProvider>
         <BeaconProvider>
-          <StorageProvider>
-            <div className="h-screen bg-back-900 text-white w-screen flex @container h-full overflow-y-hidden">
-              <BrowserRouter>
-                <Routes>
-                  <Route path="/" element={<Home />} />
-                  <Route path="/setup" element={<Setup />} />
-                  <Route path="/dashboard/:id" element={<DashboardScreen />} />
-                  <Route path="/logs/:id" element={<LogScreen />} />
-                </Routes>
-              </BrowserRouter>
-            </div>
-          </StorageProvider>
+          <SettingsProvider>
+            <StorageProvider>
+              <div className="h-screen w-screen bg-back-900 text-white w-screen flex h-full overflow-y-hidden">
+                <BrowserRouter>
+                  <Routes>
+                    <Route path="/" element={<Home />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/setup" element={<Setup />} />
+                    <Route
+                      path="/dashboard/:id"
+                      element={<DashboardScreen />}
+                    />
+                    <Route path="/logs/:id" element={<LogScreen />} />
+                    <Route
+                      path="/logs/:id/service/:service"
+                      element={<LogScreen />}
+                    />
+                  </Routes>
+                </BrowserRouter>
+              </div>
+            </StorageProvider>
+          </SettingsProvider>
         </BeaconProvider>
       </BindingsProvider>
     </CommunicationProvider>

@@ -30,7 +30,7 @@ export const CheckDocker: React.FC<StepProps> = (props) => {
   }, []);
 
   return (
-    <div className="text-center h-full my-7">
+    <div className="text-center h-full w-full my-7 flex flex-col items-center">
       <div className="font-light text-3xl mt-4">
         Lets see if we can find docker..
       </div>

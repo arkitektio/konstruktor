@@ -28,11 +28,13 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
       </div>
       <div className="text-center mt-6">
         Arkitekt uses groups to manage collections of users, e.g Teams or
-        Organizations Groups can be used to manage access to apps, and to manage
-        the users within the group.
+        Organizations. Groups can be used to assign permissions to use specific
+        apps and resources.
         <br />
-        By default users can only access data within their own groups, but you
-        can change this through the admin interface.
+        <div className="font-light text-xs  mt-2">
+          As of now users can only access data within their own groups, but you
+          can change this through the admin interface.
+        </div>
       </div>
       <FieldArray
         name="groups"
@@ -45,7 +47,10 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
                   className="group relative hovercard flex-initial border border-1 border-slate-200 p-3"
                 >
                   <div className="font-light text-md my-1">Group name</div>
-                  <Field name={`groups.${index}.name`} className="text-black" />
+                  <Field
+                    name={`groups.${index}.name`}
+                    className="text-black p-1 rounded"
+                  />
                   <ErrorMessage name={`groups.${index}.name`}>
                     {(msg) => (
                       <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
@@ -53,10 +58,13 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
                       </div>
                     )}
                   </ErrorMessage>
+                  <div className="font-light text-xs text-md my-1">
+                    A name for this group
+                  </div>
                   <div className="font-light text-md my-1">Description</div>
                   <Field
                     name={`groups.${index}.description`}
-                    className="text-black"
+                    className="text-black p-1 rounded"
                   />
                   <ErrorMessage name={`groups.${index}.description`}>
                     {(msg) => (
@@ -65,6 +73,9 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
                       </div>
                     )}
                   </ErrorMessage>
+                  <div className="font-light text-xs text-md my-1">
+                    Briefly describe this group
+                  </div>
                   <button
                     type="button"
                     className="group-hover:visible invisible absolute top-0 right-0 transform translate-x-1/2 -translate-y-1/2 bg-red-500 rounded-full h-6 w-6 flex items-center justify-center text-white"
@@ -78,7 +89,7 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
             <button
               type="button"
               onClick={() => arrayHelpers.push({ name: "", description: "" })}
-              className="bg-slate-800 text-white rounded-md p-2 hover:bg-slate-700"
+              className="bg-slate-800 text-white rounded-md p-2 hover:bg-slate-700 cursor-pointer"
             >
               {/* show this when user has removed all friends from the list */}
               Add a group

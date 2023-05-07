@@ -38,7 +38,7 @@ export const available_services: Service[] = [
     interface: "db",
     description: "The database",
     long: "Storing your meta data",
-    image: "jhnnsrs/daten:prod",
+    image: "jhnnsrs/daten:prodx",
     requires: [],
     is_backend: true,
     extras: {},
@@ -58,7 +58,7 @@ export const available_services: Service[] = [
     interface: "rabbitmq",
     description: "The backbone",
     long: "Taking care of the reliable communication between the apps",
-    image: "jhnnsrs/mister:fancy",
+    image: "rabbitmq:3-management",
     requires: [],
     is_backend: true,
     extras: {},
@@ -68,7 +68,7 @@ export const available_services: Service[] = [
     interface: "lok",
     description: "The core",
     long: "This includes authorization, authentificaiton, config management, and more",
-    image: "jhnnsrs/lok:prod",
+    image: "jhnnsrs/lok:prodx",
     requires: ["redis", "db", "minio"],
     extras: {},
   },
@@ -77,8 +77,17 @@ export const available_services: Service[] = [
     interface: "mikro",
     description: "The datalayer",
     long: "Enables you to store, organize and monitor microscopy data",
-    image: "jhnnsrs/mikro:prod",
+    image: "jhnnsrs/mikro:prodx",
     requires: ["redis", "lok", "db", "minio"],
+    extras: {},
+  },
+  {
+    name: "orkestrator",
+    interface: "orkestrator",
+    description: "The webinterface",
+    long: "Enables you to explore your data",
+    image: "jhnnsrs/orkestrator:prodx",
+    requires: [],
     extras: {},
   },
   {
@@ -86,7 +95,7 @@ export const available_services: Service[] = [
     interface: "rekuest",
     description: "The broker",
     long: "Allows you to call enabled bioimage apps from the platform",
-    image: "jhnnsrs/rekuest:prod",
+    image: "jhnnsrs/rekuest:prodx",
     requires: ["redis", "rabbitmq", "lok", "db"],
     extras: {},
   },
@@ -96,7 +105,7 @@ export const available_services: Service[] = [
     interface: "fluss",
     description: "The designer",
     long: "Allows you to design universal workflows spanning multiple apps",
-    image: "jhnnsrs/fluss:prod",
+    image: "jhnnsrs/fluss:prodx",
     requires: ["redis", "lok", "db", "minio"],
     extras: {},
   },
@@ -105,8 +114,8 @@ export const available_services: Service[] = [
     interface: "port",
     description: "The virtualizer",
     long: "Enables one click install of github repos as internal apps",
-    image: "jhnnsrs/port:prod",
-    requires: ["redis", "lok", "db"],
+    image: "jhnnsrs/port:prodx",
+    requires: ["redis", "lok", "db", "minio"],
     extras: {},
   },
   {
@@ -114,7 +123,7 @@ export const available_services: Service[] = [
     interface: "hub",
     description: "The hub",
     long: "Access this compuer resources from anywhere in nice juypter notebooks",
-    image: "jhnnsrs/hub:prod",
+    image: "jhnnsrs/hub:prodx",
     requires: ["lok"],
     extras: {},
   },
@@ -175,10 +184,10 @@ export const ServiceSelectionField = ({ ...props }: any) => {
 
   return (
     <>
-      <Hover className="grid grid-cols-3 @xl:grid-cols-4 gap-2">
+      <Hover className="grid grid-cols-4 flex-wrap gap-2 p-2">
         {available_services.map((app, i) => (
           <div
-            className={` @container hovercard cursor-pointer border border-1 bg-back-800 ${
+            className={`hovercard cursor-pointer border border-1 flex flex-col bg-back-800 p-3 ${
               field.value &&
               field.value.find((i: Service) => i.name === app.name)
                 ? " border-slate-200 "
@@ -187,24 +196,22 @@ export const ServiceSelectionField = ({ ...props }: any) => {
             key={i}
             onClick={() => toggleValue(app)}
           >
-            <div className="items-start p-3">
-              <div className="flex flex-row justify-between">
-                <img
-                  className="text-sm text-start h-20"
-                  src={logoForService(app)}
-                />
-              </div>
-              <div className="font-bold text-start flex-row flex justify-between">
-                <div className="my-auto">{app.name}</div>
-                {app.experimental && (
-                  <div className="text-xs border-red-300 border p-1 rounded rounded-md">
-                    Exp
-                  </div>
-                )}
-              </div>
-              <div className="font-light  text-start">{app.description}</div>
-              <div className="text-sm  text-start mt-1">{app.long}</div>
+            <div className="flex flex-row justify-between">
+              <img
+                className="text-sm text-start h-20"
+                src={logoForService(app)}
+              />
             </div>
+            <div className="font-bold text-start flex-row flex justify-between">
+              <div className="my-auto">{app.name}</div>
+              {app.experimental && (
+                <div className="text-xs border-red-300 border p-1 rounded rounded-md">
+                  Exp
+                </div>
+              )}
+            </div>
+            <div className="font-light  text-start">{app.description}</div>
+            <div className="text-sm  text-start mt-1">{app.long}</div>
           </div>
         ))}
       </Hover>

@@ -22,7 +22,6 @@ import { AttentionSuperuser } from "./forms/AttentionSuperuser";
 import { Done } from "./forms/Done";
 import { App, available_apps } from "./fields/AppSelectionField";
 import { available_services, Service } from "./fields/ServiceSelectionField";
-import { AdverstisedHostsForm } from "./forms/AdverstisedHostsForm";
 import { Group, GroupsForm } from "./forms/GroupsForm";
 import { User, UsersForm } from "./forms/UsersForm";
 import { ScaleForm } from "./forms/ScaleForm";
@@ -40,10 +39,17 @@ export type SetupValues = {
   attention: boolean;
   apps: App[];
   services: Service[];
-  app_path: string;
   groups: Group[];
   users: User[];
   scale: Scale;
+};
+
+export const debugUser = {
+  name: "debug",
+  username: "debug",
+  password: "debug",
+  email: "debug@debug.com",
+  groups: ["myteam"],
 };
 
 export const Setup: React.FC<{}> = (props) => {
@@ -53,14 +59,13 @@ export const Setup: React.FC<{}> = (props) => {
   const navigate = useNavigate();
 
   const basicSetup: SetupValues = {
-    name: "default",
+    name: "mydeployment",
     admin_username: "",
     admin_password: "",
     admin_email: "",
     attention: false,
     apps: available_apps.filter((a) => a.name != "hub"),
     services: available_services.filter((s) => s.name != "hub"),
-    app_path: "",
     groups: [{ name: "myteam", description: "My standard team" }],
     users: [],
     scale: scaleOptions[0],
@@ -70,32 +75,11 @@ export const Setup: React.FC<{}> = (props) => {
     values: FormikValues,
     formikHelpers: FormikHelpers<FormikValues>
   ) => {
-    if (values.app_path) {
-      let sendapp = {
-        name: values.name,
-        dirpath: values.app_path,
-        yaml: stringify(values),
-      };
-
+    if (values) {
       formikHelpers.setSubmitting(true);
 
-      const command = new Command("docker", ["pull", "jhnnsrs/guss:prod"], {});
-      let child = await command.execute();
-
-      let res = await call<any, { ok: string; error: string }>(
-        "directory_init_cmd",
-        sendapp
-      );
-
-      formikHelpers.setSubmitting(false);
-
-      if (res.ok) {
-        installApp(values as SetupValues);
-        navigate("/");
-      }
-      if (res.error) {
-        alert(res.error);
-      }
+      installApp(values as SetupValues);
+      navigate("/");
     }
   };
 
@@ -128,12 +112,6 @@ export const Setup: React.FC<{}> = (props) => {
         },
         {
           component: CheckDocker,
-        },
-        {
-          component: AppStorage,
-          validationSchema: Yup.object().shape({
-            app_path: Yup.string().required("App path is required"),
-          }),
         },
         {
           component: ServiceSelection,
@@ -241,14 +219,11 @@ export const Setup: React.FC<{}> = (props) => {
       }: RenderProps) => {
         return (
           <div className="flex-grow flex flex-col p-5">
-            <div className="flex flex-grow">
-              <div className="flex-none"></div>
-              <div className="flex-grow flex text-justify overflow-y-scroll">
-                {renderComponent()}
-              </div>
-              <div className="flex-initial"></div>
+            <div className="flex-none"></div>
+            <div className="flex-grow flex text-justify overflow-y-scroll">
+              {renderComponent()}
             </div>
-            <Hover className="bg-red flex-initial text-center pb-3 gap-2 grid grid-cols-2">
+            <Hover className="bg-red flex-initial text-center pb-1 gap-2 mt-2 grid grid-cols-2">
               {currentStepIndex == 0 ? (
                 <Link
                   to="/"

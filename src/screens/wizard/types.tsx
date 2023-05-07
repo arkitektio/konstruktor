@@ -1,27 +1,32 @@
-import type { FormikErrors, FormikHandlers, FormikValues } from 'formik'
+import type { FormikErrors, FormikHandlers, FormikValues } from "formik";
 
 export enum DockerConnectionStrategy {
-  LOCAL = 'LOCAL',
-  REMOTE = 'REMOTE',
+  LOCAL = "LOCAL",
+  REMOTE = "REMOTE",
 }
 
 export type StepProps = {
-  errors: FormikErrors<FormikValues>
-  values: FormikValues
-  handleChange: FormikHandlers['handleChange']
-}
+  errors: FormikErrors<FormikValues>;
+  values: FormikValues;
+  handleChange: FormikHandlers["handleChange"];
+};
 
 export type DockerConfig = {
-  strategy: DockerConnectionStrategy
-  addr?: string
-}
+  strategy: DockerConnectionStrategy;
+  addr?: string;
+};
 
 export type DockerApiStatus = {
-  version: string
-  memory: number
-}
+  version: string;
+  memory: number;
+};
 
 export type DockerInterfaceStatus = {
-  ok: string
-  error: string
-}
+  ok: string;
+  error: string;
+};
+
+export type InstalledApp = {
+  name: string;
+  path: string;
+};

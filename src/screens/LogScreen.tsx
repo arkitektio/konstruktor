@@ -1,38 +1,35 @@
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useStorage } from "../storage/storage-context";
+import { useStorage, App } from "../storage/storage-context";
 import { SetupValues } from "./wizard/Setup";
 
 import { Command } from "@tauri-apps/api/shell";
+import { useCommand, useLazyCommand } from "../hooks/useCommand";
 
-export const Logs: React.FC<{ app: SetupValues }> = ({ app }) => {
+export const Logs: React.FC<{ app: App; service?: string }> = ({
+  app,
+  service,
+}) => {
   const [rollingLog, setRollingLog] = useState<string[]>([]);
   const [retrigger, setRetrigger] = useState<boolean>(false);
   const lok_port = 8000;
   let deployment = app.name;
 
-  const log = (line: string) => {
-    setRollingLog((prev) => {
-      return [line, ...prev].slice(0, 50);
-    });
-  };
-
-  const runDocker = async (args: string[]) => {
-    const command = new Command("docker", args, {
-      cwd: app.app_path,
-    });
-    command.stdout.on("data", (line) => log(`"${line}"`));
-
-    let child = await command.execute();
-    return child;
-  };
+  const { run: logcommand, logs, error, finished } = useLazyCommand({});
 
   useEffect(() => {
-    runDocker(["compose", "logs"]).then((child) => {
-      setTimeout(() => {
-        setRetrigger(!retrigger);
-      }, 4000);
-    });
+    const timeout = setInterval(() => {
+      logcommand({
+        program: "docker",
+        args: service
+          ? ["compose", "logs", "-f", "--tail", "50", service]
+          : ["compose", "logs", "-f", "--tail", "50"],
+        options: {
+          cwd: app.path,
+        },
+      });
+    }, 1000);
+    return () => clearInterval(timeout);
   }, [retrigger]);
 
   return (
@@ -41,14 +38,16 @@ export const Logs: React.FC<{ app: SetupValues }> = ({ app }) => {
         <div className="flex-1 my-auto ">
           <Link to={`/dashboard/${app.name}`}>{"< Back"}</Link>
         </div>
-        <div className="flex-grow my-auto text-center">{app.name}</div>
+        <div className="flex-grow my-auto text-center">
+          {app.name} - {service}
+        </div>
         <div className="flex-1 my-auto text-right">
           <Link to={`/logs/${app.name}`}>Logs</Link>
         </div>
       </div>
       <div className="font-light mt-2">Log on</div>
       <pre>
-        {rollingLog.map((l, index) => (
+        {logs.map((l, index) => (
           <div key={index}>
             {l}
             <br />
@@ -60,10 +59,14 @@ export const Logs: React.FC<{ app: SetupValues }> = ({ app }) => {
 };
 
 export const LogScreen: React.FC<{}> = (props) => {
-  const { id } = useParams<{ id: string }>();
+  const { id, service } = useParams<{ id: string; service: string }>();
   const { apps } = useStorage();
 
   let app = apps.find((app) => app.name === id);
 
-  return app ? <Logs app={app} /> : <>Could not find this app</>;
+  return app ? (
+    <Logs app={app} service={service} />
+  ) : (
+    <>Could not find this app</>
+  );
 };

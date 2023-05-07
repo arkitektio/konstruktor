@@ -10,7 +10,7 @@ const people = [
   { id: 5, name: "Katelyn Rohan" },
 ];
 
-export type Person = typeof people[number];
+export type Person = (typeof people)[number];
 
 export type Option = {
   [key: string]: any;
@@ -103,7 +103,7 @@ export const MultiSelectReduceField = <T extends Option>({
   label,
   unique,
 }: Props<T>) => {
-  const [field, meta, helpers] = useField<typeof unique[]>(name);
+  const [field, meta, helpers] = useField<(typeof unique)[]>(name);
   const [query, setQuery] = useState("");
 
   const filteredOptions =
@@ -113,13 +113,13 @@ export const MultiSelectReduceField = <T extends Option>({
           return person[label].toLowerCase().includes(query.toLowerCase());
         });
 
-  const setValues = async (values: typeof unique[]) => {
+  const setValues = async (values: (typeof unique)[]) => {
     console.log(values);
     helpers.setValue(values);
   };
 
   return (
-    <Combobox<typeof unique[]>
+    <Combobox<(typeof unique)[]>
       value={field.value}
       onChange={setValues}
       multiple
@@ -149,7 +149,7 @@ export const MultiSelectReduceField = <T extends Option>({
         />
       </div>
       <Combobox.Options
-        className={"bg-white text-black p-1 rounded rounded-md"}
+        className={"static bg-white text-black p-1 rounded rounded-md"}
       >
         {filteredOptions.length === 0 && query != "" && (
           <div className="relative cursor-default select-none py-2 px-4 text-gray-700">

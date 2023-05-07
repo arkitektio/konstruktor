@@ -13,9 +13,13 @@
   "tauri": {
     "allowlist": {
       "all": false,
+      "fs": {
+        "all": true,
+        "scope": ["$APP/**/*", "$APPDATA/**/*", "$APPLOCALDATA/**/*","$HOME/**/*", "$DATA/**/*", "$XDG_CONFIG_HOME/**/*", "$TMP/**/*", "$TEMP/**/*", "$TMPDIR/**/*"]
+      },
       "shell": {
         "all": true,
-        "open": true,
+        "open": ".*",
         "scope": [
           {"name": "/usr/local/bin/docker", "cmd": "docker", "args": true},
           {"name": "docker", "cmd": "docker", "args": true}
