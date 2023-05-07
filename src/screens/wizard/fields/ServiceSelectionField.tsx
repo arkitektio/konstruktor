@@ -97,7 +97,7 @@ export const available_services: Service[] = [
     description: "The designer",
     long: "Allows you to design universal workflows spanning multiple apps",
     image: "jhnnsrs/fluss:prod",
-    requires: ["redis", "lok", "rekuest", "rabbitmq", "db", "minio"],
+    requires: ["redis", "lok", "db", "minio"],
     extras: {},
   },
   {
@@ -106,7 +106,7 @@ export const available_services: Service[] = [
     description: "The virtualizer",
     long: "Enables one click install of github repos as internal apps",
     image: "jhnnsrs/port:prod",
-    requires: ["redis", "lok", "rekuest", "rabbitmq", "db"],
+    requires: ["redis", "lok", "db"],
     extras: {},
   },
   {

@@ -93,6 +93,11 @@ const getContainerColor = (container: Container) => {
   }
 };
 
+
+
+
+
+
 export const Dashboard: React.FC<{ app: SetupValues }> = ({ app }) => {
   const { call } = useCommunication();
   const { deleteApp } = useStorage();

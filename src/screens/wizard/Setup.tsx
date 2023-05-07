@@ -39,7 +39,6 @@ export type SetupValues = {
   admin_email: string;
   attention: boolean;
   apps: App[];
-  bindings: Binding[];
   services: Service[];
   app_path: string;
   groups: Group[];
@@ -60,7 +59,6 @@ export const Setup: React.FC<{}> = (props) => {
     admin_email: "",
     attention: false,
     apps: available_apps.filter((a) => a.name != "hub"),
-    bindings: bindings,
     services: available_services.filter((s) => s.name != "hub"),
     app_path: "",
     groups: [{ name: "myteam", description: "My standard team" }],
@@ -110,12 +108,6 @@ export const Setup: React.FC<{}> = (props) => {
       validateOnChange
       activeStepIndex={0}
       steps={[
-        {
-          component: AdverstisedHostsForm,
-          validationSchema: Yup.object().shape({
-            bindings: Yup.array().min(1).required("Bindings required"),
-          }),
-        },
         {
           component: Greeting,
           validationSchema: Yup.object().shape({
