@@ -306,7 +306,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
               <CommandButton
                 params={{
                   program: "docker",
-                  args: ["compose", "up"],
+                  args: ["compose", "up", "-d"],
                   options: {
                     cwd: app.path,
                   },
