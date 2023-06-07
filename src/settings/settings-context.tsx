@@ -11,7 +11,7 @@ export type SettingContext = {
 };
 
 export const defaultSettings = {
-  baker: "jhnnsrs/guss:prodx",
+  baker: "jhnnsrs/guss:prod",
 };
 export const SettingsContext = React.createContext<SettingContext>({
   settings: defaultSettings,

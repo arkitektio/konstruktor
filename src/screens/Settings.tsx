@@ -16,7 +16,7 @@ import { useCommand } from "../hooks/useCommand";
 import { CommandButton } from "../CommandButton";
 
 export const Settings = () => {
-  const { settings } = useSettings();
+  const { settings, setSettings } = useSettings();
   const {
     run: up,
     logs,
