@@ -106,6 +106,8 @@ import { InstalledApp } from "./wizard/types";
 import { useSettings } from "../settings/settings-context";
 import { CommandButton, DangerousCommandButton } from "../CommandButton";
 import { Konstrukt } from "../Konstrukt";
+import { Button } from "../components/ui/button";
+import { Page } from "../layout/Page";
 
 export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   const { call } = useCommunication();
@@ -269,16 +271,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   };
 
   return (
-    <div className="h-full w-full flex flex-col">
-      <div className="flex initial text-xl flex flex-row bg-back-800 text-white shadow-xl mb-2 p-2 ">
-        <div className="flex-1 my-auto ">
-          <Link to="/">{"< Home"}</Link>
-        </div>
-        <div className="flex-grow my-auto text-center">{app.name}</div>
-        <div className="flex-1 my-auto text-right">
-          <Link to={`/logs/${app.name}`}>Logs</Link>
-        </div>
-      </div>
+    <Page>
       {!initialized ? (
         <div className="flex-grow flex flex-col h-full p-2 overflow-y-scroll items-center">
           <div className="font-bold text-3xl">Hello to</div>
@@ -492,7 +485,22 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
           </Hover>
         </div>
       )}
-    </div>
+      <div className="flex-initial   justify-between flex flex-row gap-2 p-3 bg-card  border-t border-foreground">
+        <div  className="flex flex-row gap-2 justify-between">
+        <Button>
+          <Link
+            to="/"
+          >
+             {"<"} Home
+          </Link>
+          
+        </Button>
+        </div>
+          <Button>
+          <Link to={`/logs/${app.name}`}>Logs</Link>
+          </Button>
+      </div>
+    </Page>
   );
 };
 

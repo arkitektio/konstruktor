@@ -2,6 +2,7 @@ import { ChildProcess } from "@tauri-apps/api/shell";
 import { CommandParams, useCommand } from "./hooks/useCommand";
 import { callbackify } from "util";
 import { useState } from "react";
+import { Button } from "./components/ui/button";
 
 export const CommandButton = (props: {
   params: CommandParams;
@@ -13,7 +14,7 @@ export const CommandButton = (props: {
 
   return (
     <>
-      <button
+      <Button
         onClick={() => {
           console.log("run");
           run().then((x) => {
@@ -32,7 +33,7 @@ export const CommandButton = (props: {
       >
         {running && props.runningTitle ? props.runningTitle : props.title}
         {finished?.code == 1 && <div className="text-red-400">Error</div>}
-      </button>
+      </Button>
     </>
   );
 };
@@ -49,7 +50,7 @@ export const DangerousCommandButton = (props: {
   const to = props.to || 10;
   return (
     <>
-      <button
+      <Button
         onClick={() => {
           console.log("run");
           if (countDown == to) {
@@ -77,7 +78,7 @@ export const DangerousCommandButton = (props: {
         {countDown > 1 &&
           countDown < 11 &&
           ` ( ${to - countDown} more clicks to confirm)`}
-      </button>
+      </Button>
     </>
   );
 };

@@ -3,12 +3,12 @@ import React from "react";
 import type { StepProps } from "../types";
 export const Greeting: React.FC<StepProps> = (props) => {
   return (
-    <div className="text-center h-full my-7">
+    <div className="items-center h-full my-7">
       <div className="font-light text-7xl"> Hello!</div>
       <div className="font-light text-3xl mt-4">
         Lets install the framework together
       </div>
-      <div className="mb-2 text-justify mt-4">
+      <div className="mb-2 text-justify mt-4 max-w-xl">
         First things first: Lets think about naming your install. With
         Konstruktor you can install multiple versions of the Arkitekt platform,
         with multiple configurations. You can imaging having an experimental

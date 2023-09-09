@@ -55,7 +55,7 @@ export const debugUser = {
   groups: ["myteam"],
 };
 
-export const Setup: React.FC<{}> = (props) => {
+export const ChannelSetup: React.FC<{}> = (props) => {
   const { call } = useCommunication();
   const { installApp, apps } = useStorage();
   const { bindings } = useBindings();
@@ -225,10 +225,10 @@ export const Setup: React.FC<{}> = (props) => {
       }: RenderProps) => {
         return (
           <div className="w-full h-full p-6 flex flex-col">
-            <ScrollArea className="flex-grow flex @container">
+            <ScrollArea className="flex-grow flex">
               {renderComponent()}
             </ScrollArea>
-            <div className="bg-red flex-none text-center gap-2 grid grid-cols-2">
+            <div className="bg-red flex-initial text-center gap-2 grid grid-cols-2">
               {currentStepIndex == 0 ? (
                 <Button>
                 <Link
