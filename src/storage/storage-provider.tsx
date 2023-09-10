@@ -63,8 +63,14 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
         let setup_string = await readTextFile(`apps/${entry.name}/setup.yaml`, {
           dir: BaseDirectory.App,
         });
-        let setup = parse(setup_string) as SetupValues;
-        apps.push({ name: entry.name, path: entry.path });
+        try {
+          let setup = parse(setup_string) as SetupValues;
+          if (entry.name) {
+            apps.push({ name: entry.name, path: entry.path });
+          }
+        } catch (e) {
+          console.error(e);
+        }
       }
     }
     setAvailableApps(apps);

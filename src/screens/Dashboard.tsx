@@ -79,7 +79,6 @@ import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
 import { BaseDirectory, FileEntry, readDir } from "@tauri-apps/api/fs";
 import { CommandButton, DangerousCommandButton } from "../CommandButton";
-import { Konstrukt } from "../Konstrukt";
 import { LogoMenu, SettingsMenu } from "../components/AppMenu";
 import { Button } from "../components/ui/button";
 import {
@@ -399,9 +398,6 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                             cwd: app.path,
                           },
                         }}
-                        callback={() =>
-                          deleteApp(app.name).then(() => navigate("/"))
-                        }
                         title="Reset"
                         confirmTitle="Are you really sure you want to reset this app?"
                         confirmDescription="This is an irreversible action"

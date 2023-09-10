@@ -16,10 +16,11 @@
                     "long": "This deployment is easy to use"
                     }
                 ],
-                "builder": "jhnnsrs/paperbuilder",
+                "preview": false,
+                "builder": "jhnnsrs/paperbuilder:latest",
                 "forms": ["admin_user", "users", "groups"],
                 "defaults": {
-                    "name": "mydeployment",
+                    "name": "paper",
                     "adminUsername": "admin",
                     "adminPassword": "admin",
                     "groups": {
@@ -27,7 +28,7 @@
                         "description": "mygroup"
                     },
                     "users": {
-                        "name": "demo",
+                        "username": "demo",
                         "password": "demo",
                         "groups": ["mygroup"]
                     }
@@ -47,6 +48,7 @@
                   "long": "This deployment is easy to use"
                 }
               ],
+              "preview": true,
               "builder": "jhnnsrs/arkitekt_paper_builder",
               "forms": ["admin_user", "users", "groups"],
               "defaults": {
