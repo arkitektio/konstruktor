@@ -1,16 +1,6 @@
 import { forage } from "@tauri-apps/tauri-forage";
 import React, { useEffect, useState } from "react";
-import { SetupValues } from "../screens/wizard/Setup";
 import { Settings, SettingsContext, defaultSettings } from "./settings-context";
-import { stringify, parse } from "yaml";
-import {
-  createDir,
-  BaseDirectory,
-  writeTextFile,
-  readDir,
-  readTextFile,
-} from "@tauri-apps/api/fs";
-import { InstalledApp } from "../screens/wizard/types";
 
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
   children,

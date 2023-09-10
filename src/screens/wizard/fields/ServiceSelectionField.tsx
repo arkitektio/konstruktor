@@ -1,174 +1,43 @@
 import { useField } from "formik";
-import React from "react";
+import { useChannel } from "../../../channel/channel-context";
 import { Hover } from "../../../layout/Hover";
-import logod from "../../../assets/logo-docker.png";
-import jupyter from "../../../assets/logo-jupyter.png";
-import minio from "../../../assets/logo-minio.png";
-import postgres from "../../../assets/logo-postgres.png";
-import redis from "../../../assets/logo-redis.png";
-import rabbitmq from "../../../assets/logo-rabbitmq.png";
-import openid from "../../../assets/logo-openid.png";
-import arkitektm from "../../../assets/logo-arkitekt.png";
+import { Service } from "../../../repo/repo-context";
 
-export type Service = {
-  name: string;
-  interface: string;
-  long: string;
-  description: string;
-  image: string;
-  requires: string[];
-  experimental?: boolean;
-  is_backend?: boolean;
-  extras: {};
-};
-
-export const available_services: Service[] = [
-  {
-    name: "redis",
-    interface: "redis",
-    description: "The pubsub",
-    long: "This allows services to publish and subscribe to events",
-    image: "redis:latest",
-    requires: [],
-    is_backend: true,
-    extras: {},
-  },
-  {
-    name: "postgres",
-    interface: "db",
-    description: "The database",
-    long: "Storing your meta data",
-    image: "jhnnsrs/daten:prod",
-    requires: [],
-    is_backend: true,
-    extras: {},
-  },
-  {
-    name: "minio",
-    interface: "minio",
-    description: "The storage",
-    long: "Storing your images and files",
-    image: "minio/minio:RELEASE.2023-02-10T18-48-39Z",
-    requires: [],
-    is_backend: true,
-    extras: {},
-  },
-  {
-    name: "rabbitmq",
-    interface: "rabbitmq",
-    description: "The backbone",
-    long: "Taking care of the reliable communication between the apps",
-    image: "rabbitmq:3-management",
-    requires: [],
-    is_backend: true,
-    extras: {},
-  },
-  {
-    name: "lok",
-    interface: "lok",
-    description: "The core",
-    long: "This includes authorization, authentificaiton, config management, and more",
-    image: "jhnnsrs/lok:prod",
-    requires: ["redis", "db", "minio"],
-    extras: {},
-  },
-  {
-    name: "mikro",
-    interface: "mikro",
-    description: "The datalayer",
-    long: "Enables you to store, organize and monitor microscopy data",
-    image: "jhnnsrs/mikro:prod",
-    requires: ["redis", "lok", "db", "minio"],
-    extras: {},
-  },
-  {
-    name: "orkestrator",
-    interface: "orkestrator",
-    description: "The webinterface",
-    long: "Enables you to explore your data",
-    image: "jhnnsrs/orkestrator:prodx",
-    requires: [],
-    extras: {},
-  },
-  {
-    name: "rekuest",
-    interface: "rekuest",
-    description: "The broker",
-    long: "Allows you to call enabled bioimage apps from the platform",
-    image: "jhnnsrs/rekuest:prod",
-    requires: ["redis", "rabbitmq", "lok", "db"],
-    extras: {},
-  },
-
-  {
-    name: "fluss",
-    interface: "fluss",
-    description: "The designer",
-    long: "Allows you to design universal workflows spanning multiple apps",
-    image: "jhnnsrs/fluss:prodx",
-    requires: ["redis", "lok", "db", "minio"],
-    extras: {},
-  },
-  {
-    name: "port",
-    interface: "port",
-    description: "The virtualizer",
-    long: "Enables one click install of github repos as internal apps",
-    image: "jhnnsrs/port:prodx",
-    requires: ["redis", "lok", "db", "minio"],
-    extras: {},
-  },
-];
-
-export const logoForService = (service: Service) => {
-  switch (service.name) {
-    case "redis":
-      return redis;
-    case "postgres":
-      return postgres;
-    case "minio":
-      return minio;
-    case "hub":
-      return jupyter;
-    case "rabbitmq":
-      return rabbitmq;
-    case "port":
-      return logod;
-    default:
-      return arkitektm;
-  }
-};
-
-const is_required_by = (interfacex: string, service: Service) => {
-  return available_services
-    .find((s) => s.interface === interfacex)
-    ?.requires.some((r) => r === service.interface);
+const isRequiredBy = (
+  name: string,
+  service: Service,
+  availableServices: Service[]
+) => {
+  return availableServices
+    .find((s) => s.name === name)
+    ?.requires?.some((r) => r === service.interface);
 };
 
 export const ServiceSelectionField = ({ ...props }: any) => {
-  const [field, meta, helpers] = useField<Service[]>(props);
+  const [field, meta, helpers] = useField<string[]>(props);
+  const { availableServices } = useChannel();
 
   const toggleValue = async (service: Service) => {
     if (field.value) {
-      if (field.value.find((i: Service) => i.interface === service.interface)) {
+      if (field.value.find((i: string) => i === service.name)) {
         helpers.setValue(
           field.value.filter(
-            (i: Service) =>
-              i.interface !== service.interface &&
-              is_required_by(i.interface, service) === false
+            (i) =>
+              i !== service.name &&
+              isRequiredBy(i, service, availableServices) === false
           )
         );
       } else {
         helpers.setValue([
           ...field.value,
-          service,
-          ...available_services.filter((s) =>
-            service.requires.includes(s.interface)
-          ),
+          service.name,
+          ...availableServices
+            .filter((s) => service.requires?.includes(s.interface))
+            .map((s) => s.name),
         ]);
       }
     } else {
-      helpers.setValue([service]);
+      helpers.setValue([service.name]);
     }
     console.log(field.value);
   };
@@ -176,33 +45,31 @@ export const ServiceSelectionField = ({ ...props }: any) => {
   return (
     <>
       <Hover className="grid grid-cols-4 flex-wrap gap-2 p-2">
-        {available_services.map((app, i) => (
+        {availableServices.map((service, i) => (
           <div
             className={`hovercard cursor-pointer border border-1 flex flex-col bg-back-800 p-3 ${
-              field.value &&
-              field.value.find((i: Service) => i.name === app.name)
+              field.value && field.value.find((i) => i === service.name)
                 ? " border-slate-200 "
                 : "shadow-primary-300/20 border-slate-400 opacity-40 "
             }`}
             key={i}
-            onClick={() => toggleValue(app)}
+            onClick={() => toggleValue(service)}
           >
             <div className="flex flex-row justify-between">
-              <img
-                className="text-sm text-start h-20"
-                src={logoForService(app)}
-              />
+              {service.logo && (
+                <img className="text-sm text-start h-20" src={service.logo} />
+              )}
             </div>
             <div className="font-bold text-start flex-row flex justify-between">
-              <div className="my-auto">{app.name}</div>
-              {app.experimental && (
+              <div className="my-auto">{service.name}</div>
+              {service.experimental && (
                 <div className="text-xs border-red-300 border p-1 rounded rounded-md">
                   Exp
                 </div>
               )}
             </div>
-            <div className="font-light  text-start">{app.description}</div>
-            <div className="text-sm  text-start mt-1">{app.long}</div>
+            <div className="font-light  text-start">{service.description}</div>
+            <div className="text-sm  text-start mt-1">{service.long}</div>
           </div>
         ))}
       </Hover>

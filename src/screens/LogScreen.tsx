@@ -1,12 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useStorage, App } from "../storage/storage-context";
-import { SetupValues } from "./wizard/Setup";
+import { App, useStorage } from "../storage/storage-context";
 
-import { Command } from "@tauri-apps/api/shell";
-import { useCommand, useLazyCommand } from "../hooks/useCommand";
-import { Page } from "../layout/Page";
 import { Button } from "../components/ui/button";
+import { useLazyCommand } from "../hooks/useCommand";
+import { Page } from "../layout/Page";
 
 export const Logs: React.FC<{ app: App; service?: string }> = ({
   app,
@@ -36,25 +34,26 @@ export const Logs: React.FC<{ app: App; service?: string }> = ({
 
   return (
     <Page>
-      
       <div className="flex-grow flex flex-col gap-2 p-3 ">
-      <pre className="flex-grow bg-card rounded rounded-xl p-2">
-        {logs && logs.length > 0 ? logs.map((l, index) => (
-          <div key={index}>
-            {l}
-            <br />
-          </div>
-        )): <>No logs</>}
-      </pre>
+        <pre className="flex-grow bg-card rounded rounded-xl p-2">
+          {logs && logs.length > 0 ? (
+            logs.map((l, index) => (
+              <div key={index}>
+                {l}
+                <br />
+              </div>
+            ))
+          ) : (
+            <>No logs</>
+          )}
+        </pre>
       </div>
       <div className="flex-initial flex flex-row gap-2 p-3 bg-card  border-t border-foreground">
-        <div  className="flex flex-row items-center gap-2">
-        <Button>
-          <Link
-            to="/"
-          >
-             <Link to={`/dashboard/${app.name}`}>{"< Back"}</Link>
-          </Link>
+        <div className="flex flex-row items-center gap-2">
+          <Button>
+            <Link to="/">
+              <Link to={`/dashboard/${app.name}`}>{"< Back"}</Link>
+            </Link>
           </Button>
         </div>
       </div>

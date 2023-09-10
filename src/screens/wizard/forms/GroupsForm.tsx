@@ -1,13 +1,11 @@
 import { ErrorMessage, Field, FieldArray, useFormikContext } from "formik";
 import React from "react";
 import { Hover } from "../../../layout/Hover";
-import { SetupValues } from "../Setup";
 import type { StepProps } from "../types";
-
-export type Group = {
-  name: string;
-  description: string;
-};
+import { SetupValues } from "../../../repo/repo-context";
+import { Card } from "../../../components/ui/card";
+import { Button } from "../../../components/ui/button";
+import { ErrorDisplay } from "../../../components/Error";
 
 export const availablePermissions = [
   "admin",
@@ -22,11 +20,12 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
   const { values } = useFormikContext<SetupValues>();
 
   return (
-    <div className="text-center w-full">
-      <div className="font-light text-3xl mt-4">
+    <div className="h-full w-full my-7 flex flex-col">
+      <div className="font-light text-7xl"> Groups!</div>
+      <div className="font-light text-2xl mt-4">
         Lets set up some initial Groups
       </div>
-      <div className="text-center mt-6">
+      <div className="mb-2 text-justify mt-4 max-w-xl">
         Arkitekt uses groups to manage collections of users, e.g Teams or
         Organizations. Groups can be used to assign permissions to use specific
         apps and resources.
@@ -36,67 +35,70 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
           can change this through the admin interface.
         </div>
       </div>
-      <FieldArray
-        name="groups"
-        render={(arrayHelpers) => (
-          <>
-            <Hover className="my-4 flex justify-center flex-row gap-2 flex-wrap">
-              {values?.groups?.map((friend, index) => (
-                <div
-                  key={index}
-                  className="group relative hovercard flex-initial border border-1 border-slate-200 p-3"
-                >
-                  <div className="font-light text-md my-1">Group name</div>
-                  <Field
-                    name={`groups.${index}.name`}
-                    className="text-black p-1 rounded"
-                  />
-                  <ErrorMessage name={`groups.${index}.name`}>
-                    {(msg) => (
-                      <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
-                        {msg}
-                      </div>
-                    )}
-                  </ErrorMessage>
-                  <div className="font-light text-xs text-md my-1">
-                    A name for this group
-                  </div>
-                  <div className="font-light text-md my-1">Description</div>
-                  <Field
-                    name={`groups.${index}.description`}
-                    className="text-black p-1 rounded"
-                  />
-                  <ErrorMessage name={`groups.${index}.description`}>
-                    {(msg) => (
-                      <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
-                        {msg}
-                      </div>
-                    )}
-                  </ErrorMessage>
-                  <div className="font-light text-xs text-md my-1">
-                    Briefly describe this group
-                  </div>
-                  <button
-                    type="button"
-                    className="group-hover:visible invisible absolute top-0 right-0 transform translate-x-1/2 -translate-y-1/2 bg-red-500 rounded-full h-6 w-6 flex items-center justify-center text-white"
-                    onClick={() => arrayHelpers.remove(index)} // remove a friend from the list
+      <div className="max-w-xl">
+        <FieldArray
+          name="groups"
+          render={(arrayHelpers) => (
+            <>
+              <Hover className="my-4 flex flex-row gap-2 flex-wrap">
+                {values?.groups?.map((friend, index) => (
+                  <Card
+                    key={index}
+                    className="group relative hovercard flex-initial  p-3"
                   >
-                    x
-                  </button>
-                </div>
-              ))}
-            </Hover>
-            <button
-              type="button"
-              onClick={() => arrayHelpers.push({ name: "", description: "" })}
-              className="bg-slate-800 text-white rounded-md p-2 hover:bg-slate-700 cursor-pointer"
-            >
-              {/* show this when user has removed all friends from the list */}
-              Add a group
-            </button>
-          </>
-        )}
-      />
+                    <div className="font-light text-md my-1">Group name</div>
+                    <Field
+                      name={`groups.${index}.name`}
+                      autoComplete="off"
+                      spellCheck="false"
+                      className="text-black p-1 rounded"
+                    />
+                    <ErrorDisplay name={`groups.${index}.name`}>
+                      {(msg) => (
+                        <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
+                          {msg}
+                        </div>
+                      )}
+                    </ErrorDisplay>
+                    <div className="font-light text-xs text-md my-1">
+                      A name for this group
+                    </div>
+                    <div className="font-light text-md my-1">Description</div>
+                    <Field
+                      name={`groups.${index}.description`}
+                      className="text-black p-1 rounded"
+                    />
+                    <ErrorDisplay name={`groups.${index}.description`}>
+                      {(msg) => (
+                        <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
+                          {msg}
+                        </div>
+                      )}
+                    </ErrorDisplay>
+                    <div className="font-light text-xs text-md my-1">
+                      Briefly describe this group
+                    </div>
+                    <button
+                      type="button"
+                      className="group-hover:visible invisible absolute top-0 right-0 transform translate-x-1/2 -translate-y-1/2 bg-red-500 rounded-full h-6 w-6 flex items-center justify-center text-white"
+                      onClick={() => arrayHelpers.remove(index)} // remove a friend from the list
+                    >
+                      x
+                    </button>
+                  </Card>
+                ))}
+              </Hover>
+              <Button
+                type="button"
+                onClick={() => arrayHelpers.push({ name: "", description: "" })}
+              >
+                {/* show this when user has removed all friends from the list */}
+                Add a group
+              </Button>
+            </>
+          )}
+        />
+      </div>
     </div>
   );
 };

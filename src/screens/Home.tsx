@@ -1,10 +1,5 @@
 import { Link } from "react-router-dom";
 
-import { forage } from "@tauri-apps/tauri-forage";
-import { useEffect, useState } from "react";
-import { useStorage } from "../storage/storage-context";
-import { Logo } from "../layout/Logo";
-import { Hover } from "../layout/Hover";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -13,8 +8,9 @@ import {
   CardHeader,
   CardTitle,
 } from "../components/ui/card";
-import { motion } from "framer-motion";
+import { Logo } from "../layout/Logo";
 import { Page } from "../layout/Page";
+import { useStorage } from "../storage/storage-context";
 
 export const Home: React.FC<{}> = (props) => {
   const { apps, deleteApp } = useStorage();

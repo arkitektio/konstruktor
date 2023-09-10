@@ -1,17 +1,14 @@
 import { invoke } from "@tauri-apps/api";
 import React, { useEffect, useState } from "react";
 import { TbReload } from "react-icons/tb";
-import { GrBeacon } from "react-icons/gr";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { useBeacon } from "../beacon/context";
 import { useCommunication } from "../communication/communication-context";
 import { ResponsiveGrid } from "../layout/ResponsiveGrid";
 import { App, useStorage } from "../storage/storage-context";
 import { BeaconInterface } from "../types";
-import { SetupValues } from "./wizard/Setup";
-import { useBeacon } from "../beacon/context";
 
-import { Command, open } from "@tauri-apps/api/shell";
-import { Hover } from "../layout/Hover";
+import { open } from "@tauri-apps/api/shell";
 
 export const ServiceHealth = (props: { service: any }) => {
   return (
@@ -78,21 +75,13 @@ const getContainerColor = (container: Container) => {
   }
 };
 
-import {
-  readDir,
-  BaseDirectory,
-  FileEntry,
-  writeTextFile,
-  createDir,
-  removeDir,
-} from "@tauri-apps/api/fs";
-import { CommandParams, useCommand } from "../hooks/useCommand";
-import { InstalledApp } from "./wizard/types";
-import { useSettings } from "../settings/settings-context";
+import { DialogTrigger } from "@radix-ui/react-dialog";
+import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
+import { BaseDirectory, FileEntry, readDir } from "@tauri-apps/api/fs";
 import { CommandButton, DangerousCommandButton } from "../CommandButton";
 import { Konstrukt } from "../Konstrukt";
+import { LogoMenu, SettingsMenu } from "../components/AppMenu";
 import { Button } from "../components/ui/button";
-import { Page } from "../layout/Page";
 import {
   Card,
   CardContent,
@@ -101,10 +90,12 @@ import {
   CardTitle,
 } from "../components/ui/card";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "../components/ui/tooltip";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogTitle,
+} from "../components/ui/dialog";
 import {
   Menubar,
   MenubarContent,
@@ -113,17 +104,14 @@ import {
   MenubarShortcut,
   MenubarTrigger,
 } from "../components/ui/menubar";
-import { Logo } from "../layout/Logo";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogTitle,
-} from "../components/ui/dialog";
-import { DialogTrigger } from "@radix-ui/react-dialog";
-import { LogoMenu, SettingsMenu } from "../components/AppMenu";
-import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "../components/ui/tooltip";
+import { useCommand } from "../hooks/useCommand";
+import { Page } from "../layout/Page";
+import { useSettings } from "../settings/settings-context";
 
 export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   const { call, status } = useCommunication();

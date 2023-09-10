@@ -1,6 +1,5 @@
 import { forage } from "@tauri-apps/tauri-forage";
 import React, { useEffect, useState } from "react";
-import { SetupValues } from "../screens/wizard/Setup";
 import { App, StorageContext } from "../storage/storage-context";
 import { stringify, parse } from "yaml";
 import {
@@ -12,6 +11,7 @@ import {
   removeDir,
 } from "@tauri-apps/api/fs";
 import { InstalledApp } from "../screens/wizard/types";
+import { Channel, SetupValues } from "../repo/repo-context";
 
 const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
@@ -19,19 +19,34 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
   const [availableApps, setAvailableApps] = useState<InstalledApp[]>([]);
   const [reset, setReset] = useState(false);
 
-  const installApp = async (app: SetupValues) => {
-    await createDir(`apps/${app.name}`, {
+  const installApp = async (
+    name: string,
+    channel: Channel,
+    values: Partial<SetupValues>
+  ) => {
+    await createDir(`apps/${name}`, {
       dir: BaseDirectory.App,
       recursive: true,
     });
-    await writeTextFile(`apps/${app.name}/setup.yaml`, stringify(app), {
+    await writeTextFile(`apps/${name}/setup.yaml`, stringify(values), {
       dir: BaseDirectory.App,
     });
+    await writeTextFile(`apps/${name}/channel.yaml`, stringify(channel), {
+      dir: BaseDirectory.App,
+    });
+
+    let entries = await readDir("apps", { dir: BaseDirectory.App });
+
+    let path = entries.find((x) => x.name == name)?.path;
+    if (!path) {
+      throw new Error("Could not find path");
+    }
     setReset(!reset);
+    return path;
   };
 
-  const deleteApp = async (app: App) => {
-    await removeDir(`apps/${app.name}`, {
+  const deleteApp = async (name: string) => {
+    await removeDir(`apps/${name}`, {
       dir: BaseDirectory.App,
       recursive: true,
     });
@@ -48,9 +63,7 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
         let setup_string = await readTextFile(`apps/${entry.name}/setup.yaml`, {
           dir: BaseDirectory.App,
         });
-        console.log(setup_string);
         let setup = parse(setup_string) as SetupValues;
-        console.log(setup);
         apps.push({ name: setup.name, path: entry.path });
       }
     }

@@ -1,5 +1,5 @@
 import React, { useContext } from "react";
-import { SetupValues } from "../screens/wizard/Setup";
+import { Channel, SetupValues } from "../repo/repo-context";
 
 export type App = {
   path: string;
@@ -8,13 +8,17 @@ export type App = {
 
 export type StorageContextType = {
   apps: App[];
-  installApp: (app: SetupValues) => Promise<void>;
-  deleteApp: (app: App) => Promise<void>;
+  installApp: (
+    name: string,
+    channel: Channel,
+    app: Partial<SetupValues>
+  ) => Promise<string>;
+  deleteApp: (name: string) => Promise<void>;
 };
 
 export const StorageContext = React.createContext<StorageContextType>({
   apps: [],
-  installApp: async (app) => undefined,
+  installApp: async (app) => "fake",
   deleteApp: async (app) => undefined,
 });
 

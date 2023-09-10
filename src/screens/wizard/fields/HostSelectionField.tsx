@@ -1,17 +1,8 @@
-import { invoke } from "@tauri-apps/api";
-import { A } from "@tauri-apps/api/cli-3e179c0b";
-import {
-  FieldHookConfig,
-  FieldProps,
-  useField,
-  useFormik,
-  useFormikContext,
-} from "formik";
-import React, { useEffect } from "react";
+import { useField, useFormikContext } from "formik";
+import { GrBeacon } from "react-icons/gr";
 import { Binding, useBindings } from "../../../interface/context";
 import { Hover } from "../../../layout/Hover";
-import { SetupValues } from "../Setup";
-import { GrBeacon } from "react-icons/gr";
+import { SetupValues } from "../../../repo/repo-context";
 
 export const HostSelectionField = ({ ...props }: { name: string }) => {
   const [field, meta, helpers] = useField(props.name);

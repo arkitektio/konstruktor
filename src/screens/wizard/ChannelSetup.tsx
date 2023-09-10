@@ -1,52 +1,37 @@
-import {
-  FieldProps,
-  FormikErrors,
-  FormikHandlers,
-  FormikHelpers,
-  FormikValues,
-} from "formik";
-import { FormikWizard, RenderProps } from "formik-wizard-form";
-import React, { useEffect } from "react";
-import { useCommunication } from "../../communication/communication-context";
+import { FormikHelpers, FormikValues } from "formik";
+import { FormikWizard, RenderProps, Step } from "formik-wizard-form";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import * as Yup from "yup";
-import { Link, useNavigate } from "react-router-dom";
-import { stringify } from "yaml";
+import { ChannelProvider } from "../../channel/channel-provider";
+import { Button } from "../../components/ui/button";
+import { Page } from "../../layout/Page";
+import {
+  AvailableForms,
+  Channel,
+  Group,
+  SetupValues,
+  User,
+  useRepo,
+} from "../../repo/repo-context";
 import { useStorage } from "../../storage/storage-context";
 import { AdminUserForm } from "./forms/AdminUserForm";
-import { Greeting } from "./forms/Greeting";
-import { CheckDocker } from "./forms/CheckDocker";
-import { ServiceSelection } from "./forms/ServiceSelection";
-import { AppStorage } from "./forms/AppStorage";
 import { AppSelection } from "./forms/AppSelection";
 import { AttentionSuperuser } from "./forms/AttentionSuperuser";
 import { Done } from "./forms/Done";
-import { App, available_apps } from "./fields/AppSelectionField";
-import { available_services, Service } from "./fields/ServiceSelectionField";
-import { Group, GroupsForm } from "./forms/GroupsForm";
-import { User, UsersForm } from "./forms/UsersForm";
-import { ScaleForm } from "./forms/ScaleForm";
-import { Scale, scaleOptions } from "./fields/ScaleField";
-import { Hover } from "../../layout/Hover";
-import { Binding, useBindings } from "../../interface/context";
-import { invoke } from "@tauri-apps/api";
-import { Command } from "@tauri-apps/api/shell";
-import { Button } from "../../components/ui/button";
-import { ScrollArea } from "../../components/ui/scroll-area";
-import { ChannelForm } from "./forms/ChannelForm";
-
-export type SetupValues = {
-  name: string;
-  admin_username: string;
-  admin_password: string;
-  admin_email: string;
-  attention: boolean;
-  apps: App[];
-  services: Service[];
-  groups: Group[];
-  users: User[];
-  scale: Scale;
-};
-
+import { ServiceSelection } from "./forms/ServiceSelection";
+import { UsersForm } from "./forms/UsersForm";
+import { GroupsForm } from "./forms/GroupsForm";
+import { ChannelGreeting } from "./forms/ChannelGreeting";
+import { useState } from "react";
+import { useCommand, useLazyCommand } from "../../hooks/useCommand";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+} from "../../components/ui/dialog";
+import { DialogTitle } from "@radix-ui/react-dialog";
+import { ScrollArea } from "@radix-ui/react-scroll-area";
+import { writeText, readText } from "@tauri-apps/api/clipboard";
 export const debugUser = {
   name: "debug",
   username: "debug",
@@ -55,164 +40,190 @@ export const debugUser = {
   groups: ["myteam"],
 };
 
-export const ChannelSetup: React.FC<{}> = (props) => {
-  const { call } = useCommunication();
-  const { installApp, apps } = useStorage();
-  const { bindings } = useBindings();
+export type ConditionalStep = Step & {
+  name: AvailableForms;
+};
+
+export const allSteps: ConditionalStep[] = [
+  {
+    name: "greeting",
+    component: ChannelGreeting,
+  },
+  {
+    name: "service_selection",
+    component: ServiceSelection,
+    validationSchema: Yup.object().shape({
+      services: Yup.array().required("Desired Modules Required"),
+    }),
+  },
+  {
+    name: "app_selection",
+    component: AppSelection,
+    validationSchema: Yup.object().shape({
+      apps: Yup.array().required("Desired Modules Required"),
+    }),
+  },
+  {
+    name: "attention_superuser",
+    component: AttentionSuperuser,
+    validationSchema: Yup.object().shape({
+      attention: Yup.bool().isTrue().required("You need to understand this"),
+    }),
+  },
+  {
+    name: "admin_user",
+    component: AdminUserForm,
+    validationSchema: Yup.object().shape({
+      admin_username: Yup.string().required("Username is required"),
+      admin_password: Yup.string().required("Password is required"),
+    }),
+  },
+  {
+    name: "groups",
+    component: GroupsForm,
+    validationSchema: Yup.object().shape({
+      groups: Yup.array(
+        Yup.object().shape({
+          name: Yup.string()
+            .lowercase()
+            .matches(/^[a-z]+$/, "Only lowercase letters allowed")
+            .required("Group name is required"),
+          description: Yup.string().required(
+            "A short description iss required"
+          ),
+        })
+      )
+        .required("At least one group is required")
+        .test("length", "At least one group is required", (groups: Group[]) => {
+          return (groups?.length || 0) > 0;
+        })
+        .test("unique", "Group names must be unique", (groups: Group[]) => {
+          let names = groups.map((g) => g.name);
+          return names.length === new Set(names).size;
+        }),
+    }),
+  },
+  {
+    name: "users",
+    component: UsersForm,
+    validationSchema: Yup.object().shape({
+      users: Yup.array(
+        Yup.object().shape({
+          username: Yup.string().required("Username is required"),
+          password: Yup.string().required("Password is required"),
+          groups: Yup.array().required("Groups are required"),
+        })
+      )
+        .required("At least one user is required")
+        .test("length", "At least one user is required", (users: User[]) => {
+          return (users?.length || 0) > 0;
+        })
+        .test("unique", "Usernames must be unique", (users: User[]) => {
+          let names = users.map((g) => g.username);
+          return names.length === new Set(names).size;
+        }),
+    }),
+  },
+
+  {
+    name: "done",
+    component: Done,
+  },
+];
+
+export const ChannelSetup = ({
+  channel,
+  name,
+}: {
+  channel: Channel;
+  name: string;
+}) => {
+  const { installApp, deleteApp } = useStorage();
+
+  const { run, logs, finished } = useLazyCommand({
+    logLength: 50,
+  });
+
+  const [open, setOpen] = useState<boolean>(false);
+
+  const [status, setStatus] = useState<string | undefined>(undefined);
+
   const navigate = useNavigate();
 
-  const basicSetup: SetupValues = {
-    name: "mydeployment",
-    admin_username: "",
-    admin_password: "",
-    admin_email: "",
-    attention: false,
-    apps: available_apps.filter((a) => a.name != "hub"),
-    services: available_services.filter((s) => s.name != "hub"),
-    groups: [{ name: "myteam", description: "My standard team" }],
-    users: [],
-    scale: scaleOptions[0],
-  };
-
   const handleSubmit = async (
-    values: FormikValues,
+    values: Partial<SetupValues>,
     formikHelpers: FormikHelpers<FormikValues>
   ) => {
     if (values) {
       formikHelpers.setSubmitting(true);
+      setOpen(true);
 
-      installApp(values as SetupValues);
-      navigate("/");
+      let builder = "jhnnsrs/guss:prod";
+
+      try {
+        setStatus("Fetching builder ...");
+
+        let pullResult = await run({
+          program: "docker",
+          args: ["pull", builder],
+        });
+        if (pullResult.code != 0) {
+          throw Error("Error while pulling builder image");
+        }
+
+        setStatus("Creating app directory ...");
+
+        let path = await installApp(name, channel, values);
+
+        let pullingApp = await run({
+          program: "docker",
+          args: ["run", "--rm", "-v", `${path}:/app/init`, builder],
+          options: {
+            cwd: path,
+          },
+        });
+
+        if (pullingApp.code != 0) {
+          throw Error("Error while building the app folder.");
+        }
+
+        setStatus("Running ...");
+      } catch (e) {
+        if (e instanceof Error) {
+          if (e.message) {
+            setStatus(e.message);
+          }
+        }
+        await writeText(
+          "error:" +
+            logs.join("\n") +
+            "" +
+            JSON.stringify(values) +
+            JSON.stringify(channel)
+        );
+        await deleteApp(name);
+        formikHelpers.setSubmitting(false);
+      }
     }
   };
 
+  const steps = allSteps.filter((step) => {
+    return (
+      channel.forms.includes(step.name as AvailableForms) ||
+      step.name === "done" ||
+      step.name === "greeting"
+    );
+  });
+
   return (
     <FormikWizard
-      initialValues={basicSetup}
+      initialValues={channel.defaults}
       onSubmit={handleSubmit}
       validateOnNext
       validateOnMount
       validateOnChange
       activeStepIndex={0}
-      steps={[
-        {
-          component: Greeting,
-          validationSchema: Yup.object().shape({
-            name: Yup.string()
-              .required("Name is required")
-              .min(3, "Name must be at least 3 characters")
-              .max(20, "Name must be at most 20 characters")
-              .test(
-                "unique",
-                "Another app with this already exists",
-                (value) => {
-                  return !apps.find((app) => app.name === value);
-                }
-              )
-              .lowercase("Lowercase only")
-              .matches(/^[a-z]+$/, "Lowercase only"),
-          }),
-        },
-        {
-          component: CheckDocker,
-        },
-        {
-          component: ChannelForm,
-        },
-        {
-          component: ServiceSelection,
-          validationSchema: Yup.object().shape({
-            services: Yup.array().required("Desired Modules Required"),
-          }),
-        },
-        {
-          component: AppSelection,
-          validationSchema: Yup.object().shape({
-            apps: Yup.array().required("Desired Modules Required"),
-          }),
-        },
-        {
-          component: AttentionSuperuser,
-          validationSchema: Yup.object().shape({
-            attention: Yup.bool()
-              .isTrue()
-              .required("You need to understand this"),
-          }),
-        },
-        {
-          component: AdminUserForm,
-          validationSchema: Yup.object().shape({
-            admin_email: Yup.string()
-              .email()
-              .required("User Email is required"),
-            admin_username: Yup.string().required("Username is required"),
-            admin_password: Yup.string().required("Password is required"),
-          }),
-        },
-        {
-          component: GroupsForm,
-          validationSchema: Yup.object().shape({
-            groups: Yup.array(
-              Yup.object().shape({
-                name: Yup.string()
-                  .lowercase()
-                  .matches(/^[a-z]+$/, "Only lowercase letters allowed")
-                  .required("Username is required"),
-                description: Yup.string().required(
-                  "A short description iss required"
-                ),
-              })
-            )
-              .required("At least one group is required")
-              .test(
-                "length",
-                "At least one group is required",
-                (groups: Group[]) => {
-                  return (groups?.length || 0) > 0;
-                }
-              )
-              .test(
-                "unique",
-                "Group names must be unique",
-                (groups: Group[]) => {
-                  let names = groups.map((g) => g.name);
-                  return names.length === new Set(names).size;
-                }
-              ),
-          }),
-        },
-        {
-          component: UsersForm,
-          validationSchema: Yup.object().shape({
-            users: Yup.array(
-              Yup.object().shape({
-                email: Yup.string()
-                  .email("Must be a valid email")
-                  .required("User Email is required"),
-                username: Yup.string().required("Username is required"),
-                password: Yup.string().required("Password is required"),
-                groups: Yup.array().required("Groups are required"),
-              })
-            )
-              .required("At least one user is required")
-              .test(
-                "length",
-                "At least one user is required",
-                (users: User[]) => {
-                  return (users?.length || 0) > 0;
-                }
-              )
-              .test("unique", "Usernames must be unique", (users: User[]) => {
-                let names = users.map((g) => g.username);
-                return names.length === new Set(names).size;
-              }),
-          }),
-        },
-
-        {
-          component: Done,
-        },
-      ]}
+      steps={steps}
     >
       {({
         currentStepIndex,
@@ -224,38 +235,92 @@ export const ChannelSetup: React.FC<{}> = (props) => {
         isPrevDisabled,
       }: RenderProps) => {
         return (
-          <div className="w-full h-full p-6 flex flex-col">
-            <ScrollArea className="flex-grow flex">
+          <Page
+            buttons={
+              <>
+                <Button disabled={isNextDisabled} onClick={handleNext}>
+                  {isSubmitting ? "Building ..." : "Next"}
+                </Button>
+                {currentStepIndex == 0 ? (
+                  <Button>
+                    <Link to="/" className="w-full">
+                      Go back
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button disabled={isPrevDisabled} onClick={handlePrev}>
+                    Prev
+                  </Button>
+                )}
+              </>
+            }
+          >
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogContent className="bg-card">
+                <DialogTitle>{status}</DialogTitle>
+                {logs.length > 0 && (
+                  <ScrollArea className="w-full h-max-xl bg-gray-900 p-3 rounded rounded-md">
+                    {logs.map((p, i) => (
+                      <div className="w-full grid grid-cols-12">
+                        <div className="col-span-1">{i}</div>
+                        <div className="col-span-11"> {p}</div>
+                      </div>
+                    ))}
+                  </ScrollArea>
+                )}
+              </DialogContent>
+            </Dialog>
+            <ChannelProvider channel={channel}>
               {renderComponent()}
-            </ScrollArea>
-            <div className="bg-red flex-initial text-center gap-2 grid grid-cols-2">
-              {currentStepIndex == 0 ? (
-                <Button>
-                <Link
-                  to="/"
-                  className="w-full"
-                >
-                  Go back
-                </Link>
-                </Button>
-              ) : (
-                <Button
-                  disabled={isPrevDisabled}
-                  onClick={handlePrev}
-                >
-                  Prev
-                </Button>
-              )}
-              <Button
-                disabled={isNextDisabled}
-                onClick={handleNext}
-              >
-                {isSubmitting ? "Building ..." : "Next"}
-              </Button>
-            </div>
-          </div>
+            </ChannelProvider>
+          </Page>
         );
       }}
     </FormikWizard>
   );
+};
+
+export const InvalidRoute = (props: { children: React.ReactNode }) => {
+  return (
+    <Page
+      buttons={
+        <>
+          <Button asChild>
+            <Link to={"/"}>Home</Link>
+          </Button>
+        </>
+      }
+    >
+      {props.children}
+    </Page>
+  );
+};
+
+export const ChannelSetupPage = () => {
+  const { name, channel } = useParams<{
+    name: string;
+    channel: string;
+  }>();
+
+  const { channels } = useRepo();
+
+  if (!channel) {
+    return <InvalidRoute>Needs to provide channel</InvalidRoute>;
+  }
+
+  if (!name) {
+    return <InvalidRoute>Invalid name</InvalidRoute>;
+  }
+
+  const repoChannel = channels.find((c) => c.name === channel);
+
+  if (!repoChannel) {
+    return <InvalidRoute>Invalid channel in the repo {channel}</InvalidRoute>;
+  }
+
+  try {
+    return <ChannelSetup channel={repoChannel} name={name} />;
+  } catch {
+    return <InvalidRoute>Invalid channel</InvalidRoute>;
+  }
 };

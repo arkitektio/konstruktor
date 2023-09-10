@@ -74,7 +74,7 @@ export const SettingsMenu = () => {
               Open Settings <MenubarShortcut>⌘T</MenubarShortcut>
             </MenubarItem>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="bg-card">
             <DialogTitle>Settings</DialogTitle>
             <DialogDescription>
               These are global settings for this installer. They won't apply to

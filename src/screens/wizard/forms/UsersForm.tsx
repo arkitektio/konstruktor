@@ -2,17 +2,14 @@ import { ErrorMessage, Field, FieldArray, useFormikContext } from "formik";
 import React from "react";
 import { Hover } from "../../../layout/Hover";
 import { MultiSelectReduceField } from "../fields/MultiSelectField";
-import { SetupValues } from "../Setup";
 import type { StepProps } from "../types";
 import { Card } from "../../../components/ui/card";
-
-export type User = {
-  username: string;
-  name?: string;
-  password: string;
-  email?: string;
-  groups: string[];
-};
+import { SetupValues } from "../../../repo/repo-context";
+import { Select } from "../../../components/ui/select";
+import { OptionField } from "../fields/OptionField";
+import { UIField } from "../../../components/FormikInput";
+import { Button } from "../../../components/ui/button";
+import { MultiOptionField } from "../fields/MultiOptionField";
 
 export const availablePermissions = [
   "admin",
@@ -47,18 +44,17 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
               {values?.users?.map((friend, index) => (
                 <Card
                   key={index}
-                  className="group relative hovercard flex-initial border border-1 border-slate-200 p-3"
+                  className="group relative hovercard flex-initial  p-3"
                 >
                   <div className="font-light text-xl my-1">Groups</div>
                   <div className="justify-center">
-                    {values.groups && (
-                      <MultiSelectReduceField
-                        name={`users.${index}.groups`}
-                        options={values.groups}
-                        unique={"name"}
-                        label={"name"}
-                      />
-                    )}
+                    <MultiOptionField
+                      name={`users.${index}.groups`}
+                      options={values.groups.map((g) => ({
+                        value: g.name,
+                        label: g.name,
+                      }))}
+                    />
                   </div>
 
                   <ErrorMessage name={`users.${index}.groups`}>
@@ -71,27 +67,8 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
                   <div className="font-light text-xs text-md my-1">
                     Groups this user belongs to
                   </div>
-                  <div className="font-light text-xl my-1">Email</div>
-                  <Field
-                    name={`users.${index}.email`}
-                    type="email"
-                    className="text-black p-1 rounded"
-                  />
-                  <ErrorMessage name={`users.${index}.email`}>
-                    {(msg) => (
-                      <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
-                        {msg}
-                      </div>
-                    )}
-                  </ErrorMessage>
-                  <div className="font-light text-xs text-md my-1">
-                    The user email to reach you
-                  </div>
                   <div className="font-light text-xl my-1">Username</div>
-                  <Field
-                    name={`users.${index}.username`}
-                    className="text-black p-1 rounded"
-                  />
+                  <UIField name={`users.${index}.username`} />
                   <ErrorMessage name={`users.${index}.username`}>
                     {(msg) => (
                       <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
@@ -103,11 +80,7 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
                     Your unique username
                   </div>
                   <div className="font-light text-xl my-1">Password</div>
-                  <Field
-                    name={`users.${index}.password`}
-                    type="password"
-                    className="text-black p1 rounded"
-                  />
+                  <UIField name={`users.${index}.password`} type="password" />
                   <ErrorMessage name={`users.${index}.password`}>
                     {(msg) => (
                       <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
@@ -128,7 +101,7 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
                 </Card>
               ))}
             </Hover>
-            <button
+            <Button
               type="button"
               onClick={() =>
                 arrayHelpers.push({
@@ -139,11 +112,10 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
                   groups: [],
                 })
               }
-              className="bg-slate-800 text-white rounded-md p-2 hover:bg-slate-700"
             >
               {/* show this when user has removed all friends from the list */}
               Add a user
-            </button>
+            </Button>
           </>
         )}
       />

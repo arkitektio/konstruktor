@@ -17,6 +17,9 @@
         "all": true,
         "scope": ["$APP/**/*", "$APPDATA/**/*", "$APPLOCALDATA/**/*","$HOME/**/*", "$DATA/**/*", "$XDG_CONFIG_HOME/**/*", "$TMP/**/*", "$TEMP/**/*", "$TMPDIR/**/*"]
       },
+      "clipboard": {
+        "all": true
+      },
       "shell": {
         "all": true,
         "open": ".*",

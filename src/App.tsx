@@ -16,6 +16,9 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { AlerterProvider } from "./alerter/alert-provider";
 import { AlerterContext } from "./alerter/alerter-context";
 import { AlerterDialog } from "./alerter/AlerterDialog";
+import { ChannelSetup, ChannelSetupPage } from "./screens/wizard/ChannelSetup";
+import { RepoProvider } from "./repo/repo-provider";
+import { RepoSearcher } from "./repo/RepoSearcher";
 
 function App() {
   const location = useLocation();
@@ -23,31 +26,39 @@ function App() {
   return (
     <CommunicationProvider>
       <BindingsProvider>
-        <AlerterProvider>
-          <AlerterDialog />
-          <BeaconProvider>
-            <TooltipProvider>
-              <SettingsProvider>
-                <StorageProvider>
-                  <Routes location={location} key={location.pathname}>
-                    <Route path="/" element={<Home />} />
-                    <Route path="/settings" element={<Settings />} />
-                    <Route path="/setup" element={<Setup />} />
-                    <Route
-                      path="/dashboard/:id"
-                      element={<DashboardScreen />}
-                    />
-                    <Route path="/logs/:id" element={<LogScreen />} />
-                    <Route
-                      path="/logs/:id/service/:service"
-                      element={<LogScreen />}
-                    />
-                  </Routes>
-                </StorageProvider>
-              </SettingsProvider>
-            </TooltipProvider>
-          </BeaconProvider>
-        </AlerterProvider>
+        <RepoProvider>
+          <RepoSearcher url="https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/repo/channels.json" />
+          <AlerterProvider>
+            <AlerterDialog />
+            <BeaconProvider>
+              <TooltipProvider>
+                <SettingsProvider>
+                  <StorageProvider>
+                    <Routes location={location} key={location.pathname}>
+                      <Route path="/" element={<Home />} />
+                      <Route path="/settings" element={<Settings />} />
+                      <Route path="/setup" element={<Setup />} />
+                      <Route
+                        path="/channelsetup/:name/:channel"
+                        element={<ChannelSetupPage />}
+                      />
+                      <Route
+                        path="/dashboard/:id"
+                        element={<DashboardScreen />}
+                      />
+                      <Route path="/logs/:id" element={<LogScreen />} />
+                      <Route
+                        path="/logs/:id/service/:service"
+                        element={<LogScreen />}
+                      />
+                      <Route path="*" element={<Home />} />
+                    </Routes>
+                  </StorageProvider>
+                </SettingsProvider>
+              </TooltipProvider>
+            </BeaconProvider>
+          </AlerterProvider>
+        </RepoProvider>
       </BindingsProvider>
     </CommunicationProvider>
   );

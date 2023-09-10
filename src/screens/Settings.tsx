@@ -1,28 +1,5 @@
-import { invoke } from "@tauri-apps/api";
-import React, { useEffect, useState } from "react";
-import { TbReload } from "react-icons/tb";
-import { GrBeacon } from "react-icons/gr";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { useCommunication } from "../communication/communication-context";
-import { ResponsiveGrid } from "../layout/ResponsiveGrid";
+import { Link } from "react-router-dom";
 import { useSettings } from "../settings/settings-context";
-import { BeaconInterface } from "../types";
-import { SetupValues } from "./wizard/Setup";
-import { useBeacon } from "../beacon/context";
-
-import { Command } from "@tauri-apps/api/shell";
-import { Hover } from "../layout/Hover";
-import { useCommand } from "../hooks/useCommand";
-import { CommandButton } from "../CommandButton";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
 
 export const Settings = () => {
   const { settings, setSettings } = useSettings();

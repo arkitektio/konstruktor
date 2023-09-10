@@ -1,5 +1,4 @@
 import React, { useContext } from "react";
-import { SetupValues } from "../screens/wizard/Setup";
 
 export type Settings = {
   theme: string;

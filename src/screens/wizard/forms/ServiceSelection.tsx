@@ -1,6 +1,7 @@
 import React from "react";
 import { ServiceSelectionField } from "../fields/ServiceSelectionField";
 import type { StepProps } from "../types";
+import { Service } from "../../../repo/repo-context";
 
 export const ServiceSelection: React.FC<StepProps> = (props) => {
   return (

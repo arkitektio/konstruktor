@@ -63,6 +63,8 @@ export const useCommand = (params: CommandParams) => {
     console.log("running");
     setFinished(null);
     setRunning(true);
+    setLogs([]);
+    setError(null);
     return command.execute().then((x) => {
       setFinished(x);
       setRunning(false);
@@ -101,10 +103,11 @@ export const useLazyCommand = (params: LazyCommandParams) => {
   const [finished, setFinished] = useState<ChildProcess | null>(null);
 
   const listener = (data: string) => {
-    setLogs((prevLogs) => [...prevLogs, data].slice(-(params.logLength || 50)));
+    setLogs((prevLogs) => [data, ...prevLogs].slice(0, params.logLength));
   };
 
   const errorListener = (data: string) => {
+    setLogs((prevLogs) => [data, ...prevLogs].slice(0, params.logLength));
     setError(data);
   };
 
@@ -135,6 +138,7 @@ export const useLazyCommand = (params: LazyCommandParams) => {
     let command = new Command(params.program, params.args, params.options);
     setFinished(null);
     setCommand(command);
+    setLogs([]);
     let x = await command.execute();
     setCommand(command);
     setFinished(x);

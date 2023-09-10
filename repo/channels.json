@@ -3,27 +3,35 @@
     "channels": 
         [
             {
-              "name": "paper",
-              "title": "Paper",
-              "experimental": false,
-              "logo": "https://python.doctor/images/django-python.png",
-              "long": "The paper deployment to reproduce the paper. Comes with a preconfigured set of apps and services to reproduce the paper",
-              "description": "The original paper deployment",
-              "features": [
-                {
-                  "name": "Easy",
-                  "description": "Easy to use",
-                  "long": "This deployment is easy to use"
+                "name": "paper",
+                "title": "Paper",
+                "experimental": false,
+                "logo": "https://python.doctor/images/django-python.png",
+                "long": "The paper deployment to reproduce the paper. Comes with a preconfigured set of apps and services to reproduce the paper",
+                "description": "The original paper deployment",
+                "features": [
+                    {
+                    "name": "Easy",
+                    "description": "Easy to use",
+                    "long": "This deployment is easy to use"
+                    }
+                ],
+                "builder": "jhnnsrs/paperbuilder",
+                "forms": ["admin_user", "users", "groups"],
+                "defaults": {
+                    "name": "mydeployment",
+                    "adminUsername": "admin",
+                    "adminPassword": "admin",
+                    "groups": {
+                        "name": "mygroup",
+                        "description": "mygroup"
+                    },
+                    "users": {
+                        "name": "demo",
+                        "password": "demo",
+                        "groups": ["mygroup"]
+                    }
                 }
-              ],
-              "builder": "jhnnsrs/arkitekt_paper_builder",
-              "forms": ["admin_user", "users", "groups"],
-              "defaults": {
-                "name": "mydeployment",
-                "admin_username": "",
-                "admin_password": "",
-                "admin_email": ""
-              }
             },
             {
               "name": "next",
@@ -43,10 +51,48 @@
               "forms": ["admin_user", "users", "groups"],
               "defaults": {
                 "name": "mydeployment",
-                "admin_username": "",
-                "admin_password": "",
-                "admin_email": ""
-              }
+                "adminUsername": "admin",
+                "adminPassword": "admin",
+                "groups": {
+                    "name": "mygroup",
+                    "description": "mygroup"
+                },
+                "users": {
+                    "name": "demo",
+                    "password": "demo",
+                    "groups": ["mygroup"]
+                }
+              },
+              "availableApps": [{
+                "name": "orkestrator",
+                "identifier": "github.io.jhnnsrs.orkestrator",
+                "version": "latest",
+                "description": "The interface",
+                "long": "Orkestrator is the default interface for the platform, enabling you to visualize and control your data and apps",
+                "image":
+                "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
+                "requires": ["lok", "rekuest", "mikro"],
+                "redirect_uris": [
+                "http://localhost:8090",
+                "http://localhost:6789/callback",
+                "http://localhost:6789",
+                "http://localhost:7890",
+                "http://localhost:7890/",
+                "http://localhost:7890/callback"
+                ],
+                "client_kind": "WEBSITE"
+                }],
+                "availableServices": [{
+                        "name": "redis",
+                        "interface": "redis",
+                        "description": "The pubsub",
+                        "long":"This allows services to publish and subscribe to events",
+                        "image": "redis:latest",
+                        "requires": [],
+                        "is_backend": true,
+                        "extras": {}
+                        }
+                ]
             }
         ] 
 }

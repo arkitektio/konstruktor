@@ -1,6 +1,4 @@
 import { useField } from "formik";
-import { open } from "@tauri-apps/api/dialog";
-import { type } from "os";
 
 export type Scale = {
   value: string;
