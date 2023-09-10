@@ -20,10 +20,7 @@ export const Home: React.FC<{}> = (props) => {
       buttons={
         <>
           <Button asChild>
-            <Link to="/setup">Setup new App</Link>
-          </Button>
-          <Button asChild>
-            <Link to="/settings">Settings</Link>
+            <Link to="/setup">Create New Deployment</Link>
           </Button>
         </>
       }
@@ -37,7 +34,7 @@ export const Home: React.FC<{}> = (props) => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-row gap-2">
+            <div className="flex flex-row flex-wrap gap-2">
               {apps.map((app, index) => (
                 <Card className="max-w-sm">
                   <CardHeader>
@@ -57,7 +54,7 @@ export const Home: React.FC<{}> = (props) => {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <Button key={index}>
+                    <Button key={index} asChild>
                       <Link to={`/dashboard/${app.name}`}>Open App</Link>
                     </Button>
                   </CardContent>
@@ -67,8 +64,21 @@ export const Home: React.FC<{}> = (props) => {
           </CardContent>
         </div>
       ) : (
-        <div className="text-center">
-          Seems like this is your first time setting things up!
+        <div className="items-start flex flex-col">
+          <div className="mb-2">
+            <Logo
+              width={"120"}
+              height={"120"}
+              cubeColor={"hsl(var(--accent)"}
+              aColor={"hsl(var(--foreground)"}
+              strokeColor={"hsl(var(--foreground)"}
+            />
+          </div>
+          <div className="text-2xl font-bold">Welcome to Konstruktor</div>
+          <div className="text-xl font-light mt-2 max-w-xl">
+            You don't have any deployments yet. We are excited to see what you
+            will build and use Arkitekt for.
+          </div>
         </div>
       )}
     </Page>

@@ -74,8 +74,8 @@ export const allSteps: ConditionalStep[] = [
     name: "admin_user",
     component: AdminUserForm,
     validationSchema: Yup.object().shape({
-      admin_username: Yup.string().required("Username is required"),
-      admin_password: Yup.string().required("Password is required"),
+      adminUsername: Yup.string().required("Username is required"),
+      adminPassword: Yup.string().required("Password is required"),
     }),
   },
   {
@@ -158,7 +158,7 @@ export const ChannelSetup = ({
       formikHelpers.setSubmitting(true);
       setOpen(true);
 
-      let builder = "jhnnsrs/guss:prod";
+      let builder = "jhnnsrs/paperbuilder:latest";
 
       try {
         setStatus("Fetching builder ...");
@@ -175,7 +175,7 @@ export const ChannelSetup = ({
 
         let path = await installApp(name, channel, values);
 
-        let pullingApp = await run({
+        let buildingApp = await run({
           program: "docker",
           args: ["run", "--rm", "-v", `${path}:/app/init`, builder],
           options: {
@@ -183,9 +183,12 @@ export const ChannelSetup = ({
           },
         });
 
-        if (pullingApp.code != 0) {
+        if (buildingApp.code != 0) {
           throw Error("Error while building the app folder.");
         }
+
+        setStatus("Finished app :)");
+        navigate("/");
 
         setStatus("Running ...");
       } catch (e) {
@@ -259,9 +262,9 @@ export const ChannelSetup = ({
               <DialogContent className="bg-card">
                 <DialogTitle>{status}</DialogTitle>
                 {logs.length > 0 && (
-                  <ScrollArea className="w-full h-max-xl bg-gray-900 p-3 rounded rounded-md">
+                  <ScrollArea className="w-full h-[50vh] bg-gray-900 p-3 rounded rounded-md overflow-scroll">
                     {logs.map((p, i) => (
-                      <div className="w-full grid grid-cols-12">
+                      <div className="w-full grid grid-cols-12 ">
                         <div className="col-span-1">{i}</div>
                         <div className="col-span-11"> {p}</div>
                       </div>

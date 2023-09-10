@@ -64,7 +64,7 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
           dir: BaseDirectory.App,
         });
         let setup = parse(setup_string) as SetupValues;
-        apps.push({ name: setup.name, path: entry.path });
+        apps.push({ name: entry.name, path: entry.path });
       }
     }
     setAvailableApps(apps);

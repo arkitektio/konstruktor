@@ -368,10 +368,42 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                           },
                         }}
                         callback={() =>
-                          deleteApp(app).then(() => navigate("/"))
+                          deleteApp(app.name).then(() => navigate("/"))
                         }
                         title="Tear down and Delete"
                         confirmTitle="Are you really sure you want to delete this app?"
+                        confirmDescription="This is an irreversible action"
+                      />
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <MenubarItem onSelect={(e) => e.preventDefault()}>
+                      Reset
+                      <MenubarShortcut>⌘D</MenubarShortcut>
+                    </MenubarItem>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogTitle>Reset</DialogTitle>
+                    <DialogDescription>
+                      Resetting will delete all of your data, and then rebuild
+                      the app, in a way that is similar to a fresh install.
+                    </DialogDescription>
+                    <DialogFooter>
+                      <DangerousCommandButton
+                        params={{
+                          program: "docker",
+                          args: ["compose", "down"],
+                          options: {
+                            cwd: app.path,
+                          },
+                        }}
+                        callback={() =>
+                          deleteApp(app.name).then(() => navigate("/"))
+                        }
+                        title="Reset"
+                        confirmTitle="Are you really sure you want to reset this app?"
                         confirmDescription="This is an irreversible action"
                       />
                     </DialogFooter>
@@ -385,24 +417,24 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
       }
     >
       {!initialized ? (
-        <div className="flex-grow flex flex-col h-full p-2 overflow-y-scroll items-center">
-          <div className="font-bold text-3xl">Hello to</div>
-          <div className="font-light text-5xl mt-2">{app.name}</div>
-          <div className="text-9xl mt-2">☕</div>
-          <div className="mt-5 max-w-xl align-center text-center">
-            In order to use this app you need to initialize it with a builder. A
-            buildr transforms your app into a startable containerized app and
-            downloads all the necessary dependencies. For the modules that you
-            want. In the future you will be able to choose between a few
-            different builders. For now we only have one.
+        <div className="flex-grow flex flex-col h-full p-2 overflow-y-scroll">
+          <div className="font-bold text-3xl">This is bad...</div>
+          <div className="font-light text-5xl mt-2">{app.name} is faulty</div>
+          <div className="mt-5 max-w-xl">
+            We didn't find a docker-compose.yaml file for this app. This Could
+            be because you accidently deleted it, or because you are trying to
+            install an app that is not compatible with Konstruktor. It could
+            also be that the app installation failed.
           </div>
-          <div className="mt-5 flex flex-col text-3xl max-w-xl text-center items-center gap-2 mt-3 font-bold">
-            This will take a while (be patient and/or go have a coffee).
+          <div className="mt-5 flex flex-col text-3xl max-w-xl gap-2 mt-3 font-bold">
+            Please delete this app and try again.
           </div>
-
-          <div className="mt-5 flex flex-col items-center gap-2">
-            <Konstrukt app={app} callback={() => setRetrigger((y) => !y)} />
-          </div>
+          <Button
+            onClick={() => deleteApp(app.name).then(() => navigate("/"))}
+            className="w-40 mt-2"
+          >
+            Delete App
+          </Button>
         </div>
       ) : (
         <>

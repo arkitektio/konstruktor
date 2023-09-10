@@ -56,11 +56,12 @@ export const DangerousCommandButton = (props: {
 }) => {
   const { run, logs, error, finished, running } = useCommand(props.params);
   const { alert } = useAlerter();
+  const [open, setOpen] = useState(false);
   const to = props.to || 10;
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button>
+        <Button onClick={() => setOpen(true)}>
           {running && props.runningTitle ? props.runningTitle : props.title}
         </Button>
       </PopoverTrigger>
@@ -78,8 +79,10 @@ export const DangerousCommandButton = (props: {
                 run().then((x) => {
                   console.log(x);
                   if (x.code == 0) {
+                    setOpen(false);
                     props.callback && props.callback(x);
                   } else {
+                    setOpen(false);
                     alert({
                       error: `Error while running ${props.title}`,
                       message: x.stderr,
