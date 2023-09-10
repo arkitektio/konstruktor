@@ -1,0 +1,52 @@
+{
+    "repo": "default",
+    "channels": 
+        [
+            {
+              "name": "paper",
+              "title": "Paper",
+              "experimental": false,
+              "logo": "https://python.doctor/images/django-python.png",
+              "long": "The paper deployment to reproduce the paper. Comes with a preconfigured set of apps and services to reproduce the paper",
+              "description": "The original paper deployment",
+              "features": [
+                {
+                  "name": "Easy",
+                  "description": "Easy to use",
+                  "long": "This deployment is easy to use"
+                }
+              ],
+              "builder": "jhnnsrs/arkitekt_paper_builder",
+              "forms": ["admin_user", "users", "groups"],
+              "defaults": {
+                "name": "mydeployment",
+                "admin_username": "",
+                "admin_password": "",
+                "admin_email": ""
+              }
+            },
+            {
+              "name": "next",
+              "title": "next",
+              "experimental": true,
+              "logo": "https://python.doctor/images/django-python.png",
+              "long": "The next deployment contains breaking changes and is not yet stable. It does however give an impression of the future of Arkitekt",
+              "description": "The next deployment",
+              "features": [
+                {
+                  "name": "Easy",
+                  "description": "Easy to use",
+                  "long": "This deployment is easy to use"
+                }
+              ],
+              "builder": "jhnnsrs/arkitekt_paper_builder",
+              "forms": ["admin_user", "users", "groups"],
+              "defaults": {
+                "name": "mydeployment",
+                "admin_username": "",
+                "admin_password": "",
+                "admin_email": ""
+              }
+            }
+        ] 
+}

@@ -14,18 +14,18 @@ import { Command } from "@tauri-apps/api/shell";
 import { Hover } from "../layout/Hover";
 import { useCommand } from "../hooks/useCommand";
 import { CommandButton } from "../CommandButton";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 
 export const Settings = () => {
   const { settings, setSettings } = useSettings();
-  const {
-    run: up,
-    logs,
-    error,
-    finished,
-  } = useCommand({
-    program: "docker",
-    args: ["pull", settings.baker],
-  });
 
   return (
     <div className="h-full w-full relative">
@@ -38,13 +38,7 @@ export const Settings = () => {
       <div className="flex flex-col h-full p-2  overflow-y-scroll">
         <div className="border-1 border-gray-300 rounded p-2 bg-white text-black">
           <div className="flex flex-row gap-2 justify-between">
-            <div className="flex flex-col gap-2">
-              <CommandButton
-                title="Update Builder"
-                params={{ program: "docker", args: ["pull", settings.baker] }}
-                runningTitle="Pulling..."
-              />
-            </div>
+            <div className="flex flex-col gap-2"></div>
           </div>
         </div>
       </div>

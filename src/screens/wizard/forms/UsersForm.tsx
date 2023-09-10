@@ -4,6 +4,7 @@ import { Hover } from "../../../layout/Hover";
 import { MultiSelectReduceField } from "../fields/MultiSelectField";
 import { SetupValues } from "../Setup";
 import type { StepProps } from "../types";
+import { Card } from "../../../components/ui/card";
 
 export type User = {
   username: string;
@@ -44,7 +45,7 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
           <>
             <Hover className="my-4 flex justify-center flex-row gap-2 flex-wrap">
               {values?.users?.map((friend, index) => (
-                <div
+                <Card
                   key={index}
                   className="group relative hovercard flex-initial border border-1 border-slate-200 p-3"
                 >
@@ -124,7 +125,7 @@ export const UsersForm: React.FC<StepProps> = ({ errors }) => {
                   >
                     X
                   </button>
-                </div>
+                </Card>
               ))}
             </Hover>
             <button

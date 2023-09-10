@@ -19,7 +19,7 @@ export const AppStorage: React.FC<StepProps> = (props) => {
         folder, as it will be used to store the data of the platform.
         {values.services.find((s) => s.name == "mikro") && (
           <p className="p-5 font-light">
-            Your setup includes mikro which is hosting all of your data files.
+            ̛ Your setup includes mikro which is hosting all of your data files.
             Make sure you have enough space for the data files in this folder.
           </p>
         )}

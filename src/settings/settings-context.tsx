@@ -2,7 +2,7 @@ import React, { useContext } from "react";
 import { SetupValues } from "../screens/wizard/Setup";
 
 export type Settings = {
-  baker: string;
+  theme: string;
 };
 
 export type SettingContext = {
@@ -11,7 +11,7 @@ export type SettingContext = {
 };
 
 export const defaultSettings = {
-  baker: "jhnnsrs/guss:prod",
+  theme: "dark",
 };
 export const SettingsContext = React.createContext<SettingContext>({
   settings: defaultSettings,

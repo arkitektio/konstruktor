@@ -12,21 +12,24 @@ import { SettingsProvider } from "./settings/settings-provider";
 import { StorageProvider } from "./storage/storage-provider";
 import { AppMenu } from "./components/AppMenu";
 import { AnimatePresence } from "framer-motion";
+import { TooltipProvider } from "./components/ui/tooltip";
+import { AlerterProvider } from "./alerter/alert-provider";
+import { AlerterContext } from "./alerter/alerter-context";
+import { AlerterDialog } from "./alerter/AlerterDialog";
 
 function App() {
-
   const location = useLocation();
 
   return (
     <CommunicationProvider>
       <BindingsProvider>
-        <BeaconProvider>
-          <SettingsProvider>
-            <StorageProvider>
-              <div className="h-screen w-screen bg-back-900 text-white w-screen flex h-full overflow-y-hidden flex flex-col">
-                
-                <AppMenu/>
-                  <Routes  location={location} key={location.pathname}>
+        <AlerterProvider>
+          <AlerterDialog />
+          <BeaconProvider>
+            <TooltipProvider>
+              <SettingsProvider>
+                <StorageProvider>
+                  <Routes location={location} key={location.pathname}>
                     <Route path="/" element={<Home />} />
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/setup" element={<Setup />} />
@@ -40,10 +43,11 @@ function App() {
                       element={<LogScreen />}
                     />
                   </Routes>
-              </div>
-            </StorageProvider>
-          </SettingsProvider>
-        </BeaconProvider>
+                </StorageProvider>
+              </SettingsProvider>
+            </TooltipProvider>
+          </BeaconProvider>
+        </AlerterProvider>
       </BindingsProvider>
     </CommunicationProvider>
   );

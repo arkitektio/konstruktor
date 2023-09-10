@@ -21,11 +21,6 @@ export type DockerApiStatus = {
   memory: number;
 };
 
-export type DockerInterfaceStatus = {
-  ok: string;
-  error: string;
-};
-
 export type InstalledApp = {
   name: string;
   path: string;

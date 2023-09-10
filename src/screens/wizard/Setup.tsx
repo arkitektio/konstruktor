@@ -33,6 +33,7 @@ import { Command } from "@tauri-apps/api/shell";
 import { Button } from "../../components/ui/button";
 import { ScrollArea } from "../../components/ui/scroll-area";
 import { ChannelForm } from "./forms/ChannelForm";
+import { Page } from "../../layout/Page";
 
 export type SetupValues = {
   name: string;
@@ -224,36 +225,28 @@ export const Setup: React.FC<{}> = (props) => {
         isPrevDisabled,
       }: RenderProps) => {
         return (
-          <div className="w-full h-full p-6 flex flex-col">
-            <ScrollArea className="flex-grow flex @container">
-              {renderComponent()}
-            </ScrollArea>
-            <div className="bg-red flex-none text-center gap-2 grid grid-cols-2">
-              {currentStepIndex == 0 ? (
-                <Button>
-                <Link
-                  to="/"
-                  className="w-full"
-                >
-                  Go back
-                </Link>
+          <Page
+            buttons={
+              <>
+                <Button disabled={isNextDisabled} onClick={handleNext}>
+                  {isSubmitting ? "Building ..." : "Next"}
                 </Button>
-              ) : (
-                <Button
-                  disabled={isPrevDisabled}
-                  onClick={handlePrev}
-                >
-                  Prev
-                </Button>
-              )}
-              <Button
-                disabled={isNextDisabled}
-                onClick={handleNext}
-              >
-                {isSubmitting ? "Building ..." : "Next"}
-              </Button>
-            </div>
-          </div>
+                {currentStepIndex == 0 ? (
+                  <Button>
+                    <Link to="/" className="w-full">
+                      Go back
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button disabled={isPrevDisabled} onClick={handlePrev}>
+                    Prev
+                  </Button>
+                )}
+              </>
+            }
+          >
+            {renderComponent()}
+          </Page>
         );
       }}
     </FormikWizard>

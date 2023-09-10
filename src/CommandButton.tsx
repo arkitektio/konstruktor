@@ -3,6 +3,9 @@ import { CommandParams, useCommand } from "./hooks/useCommand";
 import { callbackify } from "util";
 import { useState } from "react";
 import { Button } from "./components/ui/button";
+import { useAlerter } from "./alerter/alerter-context";
+import { Popover, PopoverContent } from "./components/ui/popover";
+import { PopoverClose, PopoverTrigger } from "@radix-ui/react-popover";
 
 export const CommandButton = (props: {
   params: CommandParams;
@@ -11,6 +14,7 @@ export const CommandButton = (props: {
   runningTitle?: string;
 }) => {
   const { run, logs, error, finished, running } = useCommand(props.params);
+  const { alert } = useAlerter();
 
   return (
     <>
@@ -22,7 +26,11 @@ export const CommandButton = (props: {
             if (x.code == 0) {
               props.callback && props.callback(x);
             } else {
-              alert(x.stderr);
+              alert({
+                error: `Error while running ${props.title}`,
+                message: x.stderr,
+                subtitle: x.stdout,
+              });
             }
           });
         }}
@@ -32,7 +40,6 @@ export const CommandButton = (props: {
         }`}
       >
         {running && props.runningTitle ? props.runningTitle : props.title}
-        {finished?.code == 1 && <div className="text-red-400">Error</div>}
       </Button>
     </>
   );
@@ -42,43 +49,55 @@ export const DangerousCommandButton = (props: {
   params: CommandParams;
   title: string;
   callback?: (x: ChildProcess) => void;
+  confirmTitle?: string;
+  confirmDescription?: string;
   runningTitle?: string;
   to?: number;
 }) => {
   const { run, logs, error, finished, running } = useCommand(props.params);
-  const [countDown, setCountDown] = useState<number>(1);
+  const { alert } = useAlerter();
   const to = props.to || 10;
   return (
-    <>
-      <Button
-        onClick={() => {
-          console.log("run");
-          if (countDown == to) {
-            setCountDown(1);
-            run().then((x) => {
-              console.log(x);
-              if (x.code == 0) {
-                props.callback && props.callback(x);
-              } else {
-                alert(x.stderr);
-              }
-            });
-          } else {
-            setCountDown(countDown + 1);
-          }
-        }}
-        disabled={running}
-        className={`border cursor-pointer shadow-md shadow bg-red-200 hover:bg-red-400 ${
-          countDown > 1 && "bg-red-400"
-        } border-1 border-gray-300 rounded p-2 bg-white text-black ${
-          running ? "animate-pulse" : ""
-        }`}
-      >
-        {running && props.runningTitle ? props.runningTitle : props.title}
-        {countDown > 1 &&
-          countDown < 11 &&
-          ` ( ${to - countDown} more clicks to confirm)`}
-      </Button>
-    </>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button>
+          {running && props.runningTitle ? props.runningTitle : props.title}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent>
+        <div className="flex flex-col gap-1">
+          <div className="text-md">{props.confirmTitle || "Are you sure?"}</div>
+          <div className="text-xs text-muted-foreground">
+            {props.confirmDescription || "This might cause unexpected results"}
+          </div>
+          <div className="flex flex-row gap-2 w-full mt-2">
+            <Button
+              className="w-full"
+              onClick={() => {
+                console.log("run");
+                run().then((x) => {
+                  console.log(x);
+                  if (x.code == 0) {
+                    props.callback && props.callback(x);
+                  } else {
+                    alert({
+                      error: `Error while running ${props.title}`,
+                      message: x.stderr,
+                      subtitle: x.stdout,
+                    });
+                  }
+                });
+              }}
+            >
+              Yes
+            </Button>
+
+            <PopoverClose asChild>
+              <Button className="w-full">No</Button>
+            </PopoverClose>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 };

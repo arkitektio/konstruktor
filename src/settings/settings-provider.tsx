@@ -36,6 +36,26 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
       });
   }, [reset]);
 
+  useEffect(() => {
+    const root = window.document.documentElement;
+
+    const theme = settings.theme;
+
+    root.classList.remove("light", "dark");
+
+    if (theme === "system") {
+      const systemTheme = window.matchMedia("(prefers-color-scheme: dark)")
+        .matches
+        ? "dark"
+        : "light";
+
+      root.classList.add(systemTheme);
+      return;
+    }
+
+    root.classList.add(theme);
+  }, [settings.theme]);
+
   return (
     <SettingsContext.Provider
       value={{
