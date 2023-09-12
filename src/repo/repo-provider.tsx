@@ -46,7 +46,7 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       catch (e) {
         if (e instanceof ValidationError) {
-          setErrorRepos(errors => [...errors, {repo: repoResult.repo || "unknown", errors: e.inner}]);
+          setErrorRepos(errors => [...errors, {repo: repoResult.repo || "unknown", errors: (e as ValidationError).inner}]);
         }
         console.error(e);
       }
