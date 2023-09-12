@@ -1,7 +1,8 @@
 import { useField } from "formik";
 import { Badge } from "../../../components/ui/badge";
-import { Card } from "../../../components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../../../components/ui/card";
 import { Channel, useRepo } from "../../../repo/repo-context";
+import { ScrollArea } from "../../../components/ui/scroll-area";
 
 export const ChannelSelectionField = ({ ...props }: any) => {
   const [field, meta, helpers] = useField<string | undefined>(props);
@@ -47,10 +48,11 @@ export const ChannelSelectionField = ({ ...props }: any) => {
           );
         })}
       </div>
-      <div>
-        {errors.map((e) => <div>{e.repo}
-        <div>{e.errors.map((e) => <div>{e.path} {e.message}</div>)}</div></div>)}
-      </div>
+      {errors.length > 0 && <div className="grid grid-cols-2 @xl:grid-cols-2 gap-2 mt-2 ">
+        {errors.map((e) => <Card className="bg-destructive"><CardHeader><CardTitle>Error</CardTitle><CardDescription>The repo {e.repo} is faulty</CardDescription></CardHeader>
+        <CardContent><ScrollArea>{e.errors.map((e) => <div>{e.path} {e.message}</div>)}</ScrollArea></CardContent>
+        <CardFooter>Tell these errors to the Repo Owner </CardFooter></Card>)}
+      </div>}
 
       {meta.touched && meta.error ? (
         <div className="error">{meta.error}</div>
