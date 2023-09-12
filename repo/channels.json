@@ -60,7 +60,7 @@
                     "description": "mygroup"
                 }],
                 "users": [{
-                    "name": "demo",
+                    "username": "demo",
                     "password": "demo",
                     "groups": ["mygroup"]
                 }]
@@ -85,17 +85,18 @@
                 ],
                 "client_kind": "WEBSITE"
                 }],
-                "availableServices": [{
-                        "name": "redis",
-                        "interface": "redis",
-                        "description": "The pubsub",
-                        "long":"This allows services to publish and subscribe to events",
-                        "image": "redis:latest",
-                        "requires": [],
-                        "is_backend": true,
-                        "extras": {}
-                        }
-                ]
+
+            "availableServices": [{
+                    "name": "redis",
+                    "interface": "redis",
+                    "description": "The pubsub",
+                    "long":"This allows services to publish and subscribe to events",
+                    "image": "redis:latest",
+                    "requires": [],
+                    "is_backend": true,
+                    "extras": {}
+                    }
+            ]
             }
         ] 
 }
