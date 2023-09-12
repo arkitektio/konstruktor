@@ -24,14 +24,14 @@ export const ServiceSelectionField = ({ ...props }: any) => {
           field.value.filter(
             (i) =>
               i !== service.name &&
-              isRequiredBy(i, service, availableServices) === false
+              isRequiredBy(i, service, availableServices || []) === false
           )
         );
       } else {
         helpers.setValue([
           ...field.value,
           service.name,
-          ...availableServices
+          ...(availableServices || [])
             .filter((s) => service.requires?.includes(s.interface))
             .map((s) => s.name),
         ]);
@@ -45,7 +45,7 @@ export const ServiceSelectionField = ({ ...props }: any) => {
   return (
     <>
       <Hover className="grid grid-cols-4 flex-wrap gap-2 p-2">
-        {availableServices.map((service, i) => (
+        {availableServices?.map((service, i) => (
           <div
             className={`hovercard cursor-pointer border border-1 flex flex-col bg-back-800 p-3 ${
               field.value && field.value.find((i) => i === service.name)

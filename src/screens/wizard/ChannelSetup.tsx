@@ -220,7 +220,7 @@ export const ChannelSetup = ({
 
   return (
     <FormikWizard
-      initialValues={channel.defaults}
+      initialValues={channel.defaults || {}}
       onSubmit={handleSubmit}
       validateOnNext
       validateOnMount

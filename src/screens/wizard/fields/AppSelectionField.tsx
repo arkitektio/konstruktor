@@ -24,7 +24,7 @@ export const AppSelectionField = ({ ...props }: any) => {
   return (
     <>
       <Hover className="grid grid-cols-3 @xl:grid-cols-4 gap-2 ">
-        {availableApps.map((app, i) => {
+        {availableApps?.map((app, i) => {
           let disabled = app.requires?.some(
             (r) => !values?.services?.find((s) => s.name === r)
           );
