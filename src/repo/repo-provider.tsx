@@ -1,13 +1,20 @@
 import { forage } from "@tauri-apps/tauri-forage";
 import React, { useCallback, useEffect, useState } from "react";
 import { InstalledApp } from "../screens/wizard/types";
-import { RepoContext, Channel } from "./repo-context";
+import { RepoContext, Channel, repoSchema, RepoError } from "./repo-context";
 import { ErrorBoundary } from "react-error-boundary";
+import { ValidationError } from "yup";
 
 export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [channels, setActiveChannels] = useState<Channel[]>([]);
+  const [errors, setErrorRepos] = useState<RepoError[]>([]);
+
+
+
+
+
 
   const ensureChannels = useCallback(
     (channels: Channel[]) => {
@@ -29,11 +36,31 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({
     [setActiveChannels]
   );
 
+
+  const validate = useCallback(
+    (repoResult: any) => {
+      try {
+        console.log(repoResult)
+        let result = repoSchema.validateSync(repoResult, { abortEarly: false });
+        ensureChannels(result.channels);
+      }
+      catch (e) {
+        if (e instanceof ValidationError) {
+          setErrorRepos(errors => [...errors, {repo: repoResult.name || "unknown", errors: e.inner}]);
+        }
+        console.error(e);
+      }
+    },
+    [setErrorRepos, ensureChannels]
+  );
+
   return (
     <RepoContext.Provider
       value={{
         channels,
+        errors,
         ensureChannels,
+        validate
       }}
     >
       {children}

@@ -5,7 +5,7 @@ import { Channel, useRepo } from "../../../repo/repo-context";
 
 export const ChannelSelectionField = ({ ...props }: any) => {
   const [field, meta, helpers] = useField<string | undefined>(props);
-  const { channels } = useRepo();
+  const { channels, errors } = useRepo();
 
   const toggleValue = async (channel: Channel) => {
     helpers.setValue(channel.name);
@@ -46,6 +46,10 @@ export const ChannelSelectionField = ({ ...props }: any) => {
             </Card>
           );
         })}
+      </div>
+      <div>
+        {errors.map((e) => <div>{e.repo}
+        <div>{e.errors.map((e) => <div>{e.path} {e.message}</div>)}</div></div>)}
       </div>
 
       {meta.touched && meta.error ? (

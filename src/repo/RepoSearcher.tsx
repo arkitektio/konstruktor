@@ -9,8 +9,10 @@ import { useEffect } from "react";
 import React from "react";
 import { useAlerter } from "../alerter/alerter-context";
 
+
+
 export const RepoSearcher = (props: { url: string }) => {
-  const { ensureChannels } = useRepo();
+  const { validate } = useRepo();
   const { alert, catchAlert } = useAlerter();
 
   const [open, setOpen] = React.useState(false);
@@ -27,8 +29,7 @@ export const RepoSearcher = (props: { url: string }) => {
           return;
         }
         response.json().then((data) => {
-          console.log(data);
-          ensureChannels(data.channels);
+          validate(data);
         });
       })
       .catch(catchAlert);
