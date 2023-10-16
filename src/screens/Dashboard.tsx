@@ -272,12 +272,11 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
         <div className="flex flex-justify-between flex-row gap-2 w-full">
           <div className="flex initial flex-row gap-2">
           <Button asChild>
-            <Link to="/">{"<"} Home</Link>
+            <Link to="/">Home</Link>
           </Button>
           <Button asChild>
             <Link to={`/logs/${app.name}`}>Logs</Link>
           </Button>
-          <Button onClick={() => openFolder()}>Open Folder</Button>
           </div>
           <div className="flex-grow"></div>
           <div className="flex flex-row gap-2">
@@ -459,11 +458,11 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
         </div>
       ) : (
         <>
-          <CardHeader>
-            <CardTitle className="cursor-pointer" onClick={() => openFolder()}>
+          <CardHeader className="cursor-pointer"  onClick={() => openFolder()}>
+            <CardTitle >
               {app.name}
             </CardTitle>
-            <CardDescription>{"build with Channel"}</CardDescription>
+            <CardDescription> located in {app.path}</CardDescription>
           </CardHeader>
 
           <CardContent>
