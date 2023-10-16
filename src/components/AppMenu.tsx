@@ -32,8 +32,11 @@ import {
   SelectValue,
 } from "./ui/select";
 import { useCommunication } from "../communication/communication-context";
+import { useNavigate } from "react-router-dom";
 
 export const LogoMenu = () => {
+  const navigate = useNavigate();
+
   return (
     <MenubarMenu>
       <MenubarTrigger>
@@ -50,11 +53,8 @@ export const LogoMenu = () => {
         Konstruktor
       </MenubarTrigger>
       <MenubarContent>
-        <MenubarItem>
-          Settings <MenubarShortcut>⌘T</MenubarShortcut>
-        </MenubarItem>
-        <MenubarItem>
-          New Window <MenubarShortcut>⌘N</MenubarShortcut>
+        <MenubarItem onSelect={() => navigate("/")}>
+          Home <MenubarShortcut>⌘T</MenubarShortcut>
         </MenubarItem>
       </MenubarContent>
     </MenubarMenu>
@@ -98,15 +98,11 @@ export const SettingsMenu = () => {
               </div>
               {status ? (
                 <div className="grid grid-cols-2 gap-2 w-[180px] mt-5">
-                  <div className="col-span-2">Connected to Docker</div>
+                  {status.connected && <><div className="col-span-2">Connected to Docker</div>
                   <div className="font-light">Version</div>
                   <div className="font-light">{status?.version}</div>
-                  <div className="font-light">Memory</div>
-                  <div className="font-light">
-                    {status?.memory &&
-                      (status.memory / 1000000000).toPrecision(4)}{" "}
-                    GB
-                  </div>
+                  </>}
+                  {!status.connected && <div className="col-span-2">Not connected to Docker. Is docker running? {status.error}</div>}
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-2 w-[180px] mt-5">

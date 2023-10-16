@@ -78,7 +78,7 @@ const getContainerColor = (container: Container) => {
 import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
 import { BaseDirectory, FileEntry, readDir } from "@tauri-apps/api/fs";
-import { CommandButton, DangerousCommandButton } from "../CommandButton";
+import { CommandButton, DangerousButton, DangerousCommandButton } from "../CommandButton";
 import { LogoMenu, SettingsMenu } from "../components/AppMenu";
 import { Button } from "../components/ui/button";
 import {
@@ -270,7 +270,8 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   return (
     <Page
       buttons={
-        <>
+        <div className="flex flex-justify-between flex-row gap-2 w-full">
+          <div className="flex initial flex-row gap-2">
           <Button asChild>
             <Link to="/">{"<"} Home</Link>
           </Button>
@@ -278,6 +279,9 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
             <Link to={`/logs/${app.name}`}>Logs</Link>
           </Button>
           <Button onClick={() => openFolder()}>Open Folder</Button>
+          </div>
+          <div className="flex-grow"></div>
+          <div className="flex flex-row gap-2">
           <CommandButton
             params={{
               program: "docker",
@@ -303,7 +307,8 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
             confirmDescription="This will stop all containers, everyone will be disconnected, while data should be kept, this might 
             cause unexpected results, if apps are still running."
           />
-        </>
+          </div>
+        </div>
       }
       menu={
         <Menubar className="flex-initial border-0 justify-between">
@@ -316,7 +321,6 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                   <DialogTrigger asChild>
                     <MenubarItem onSelect={(e) => e.preventDefault()}>
                       Update
-                      <MenubarShortcut>⌘D</MenubarShortcut>
                     </MenubarItem>
                   </DialogTrigger>
                   <DialogContent>
@@ -349,7 +353,6 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                   <DialogTrigger asChild>
                     <MenubarItem onSelect={(e) => e.preventDefault()}>
                       Delete
-                      <MenubarShortcut>⌘D</MenubarShortcut>
                     </MenubarItem>
                   </DialogTrigger>
                   <DialogContent>
@@ -367,7 +370,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                           },
                         }}
                         callback={() =>
-                          deleteApp(app.name).then(() => navigate("/"))
+                          deleteApp(app.name).then(() => navigate("/")).catch(alert)
                         }
                         title="Tear down and Delete"
                         confirmTitle="Are you really sure you want to delete this app?"
@@ -379,8 +382,31 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                 <Dialog>
                   <DialogTrigger asChild>
                     <MenubarItem onSelect={(e) => e.preventDefault()}>
+                      Purge
+                    </MenubarItem>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogTitle>Purge</DialogTitle>
+                    <DialogDescription>
+                      When purging this app all of your data will be lost!
+                      (This circumvents running the docker-compose down command,)
+                    </DialogDescription>
+                    <DialogFooter>
+                      <DangerousButton
+                        callback={() =>
+                          deleteApp(app.name).then(() => navigate("/")).catch(alert)
+                        }
+                        title="Purge down and Delete"
+                        confirmTitle="Are you really sure you want to purge this app?"
+                        confirmDescription="This will irreversibly delete all of your data in the directory and remove the app from the list."
+                      />
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <MenubarItem onSelect={(e) => e.preventDefault()}>
                       Reset
-                      <MenubarShortcut>⌘D</MenubarShortcut>
                     </MenubarItem>
                   </DialogTrigger>
                   <DialogContent>
@@ -448,28 +474,31 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 xl:grid-cols-6 gap-2 mt-2">
               {services.map((s, index) => (
-                <div
+                <Card
                   key={index}
-                  className={`shadow shadow-lg border border-1 white p-2 p-3  text-slate-800 bg-slate-100 rounded rounded-md `}
+                  className={`group`}
                 >
-                  <div className="flex flex-row justify-between">
+                  <CardHeader className="flex flex-row justify-between  p-3">
+                    <CardTitle>
                     <Link
                       to={`/logs/${app.name}/service/${s.name}`}
-                      className="font-bold text-"
+                      className=""
                     >
                       {s.name}
                     </Link>
+                    
+                    </CardTitle>
                     <div
                       className={`h-3 w-3 rounded-full border ${getServiceColor(
                         s
                       )} inline-block`}
                     ></div>
-                  </div>
-                  <div className="flex flex-col gap-2">
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-2 p-3">
                     {s.containers.map((c, index) => {
                       return (
                         <div
-                          className={`group border border-1 white p-2 p-3  text-black rounded rounded-md ${getContainerColor(
+                          className={`group border border-1 white p-2 p-3 rounded rounded-md ${getContainerColor(
                             c
                           )}`}
                         >
@@ -479,6 +508,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                                 Instance {index + 1}
                               </div>
                               <div className="text-xs">{c.status}</div>
+                              <div className="text-xs">{JSON.stringify(c.labels["arkitekt.description"])}</div>
                             </div>
                             <button
                               className=" disabled:opacity-50"
@@ -496,8 +526,8 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                         </div>
                       );
                     })}
-                  </div>
-                </div>
+                  </CardContent>
+                </Card>
               ))}
             </div>
             <div className="text-md mt-5">Advertise</div>

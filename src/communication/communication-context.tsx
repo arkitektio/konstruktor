@@ -16,6 +16,8 @@ export type DockerInterfaceStatus = {
 };
 
 export type DockerStatus = {
+  connected: boolean;
+  error: string;
   version: string;
   memory: number;
 };

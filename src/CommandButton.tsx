@@ -104,3 +104,50 @@ export const DangerousCommandButton = (props: {
     </Popover>
   );
 };
+
+
+export const DangerousButton = (props: {
+  title: string;
+  callback: () => void;
+  confirmTitle?: string;
+  confirmDescription?: string;
+  runningTitle?: string;
+  to?: number;
+}) => {
+  const { alert } = useAlerter();
+  const [open, setOpen] = useState(false);
+  const to = props.to || 10;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button onClick={() => setOpen(true)}>
+          {props.runningTitle ? props.runningTitle : props.title}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent>
+        <div className="flex flex-col gap-1">
+          <div className="text-md">{props.confirmTitle || "Are you sure?"}</div>
+          <div className="text-xs text-muted-foreground">
+            {props.confirmDescription || "This might cause unexpected results"}
+          </div>
+          <div className="flex flex-row gap-2 w-full mt-2">
+            <Button
+              className="w-full"
+              onClick={() => {
+                console.log("run");
+                setOpen(false);
+                props.callback();
+              }}
+            >
+              Yes
+            </Button>
+
+            <PopoverClose asChild>
+              <Button className="w-full">No</Button>
+            </PopoverClose>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+};

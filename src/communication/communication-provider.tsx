@@ -24,9 +24,30 @@ const CommunicationProvider: React.FC<ICommunicationProviderProps> = ({
     useState<DockerInterfaceStatus | null>(null);
 
   useEffect(() => {
-    invoke("test_docker", {
+    invoke("test_docker", {event: JSON.stringify({
       strategy: DockerConnectionStrategy.LOCAL,
-    }).then((res) => setDockerStatus(res as DockerStatus));
+    })}).then((res) => {
+      let result = JSON.parse(res as string);
+    
+
+
+      let new_status = {connected: true, memory: parseInt(result.memory), version: result.version, error: ""}
+      console.error("The new status", new_status)
+      setDockerStatus(new_status);
+
+    })
+    
+    
+    
+    .catch((e) => {
+      console.error("Docker interface error", e);
+      setDockerStatus({
+        connected: false,
+        version: "unknown",
+        error: e,
+        memory: 0,
+      });
+    });
   }, []);
 
   useEffect(() => {

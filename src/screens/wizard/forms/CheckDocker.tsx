@@ -36,7 +36,7 @@ export const CheckDocker: React.FC<StepProps> = (props) => {
               {showVersion && interfaceStatus.ok}
             </p>
             <div className="mt-6">
-              {status ? (
+              {status?.connected ? (
                 <>
                   Double lucky! It appears that the docker api is also
                   accessible. You will be to install arkitekt on this system,
