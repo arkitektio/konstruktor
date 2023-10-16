@@ -15,10 +15,10 @@ export const CheckDocker: React.FC<StepProps> = (props) => {
         Let's check if docker is installed
       </div>
       <div className="mb-2 text-justify mt-4 max-w-xl">
-        Arkitekt works with docker. Docker is a container runtime that allows us
-        to run arkitekt completely isolated from your system. Like this we can
-        ensure that arkitekt does not interfere with your system and that you
-        can run multiple arkitekt instances on the same system.
+        This manager works with docker. Docker is a container runtime that allows us
+        to run software completely isolated from your system. Like this we can
+        ensure that Arkitekt does not interfere with your system and that you
+        can run multiple deployments on the same system.
       </div>
       <div className="max-w-xl">
         {interfaceStatus ? (
@@ -37,11 +37,10 @@ export const CheckDocker: React.FC<StepProps> = (props) => {
             </p>
             <div className="mt-6">
               {status?.connected ? (
-                <>
+                <Alert variant="default">
                   Double lucky! It appears that the docker api is also
-                  accessible. You will be to install arkitekt on this system,
-                  and monitor your installation in Konstruktor.
-                </>
+                  accessible. You will be able to monitor your installation in Konstruktor. 🎉
+                </Alert>
               ) : (
                 <Alert variant="destructive">
                   Not that lucky! It appears that the docker api is not
@@ -61,7 +60,7 @@ export const CheckDocker: React.FC<StepProps> = (props) => {
             Follow the instructions in the documentation to get you started.
             <div className="mt-6">
               <Button>
-                <a href="https://jhnnsrs.github.com/doks/installation">
+                <a href="https://arkitekt.live/docs/installation">
                   Open Documentation
                 </a>
               </Button>

@@ -53,14 +53,14 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
                       spellCheck="false"
                       className="text-black p-1 rounded"
                     />
-                    <ErrorDisplay name={`groups.${index}.name`}>
+                    <ErrorDisplay name={`groups.${index}.name`} className="mt-2">
                       {(msg) => (
                         <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
                           {msg}
                         </div>
                       )}
                     </ErrorDisplay>
-                    <div className="font-light text-xs text-md my-1">
+                    <div className="font-light text-xs text-md my-2">
                       A name for this group
                     </div>
                     <div className="font-light text-md my-1">Description</div>
@@ -68,14 +68,14 @@ export const GroupsForm: React.FC<StepProps> = ({ errors }) => {
                       name={`groups.${index}.description`}
                       className="text-black p-1 rounded"
                     />
-                    <ErrorDisplay name={`groups.${index}.description`}>
+                    <ErrorDisplay name={`groups.${index}.description`} className="mt-2">
                       {(msg) => (
                         <div className="text-center border border-red-400 mt-1 rounded p-1 text-red-300 my-auto">
                           {msg}
                         </div>
                       )}
                     </ErrorDisplay>
-                    <div className="font-light text-xs text-md my-1">
+                    <div className="font-light text-xs text-md my-2">
                       Briefly describe this group
                     </div>
                     <button

@@ -7,8 +7,8 @@
                 "title": "Paper",
                 "experimental": false,
                 "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/paper.png",
-                "long": "The paper deployment to reproduce the paper. Comes with a preconfigured set of apps and services to reproduce the paper",
-                "description": "The original paper deployment. That can be used to generate the conditions of deployment as presented in the paper.",
+                "long": "The paper deployment to reproduce the paper.",
+                "description": "The original paper deployment. That can be used to generate the conditions of deployment as presented in the paper. It comes with a default set of enabled applications",
                 "features": [
                     {
                     "name": "Easy",

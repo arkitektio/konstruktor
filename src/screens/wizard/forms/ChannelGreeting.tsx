@@ -4,15 +4,15 @@ import type { StepProps } from "../types";
 import { ErrorDisplay } from "../../../components/Error";
 import { useChannel } from "../../../channel/channel-context";
 export const ChannelGreeting: React.FC<StepProps> = (props) => {
-  const { name, description } = useChannel();
+  const { name, long } = useChannel();
   return (
     <div className="items-center h-full my-7">
-      <div className="font-light text-7xl">For your info</div>
+      <div className="font-light text-7xl">Let's get started!</div>
       <div className="font-light text-3xl mt-4">
-        Your are installing Arkitekt via the channel {name}
+        Your are installing Arkitekt via the channel <div className="text-muted-foreground inline">{name}</div>
       </div>
       <div className="mb-2 text-justify mt-4 max-w-xl"></div>
-      {description}
+      {long}
     </div>
   );
 };

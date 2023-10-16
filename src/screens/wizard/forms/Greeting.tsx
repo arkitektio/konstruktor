@@ -7,15 +7,18 @@ export const Greeting: React.FC<StepProps> = (props) => {
     <div className="items-center h-full my-7">
       <div className="font-light text-7xl"> Hello!</div>
       <div className="font-light text-3xl mt-4">
-        Lets install the framework together
+        Let's deploy some services! 🚀
       </div>
       <div className="mb-2 text-justify mt-4 max-w-xl">
         First things first: Lets think about naming your install. With
-        Konstruktor you can install multiple versions of the Arkitekt platform,
-        with multiple configurations. You can imaging having an experimental
+        Konstruktor you can install multiple versions of the Arkitekt platform and 
+        other dockerized services with multiple configurations. You can imaging having an experimental
         setup with different functionality and one production setup with stable
-        configuration. So lets name your install (e.g. myexperimentalsetup) Apps
-        thats want to connect to the platform will see this name!
+        configuration. So lets name your install (e.g. myexperimentalsetup).
+        <div className="font-light text-xs  mt-2">
+          When using Arkitekts auto-configuration feature, the name of your install will be used as a prefix for all services.
+          And visible for potential connecting apps.
+        </div>
       </div>
       <div className="mt-6">
         <div className="flex flex-col gap-1 max-w-md">

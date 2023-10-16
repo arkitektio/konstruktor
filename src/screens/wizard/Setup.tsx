@@ -68,8 +68,7 @@ export const Setup: React.FC<{}> = (props) => {
                   return !apps.find((app) => app.name === value);
                 }
               )
-              .lowercase("Lowercase only")
-              .matches(/^[a-z]+$/, "Lowercase only"),
+              .matches(/^[a-z]+$/, "Deployment names can be lowercase only"),
           }),
         },
         {

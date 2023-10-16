@@ -79,6 +79,10 @@ export const Home: React.FC<{}> = (props) => {
             You don't have any deployments yet. We are excited to see what you
             will build and use Arkitekt for.
           </div>
+          <div className="text-xs text-muted-foreground font-light mt-2 max-w-xl">
+            With Konstruktor you can easily create and manage your own deployments of Arkitekt
+            and other modern bioimage apps. Just click the button below to get started.
+          </div>
         </div>
       )}
     </Page>

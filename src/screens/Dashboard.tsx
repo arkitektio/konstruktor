@@ -63,7 +63,7 @@ const getServiceColor = (service: Service) => {
     return "bg-yellow-200 border-yellow-600";
   }
 
-  return "bg-red-200 border-red-600";
+  return "bg-red-500 border-red-600";
 };
 
 const getContainerColor = (container: Container) => {
@@ -74,7 +74,6 @@ const getContainerColor = (container: Container) => {
     return "border-red-600";
   }
 };
-
 import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
 import { BaseDirectory, FileEntry, readDir } from "@tauri-apps/api/fs";
@@ -159,7 +158,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   });
 
   const lok_port = 8000;
-  let deployment = app.name;
+  let deployment = app.name.toLowerCase();
   const [bindings, setAvailableBindings] = useState<BeaconInterface[]>([]);
 
   const [restartingContainers, setRestartingContainers] = useState<string[]>(
@@ -495,6 +494,10 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                     ></div>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-2 p-3">
+                  {s.containers?.at(0)?.labels["arkitekt.description"] && <div className="text-xs">{s.containers?.at(0)?.labels["arkitekt.description"]}</div>}
+                  
+
+
                     {s.containers.map((c, index) => {
                       return (
                         <div
@@ -502,13 +505,14 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                             c
                           )}`}
                         >
+
                           <div className="flex flex-row justify-between">
                             <div>
                               <div className="font-bold">
                                 Instance {index + 1}
                               </div>
                               <div className="text-xs">{c.status}</div>
-                              <div className="text-xs">{JSON.stringify(c.labels["arkitekt.description"])}</div>
+                              
                             </div>
                             <button
                               className=" disabled:opacity-50"
@@ -526,9 +530,20 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                         </div>
                       );
                     })}
+                    {s.containers?.at(0)?.labels["arkitekt.link"] && <Button onClick={() => open(s.containers?.at(0)?.labels["arkitekt.link"] || "")} className="text-xs">Open Service</Button>}
+                  
+
                   </CardContent>
                 </Card>
               ))}
+              {services.length == 0 && (
+                <div className="col-span-6">
+                  <div className="text-md">No services found</div>
+                  <div className="text-sm text-muted-foreground">
+                    If you have not started the app yet, please do so. Otherwise there might be an error
+                    </div>
+                    </div>
+                    )}
             </div>
             <div className="text-md mt-5">Advertise</div>
             <div className="text-sm text-muted-foreground">
