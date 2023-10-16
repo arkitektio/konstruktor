@@ -29,7 +29,7 @@ export const ChannelSelectionField = ({ ...props }: any) => {
             >
               <div className="items-start p-3">
                 <div className="flex flex-row justify-between">
-                  <img className="text-sm text-start h-20" src={channel.logo} />
+                  <img className="text-sm text-start aspect-square	 w-full" src={channel.logo} />
                 </div>
                 <div className="font-bold text-start flex-row flex justify-between">
                   <div className="my-auto">{channel.title}</div>
