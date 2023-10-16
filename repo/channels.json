@@ -6,7 +6,7 @@
                 "name": "paper",
                 "title": "Paper",
                 "experimental": false,
-                "logo": "https://python.doctor/images/django-python.png",
+                "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/paper.png",
                 "long": "The paper deployment to reproduce the paper. Comes with a preconfigured set of apps and services to reproduce the paper",
                 "description": "The original paper deployment",
                 "features": [
@@ -38,7 +38,7 @@
               "name": "next",
               "title": "next",
               "experimental": true,
-              "logo": "https://python.doctor/images/django-python.png",
+              "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/next.png",
               "long": "The next deployment contains breaking changes and is not yet stable. It does however give an impression of the future of Arkitekt",
               "description": "The next deployment",
               "features": [
