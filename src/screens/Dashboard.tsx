@@ -76,7 +76,7 @@ const getContainerColor = (container: Container) => {
 };
 import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
-import { BaseDirectory, FileEntry, readDir } from "@tauri-apps/api/fs";
+import { BaseDirectory, FileEntry, readDir, readTextFile, writeTextFile } from "@tauri-apps/api/fs";
 import { CommandButton, DangerousButton, DangerousCommandButton } from "../CommandButton";
 import { LogoMenu, SettingsMenu } from "../components/AppMenu";
 import { Button } from "../components/ui/button";
@@ -107,9 +107,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "../components/ui/tooltip";
-import { useCommand } from "../hooks/useCommand";
+import { useCommand, useLazyCommand } from "../hooks/useCommand";
 import { Page } from "../layout/Page";
 import { useSettings } from "../settings/settings-context";
+import { parse, stringify } from "yaml";
+import { Alert } from "../components/ui/alert";
+import * as yup from "yup";
+import { ScrollArea } from "../components/ui/scroll-area";
+
+
+export const KonstruktSchema = yup.object().shape({
+  pulled: yup.date().required("Required"),
+});
+
+export type KonstruktInfo = yup.InferType<typeof KonstruktSchema>;
+
 
 export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   const { call, status } = useCommunication();
@@ -121,12 +133,53 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   const [retrigger, setRetrigger] = useState<boolean>(false);
   const { settings } = useSettings();
   const [initialized, setInitialized] = useState<boolean>(false);
+  const [konstruktInfo, setKonstruktInfo] = useState<KonstruktInfo | null>(null);
   const [countDown, setCountDown] = useState<number>(4);
+  const [dialogOpen, setDialogOpen] = useState<boolean>(false);
+  const [dialogStatus, setDialogStatus] = useState<string>("");
 
   const openFolder = async () => {
     await open(app.path);
     console.log("opened");
   };
+
+  const { run, logs, finished } = useLazyCommand({
+    logLength: 50,
+  });
+
+  const writeNewInfo = async (konstruktInfo: KonstruktInfo) => {
+    const written = await writeTextFile(
+      `apps/${app.name}/konstruktor.yaml`,
+      stringify(konstruktInfo),
+      {
+        dir: BaseDirectory.App,
+      }
+    );
+    console.log(written);
+    setRetrigger(!retrigger);
+  };
+    
+
+
+  const pull = async () => {
+      setDialogOpen(true);
+      setDialogStatus("Pulling Images...");
+      await run({
+        program: "docker",
+        args: ["compose", "pull"],
+        options: {
+          cwd: app.path,
+      }})
+
+      await writeNewInfo({...konstruktInfo, pulled: new Date()});
+      setDialogStatus("Finished pulling images");
+      setDialogOpen(false);
+
+
+
+  };
+
+
 
   const {
     run: up,
@@ -141,13 +194,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
     },
   });
 
-  const pull = useCommand({
-    program: "docker",
-    args: ["compose", "pull"],
-    options: {
-      cwd: app.path,
-    },
-  });
+  
 
   const { run: down } = useCommand({
     program: "docker",
@@ -174,10 +221,37 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
     return () => clearInterval(interval);
   }, []);
 
+
+  const processKonstruktorYAML = async (entry: FileEntry) => {
+    
+    try {
+      let setup_string = await readTextFile(entry.path, {
+        dir: BaseDirectory.App,
+      });
+
+      let setup = parse(setup_string);
+      
+      try {
+      const validatedInfo = await KonstruktSchema.validate(setup);
+      setKonstruktInfo(validatedInfo);
+      }
+      catch (e) {
+        console.error(e);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+
+
   const processEntries = (entries: FileEntry[]) => {
     for (const entry of entries) {
       if (entry.name == "docker-compose.yaml") {
         setInitialized(true);
+      }
+      if (entry.name == "konstruktor.yaml") {
+        processKonstruktorYAML(entry);
       }
 
       console.log(`Entry: ${entry.path}`);
@@ -250,6 +324,10 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
       });
   };
 
+
+
+
+
   const toggleAdvertised = (inf: BeaconInterface) => {
     let url = `${inf.host}:${lok_port}`;
     toggleSignal({ url: url, bind: inf.bind, broadcast: inf.broadcast });
@@ -280,7 +358,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
           </div>
           <div className="flex-grow"></div>
           <div className="flex flex-row gap-2">
-          <CommandButton
+          {konstruktInfo?.pulled ? <CommandButton
             params={{
               program: "docker",
               args: ["compose", "up", "-d"],
@@ -290,7 +368,19 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
             }}
             title="Start"
             runningTitle="Starting..."
-          />
+          /> :
+          <Button
+            onClick={() => {
+                pull();
+              }
+            }
+            className="w-20"
+          >
+            Pull
+          </Button>
+
+
+           }
           <DangerousCommandButton
             params={{
               program: "docker",
@@ -310,6 +400,21 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
       }
       menu={
         <Menubar className="flex-initial border-0 justify-between">
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+              <DialogContent className="bg-card">
+                <DialogTitle>{dialogStatus}</DialogTitle>
+                {logs.length > 0 && (
+                  <ScrollArea className="w-full h-[50vh] bg-gray-900 p-3 rounded rounded-md overflow-scroll">
+                    {logs.map((p, i) => (
+                      <div className="w-full grid grid-cols-12 ">
+                        <div className="col-span-1">{i}</div>
+                        <div className="col-span-11"> {p}</div>
+                      </div>
+                    ))}
+                  </ScrollArea>
+                )}
+              </DialogContent>
+            </Dialog>
           <LogoMenu />
           <div className="flex flex-row">
             <MenubarMenu>
@@ -429,6 +534,9 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
+                <MenubarItem onSelect={(e) => setRetrigger(!retrigger)}>
+                      Recheck App
+                </MenubarItem>
               </MenubarContent>
             </MenubarMenu>
             <SettingsMenu />
@@ -436,24 +544,25 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
         </Menubar>
       }
     >
-      {!initialized ? (
+      {!konstruktInfo ? (
         <div className="flex-grow flex flex-col h-full p-2 overflow-y-scroll">
-          <div className="font-bold text-3xl">This is bad...</div>
-          <div className="font-light text-5xl mt-2">{app.name} is faulty</div>
+          <div className="font-light text-5xl mt-2">{app.name} </div>
+          <div className="font-light text-3xl mt-2">is not yet initialized </div>
           <div className="mt-5 max-w-xl">
-            We didn't find a docker-compose.yaml file for this app. This Could
-            be because you accidently deleted it, or because you are trying to
-            install an app that is not compatible with Konstruktor. It could
-            also be that the app installation failed.
+            We didn't find a konstruktor.yaml file for this app. This could be because you have not yet initialized it.
+            Just click the button below to initialize it.
           </div>
-          <div className="mt-5 flex flex-col text-3xl max-w-xl gap-2 mt-3 font-bold">
-            Please delete this app and try again.
+          <div className="mt-5 flex flex-col text-1xl max-w-xl gap-2 mt-3 font-bold">
+            Lets initialize it!
           </div>
           <Button
-            onClick={() => deleteApp(app.name).then(() => navigate("/"))}
-            className="w-40 mt-2"
+            onClick={() => {
+                pull();
+              }
+            }
+            className="w-40 p-7 text-2xl mt-2"
           >
-            Delete App
+            Initialize
           </Button>
         </div>
       ) : (
@@ -536,15 +645,16 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                 </Card>
               ))}
               {services.length == 0 && (
-                <div className="col-span-6">
+                <Alert className="col-span-6 mt-3">
                   <div className="text-md">No services found</div>
                   <div className="text-sm text-muted-foreground">
-                    If you have not started the app yet, please do so. Otherwise there might be an error
+                    It appears that you have never started this app before. Press start
+                    to start it.
                     </div>
-                    </div>
+                    </Alert>
                     )}
             </div>
-            <div className="text-md mt-5">Advertise</div>
+            {services.length != 0 && <><div className="text-md mt-5">Advertise</div>
             <div className="text-sm text-muted-foreground">
               Activating items here will make this deployment visble to apps in
               the respecting network.
@@ -597,6 +707,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                   </Tooltip>
                 ))}
             </div>
+            </>}
           </CardContent>
         </>
       )}
