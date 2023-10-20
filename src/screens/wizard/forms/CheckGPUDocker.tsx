@@ -9,6 +9,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../../../co
 
 export const CheckGPUDocker: React.FC<StepProps> = (props) => {
   const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState(false);
 
   const { run, logs, finished } = useLazyCommand({
     logLength: 50,
@@ -30,6 +31,8 @@ export const CheckGPUDocker: React.FC<StepProps> = (props) => {
       args: ["run", "--rm", "--gpus", "all", "nvidia/cuda:12.2.2-base-ubuntu22.04", "nvidia-smi"],
     });
 
+    setChecked(true);
+
     setChecking(false);
   };
 
@@ -49,14 +52,21 @@ export const CheckGPUDocker: React.FC<StepProps> = (props) => {
         check might take a few seconds.
       </div>
       <Button className="w-20" onClick={check}>{checking ? "Checking...": "Check"} </Button>
-
-      {logs.join("\n").includes("failed") && (
+    {checked && <div className="mt-2 max-w-xl">
+      {logs.join("\n").includes("failed") ? (
         <Alert variant="destructive">
           It appears that your system does not support GPU support. You will not
           be able to install apps that require GPU support. Please follow the 
           instructions in the documentation to get you started.
           </Alert>
-      )}  
+      ) :
+        <Alert variant="default" className="border-green-200">
+          🎉 Looks like GPU support is available. You can install apps that require GPU support.
+        </Alert>
+} 
+    
+    </div>}
+      
 
     <Collapsible className="max-w-xl h-[50vh]">
       <CollapsibleTrigger className="mt-2">Show Logs</CollapsibleTrigger>
