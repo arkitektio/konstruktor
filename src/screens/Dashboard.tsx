@@ -74,6 +74,8 @@ const getContainerColor = (container: Container) => {
     return "border-red-600";
   }
 };
+
+
 import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
 import { BaseDirectory, FileEntry, readDir, readTextFile, writeTextFile } from "@tauri-apps/api/fs";
@@ -114,6 +116,7 @@ import { parse, stringify } from "yaml";
 import { Alert } from "../components/ui/alert";
 import * as yup from "yup";
 import { ScrollArea } from "../components/ui/scroll-area";
+import { f } from "@tauri-apps/api/path-c062430b";
 
 
 export const KonstruktSchema = yup.object().shape({
@@ -121,6 +124,64 @@ export const KonstruktSchema = yup.object().shape({
 });
 
 export type KonstruktInfo = yup.InferType<typeof KonstruktSchema>;
+
+
+export const checkHealth = async (
+  healthz: string,
+): Promise<boolean> => {
+  try {
+    //console.log(`Checking ${name} on ${host}:${port}`)
+    const res = await fetch(`${healthz}/?format=json`, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'GET',
+    })
+
+    if (res.ok)
+      return true;
+    else {
+      return false;
+    }
+  } catch (e) {
+    return false;
+  }
+}
+
+export const HealthIndicator = (props: { healthz: string | undefined, s: any }) => {
+
+  const [healthy, setHealthy] = useState<boolean>(props.healthz == undefined ? true : false);
+
+
+  useEffect(() => {
+    if (!props.healthz) {
+      return;
+    }
+
+    let interval = setInterval(() => {
+      if (!props.healthz) {
+        return;
+      }
+      checkHealth(props.healthz).then((res) => setHealthy(res));
+    }
+
+    , 3000);
+
+    return () => clearInterval(interval);
+  }, [props.healthz]);
+
+  
+
+  return props.healthz ? <div
+  className={`h-3 w-3 rounded-full border ${healthy ? "bg-green-400 border-green-600" : "border-red-600"} inline-block`}
+></div> : <div
+  className={`h-3 w-3 rounded-full border ${getServiceColor(
+    props.s
+  )} inline-block`}
+></div>
+
+}
+
 
 
 export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
@@ -595,11 +656,9 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                     </Link>
                     
                     </CardTitle>
-                    <div
-                      className={`h-3 w-3 rounded-full border ${getServiceColor(
-                        s
-                      )} inline-block`}
-                    ></div>
+                    
+
+                    <HealthIndicator healthz={s.containers?.at(0)?.labels["arkitekt.healthz"]} s={s}/>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-2 p-3">
                   {s.containers?.at(0)?.labels["arkitekt.description"] && <div className="text-xs">{s.containers?.at(0)?.labels["arkitekt.description"]}</div>}
@@ -638,8 +697,10 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                         </div>
                       );
                     })}
-                    {s.containers?.at(0)?.labels["arkitekt.link"] && <Button onClick={() => open(s.containers?.at(0)?.labels["arkitekt.link"] || "")} className="text-xs">Open Service</Button>}
-                  
+                    <div className="flex flex-row gap-1">
+                    {s.containers?.at(0)?.labels["arkitekt.link"] && <Button onClick={() => open(s.containers?.at(0)?.labels["arkitekt.link"] || "")} className="text-xs flex-1">Open Service</Button>}
+                    {s.containers?.at(0)?.labels["arkitekt.healthz"] && <Button onClick={() => open(s.containers?.at(0)?.labels["arkitekt.healthz"] || "")} className="text-xs flex-1">Open Healthz</Button>}
+                    </div>
 
                   </CardContent>
                 </Card>
