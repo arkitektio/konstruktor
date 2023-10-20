@@ -18,7 +18,7 @@
                 ],
                 "preview": false,
                 "builder": "jhnnsrs/paperbuilder:latest",
-                "forms": ["admin_user", "users", "groups"],
+                "forms": ["check_gpu", "admin_user", "users", "groups" ],
                 "defaults": {
                     "name": "paper",
                     "adminUsername": "admin",
@@ -50,7 +50,7 @@
               ],
               "preview": true,
               "builder": "jhnnsrs/arkitekt_paper_builder",
-              "forms": ["admin_user", "users", "groups"],
+              "forms": ["check_gpu", "admin_user", "users", "groups"],
               "defaults": {
                 "name": "mydeployment",
                 "adminUsername": "admin",

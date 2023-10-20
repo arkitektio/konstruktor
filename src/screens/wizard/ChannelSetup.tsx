@@ -32,6 +32,7 @@ import {
 import { DialogTitle } from "@radix-ui/react-dialog";
 import { ScrollArea } from "@radix-ui/react-scroll-area";
 import { writeText, readText } from "@tauri-apps/api/clipboard";
+import { CheckGPUDocker } from "./forms/CheckGPUDocker";
 export const debugUser = {
   name: "debug",
   username: "debug",
@@ -62,6 +63,10 @@ export const allSteps: ConditionalStep[] = [
     validationSchema: Yup.object().shape({
       apps: Yup.array().required("Desired Modules Required"),
     }),
+  },
+  {
+    name: "check_gpu",
+    component: CheckGPUDocker,
   },
   {
     name: "attention_superuser",
@@ -214,7 +219,8 @@ export const ChannelSetup = ({
     return (
       channel.forms.includes(step.name as AvailableForms) ||
       step.name === "done" ||
-      step.name === "greeting"
+      step.name === "greeting" ||
+      step.name ==  "check_gpu"
     );
   });
 

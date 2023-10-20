@@ -41,7 +41,8 @@ export type AvailableForms =
   | "groups"
   | "users"
   | "scale"
-  | "channel";
+  | "channel"
+  | "check_gpu";
 
 
 export const availableFormsValue: AvailableForms[] = [
@@ -57,6 +58,7 @@ export const availableFormsValue: AvailableForms[] = [
   "users",
   "scale",
   "channel",
+  "check_gpu",
 ];
 
 export type Group = {
