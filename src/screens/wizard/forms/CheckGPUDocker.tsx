@@ -43,25 +43,25 @@ export const CheckGPUDocker: React.FC<StepProps> = (props) => {
         
       </div>
       <div className="mb-2 text-justify mt-4 max-w-xl">
-        Some functionality in this channels require GPU support. Let's
+        Some functionality in this channels require GPU support that needs CUDA 11 or above. Let's
         check if your system supports this.<br/> <br/>
 
 
-        In order to check if your system supports GPU support, we will check if
-        docker is installed and if you have a GPU available on your system. This 
+        In order to check if your system supports CUDA 11, we run a little docker
+        container and check if your CUDA Drivers are correctly installed. This 
         check might take a few seconds.
       </div>
       <Button className="w-20" onClick={check}>{checking ? "Checking...": "Check"} </Button>
     {checked && !checking && <div className="mt-2 max-w-xl">
       {logs.join("\n").includes("failed") ? (
         <Alert variant="destructive">
-          It appears that your system does not support GPU support. You will not
-          be able to install apps that require GPU support. Please follow the 
-          instructions in the documentation to get you started.
+          It appears that your system does not support CUDA 11. Please refer to the documentation
+          on how to install the latest nvidia drivers on your system. Otherwise you can still use
+          this channel, but you will not be able to install apps that require GPU support.
           </Alert>
       ) :
         <Alert variant="default" className="border-green-200">
-          🎉 Looks like GPU support is available. You can install apps that require GPU support.
+          🎉 Looks like CUDA support is available. You can install apps that require GPU support.
         </Alert>
 } 
     
