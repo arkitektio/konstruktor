@@ -21,14 +21,14 @@ export const CheckGPUDocker: React.FC<StepProps> = (props) => {
 
     let pullResult = await run({
       program: "docker",
-      args: ["pull", "nvidia/cuda:12.2.2-base-ubuntu22.04"],
+      args: ["pull", "nvidia/cuda:11.8.0-base-centos7"],
     });
     if (pullResult.code != 0) {
       throw Error("Error while pulling builder image");
     }
     await run({
       program: "docker",
-      args: ["run", "--rm", "--gpus", "all", "nvidia/cuda:12.2.2-base-ubuntu22.04", "nvidia-smi"],
+      args: ["run", "--rm", "--gpus", "all", "nvidia/cuda:11.8.0-base-centos7", "nvidia-smi"],
     });
 
     setChecked(true);
@@ -52,7 +52,7 @@ export const CheckGPUDocker: React.FC<StepProps> = (props) => {
         check might take a few seconds.
       </div>
       <Button className="w-20" onClick={check}>{checking ? "Checking...": "Check"} </Button>
-    {checked && <div className="mt-2 max-w-xl">
+    {checked && !checking && <div className="mt-2 max-w-xl">
       {logs.join("\n").includes("failed") ? (
         <Alert variant="destructive">
           It appears that your system does not support GPU support. You will not
