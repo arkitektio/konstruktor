@@ -18,17 +18,26 @@ export const Logs: React.FC<{ app: App; service?: string }> = ({
   const { run: logcommand, logs, error, finished } = useLazyCommand({});
 
   useEffect(() => {
+    logcommand({
+      program: "docker",
+      args: service
+        ? ["compose", "logs", "-f", "--tail", "30", service]
+        : ["compose", "logs", "-f", "--tail", "30"],
+      options: {
+        cwd: app.path,
+      },
+    });
     const timeout = setInterval(() => {
       logcommand({
         program: "docker",
         args: service
-          ? ["compose", "logs", "-f", "--tail", "50", service]
-          : ["compose", "logs", "-f", "--tail", "50"],
+          ? ["compose", "logs", "-f", "--tail", "30", service]
+          : ["compose", "logs", "-f", "--tail", "30"],
         options: {
           cwd: app.path,
         },
       });
-    }, 1000);
+    }, 4000);
     return () => clearInterval(timeout);
   }, [retrigger]);
 
@@ -46,7 +55,7 @@ export const Logs: React.FC<{ app: App; service?: string }> = ({
     >
       <pre className="flex-grow bg-card rounded rounded-xl p-2">
         {logs && logs.length > 0 ? (
-          logs.map((l, index) => (
+          logs.toReversed().map((l, index) => (
             <div key={index}>
               {l}
               <br />
