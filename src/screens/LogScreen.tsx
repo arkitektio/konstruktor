@@ -55,7 +55,7 @@ export const Logs: React.FC<{ app: App; service?: string }> = ({
     >
       <pre className="flex-grow bg-card rounded rounded-xl p-2">
         {logs && logs.length > 0 ? (
-          logs.toReversed().map((l, index) => (
+          logs.map((l, index) => (
             <div key={index}>
               {l}
               <br />
