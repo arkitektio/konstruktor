@@ -3,6 +3,7 @@ import { useCommunication } from "../../../communication/communication-context";
 import { Alert } from "../../../components/ui/alert";
 import { Button } from "../../../components/ui/button";
 import { StepProps } from "../types";
+import {open} from "@tauri-apps/api/shell"
 
 export const CheckDocker: React.FC<StepProps> = (props) => {
   const { call, status, interfaceStatus } = useCommunication();
@@ -60,9 +61,9 @@ export const CheckDocker: React.FC<StepProps> = (props) => {
             Follow the instructions in the documentation to get you started.
             <div className="mt-6">
               <Button>
-                <a href="https://arkitekt.live/docs/installation">
+                <div onClick={() => open("https://arkitekt.live/docs/installation")} >
                   Open Documentation
-                </a>
+                </div>
               </Button>
             </div>
           </div>
