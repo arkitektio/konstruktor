@@ -10,36 +10,27 @@ export const Logs: React.FC<{ app: App; service?: string }> = ({
   app,
   service,
 }) => {
-  const [rollingLog, setRollingLog] = useState<string[]>([]);
-  const [retrigger, setRetrigger] = useState<boolean>(false);
-  const lok_port = 8000;
-  let deployment = app.name;
 
   const { run: logcommand, logs, error, finished } = useLazyCommand({});
 
-  useEffect(() => {
+
+  const reload = () => {
     logcommand({
       program: "docker",
       args: service
-        ? ["compose", "logs", "-f", "--tail", "30", service]
-        : ["compose", "logs", "-f", "--tail", "30"],
+        ? ["compose", "logs", "--tail", "30", service]
+        : ["compose", "logs", "--tail", "30"],
       options: {
         cwd: app.path,
       },
     });
-    const timeout = setInterval(() => {
-      logcommand({
-        program: "docker",
-        args: service
-          ? ["compose", "logs", "-f", "--tail", "30", service]
-          : ["compose", "logs", "-f", "--tail", "30"],
-        options: {
-          cwd: app.path,
-        },
-      });
-    }, 4000);
-    return () => clearInterval(timeout);
-  }, [retrigger]);
+  }
+
+
+
+  useEffect(() => {
+    reload();
+  }, []);
 
   return (
     <Page
@@ -53,18 +44,24 @@ export const Logs: React.FC<{ app: App; service?: string }> = ({
         </>
       }
     >
-      <pre className="flex-grow bg-card rounded rounded-xl p-2">
-        {logs && logs.length > 0 ? (
-          logs.map((l, index) => (
-            <div key={index}>
-              {l}
-              <br />
-            </div>
-          ))
-        ) : (
-          <>No logs</>
-        )}
-      </pre>
+      <div className="flex-col">
+      <Button className="relative top-0 left-0" onClick={() => reload()}>Reload</Button>
+      <div className="flex-grow bg-card rounded rounded-xl p-2 relative overflow-y-scroll">
+        <pre className="flex-grow bg-card rounded rounded-xl p-2 relative" >
+          {logs && logs.length > 0 ? (
+            logs.map((l, index) => (
+              <div key={index}>
+                {l}
+                <br />
+              </div>
+            ))
+          ) : (
+            <>No logs</>
+          )}
+          
+        </pre>
+        </div>
+      </div>
     </Page>
   );
 };

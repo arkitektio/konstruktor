@@ -40,6 +40,8 @@ export const debugUser = {
   email: "debug@debug.com",
   groups: ["myteam"],
 };
+import { type } from '@tauri-apps/api/os';
+
 
 export type ConditionalStep = Step & {
   name: AvailableForms;
@@ -163,7 +165,7 @@ export const ChannelSetup = ({
       formikHelpers.setSubmitting(true);
       setOpen(true);
 
-      let builder = "jhnnsrs/paperbuilder:latest";
+      let builder = channel.builder;
 
       try {
         setStatus("Fetching builder ...");
@@ -180,9 +182,51 @@ export const ChannelSetup = ({
 
         let path = await installApp(name, channel, values);
 
+        console.log("Path", path);
+
+        const osType = await type();  
+
+        let params = ["run", "--rm", "-v", `${path}:/app/init`]
+
+        console.log("OS", osType);
+
+
+        if (osType == "Linux" || osType == "Darwin") {
+          setStatus("Running ...");
+          let uid = await run({
+            program: "id",
+            args: ["-u"],
+            options: {
+              cwd: path,
+            },
+          });
+
+
+          let UID = uid.stdout;
+          let gid = await run({
+            program: "id",
+            args: ["-g"],
+            options: {
+              cwd: path,
+            },
+          });
+
+          let GID = gid.stdout;
+
+          console.log("UID", UID);
+          console.log("GID", GID);
+
+
+          params = params.concat(["-u" ,`${UID}:${GID}`])
+        }
+
+        console.log("Params", params);
+
+
+
         let buildingApp = await run({
           program: "docker",
-          args: ["run", "--rm", "-v", `${path}:/app/init`, builder],
+          args: params.concat([builder]),
           options: {
             cwd: path,
           },

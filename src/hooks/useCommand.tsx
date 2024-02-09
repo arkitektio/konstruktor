@@ -103,11 +103,11 @@ export const useLazyCommand = (params: LazyCommandParams) => {
   const [finished, setFinished] = useState<ChildProcess | null>(null);
 
   const listener = (data: string) => {
-    setLogs((prevLogs) => [data, ...prevLogs].slice(0, params.logLength));
+    setLogs((prevLogs) => [ ...prevLogs, data,].slice(0, params.logLength));
   };
 
   const errorListener = (data: string) => {
-    setLogs((prevLogs) => [data, ...prevLogs].slice(0, params.logLength));
+    setLogs((prevLogs) => [...prevLogs, data, ].slice(0, params.logLength));
     setError(data);
   };
 
