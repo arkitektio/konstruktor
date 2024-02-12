@@ -15,7 +15,7 @@ export const ChannelSelectionField = ({ ...props }: any) => {
 
   return (
     <>
-      <div className="grid grid-cols-2 @xl:grid-cols-2 gap-2 mt-2 ">
+      <div className="flex flex-row w-full gap-2 mt-2 ">
         {channels.map((channel, i) => {
           return (
             <Card
@@ -48,7 +48,7 @@ export const ChannelSelectionField = ({ ...props }: any) => {
           );
         })}
       </div>
-      {errors.length > 0 && <div className="grid grid-cols-2 @xl:grid-cols-2 gap-2 mt-2 ">
+      {errors.length > 0 && <div className="grid grid-cols-4 @xl:grid-cols-4 gap-2 mt-2 ">
         {errors.map((e) => <Card className="bg-destructive"><CardHeader><CardTitle>Error</CardTitle><CardDescription>The repo {e.repo} is faulty</CardDescription></CardHeader>
         <CardContent><ScrollArea>{e.errors.map((e) => <div>{e.path} {e.message}</div>)}</ScrollArea></CardContent>
         <CardFooter>Tell these errors to the Repo Owner </CardFooter></Card>)}

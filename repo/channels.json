@@ -8,7 +8,7 @@
                 "experimental": false,
                 "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/paper.png",
                 "long": "The paper deployment to reproduce the paper.",
-                "description": "The original paper deployment. That can be used to generate the conditions of deployment as presented in the paper. It comes with a default set of enabled applications",
+                "description": "The original paper deployment. That can be used to generate the conditions of deployment as presented in the paper. It comes with a default set of enabled applications and does not",
                 "features": [
                     {
                     "name": "Easy",
@@ -31,25 +31,34 @@
                         "username": "demo",
                         "password": "demo",
                         "groups": ["mygroup"]
-                    }]
+                    }],
+                    "omero_server": {
+                      "enabled": false
+                    },
+                    "omero_ark": {
+                      "enabled": false
+                    },
+                    "omero_web": {
+                      "enabled": false
+                    }
                 }
             },
             {
-              "name": "next",
-              "title": "next",
+              "name": "full",
+              "title": "full",
               "experimental": true,
-              "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/next.png",
-              "long": "The next deployment contains breaking changes and is not yet stable. It does however give an impression of the future of Arkitekt",
+              "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/full.png",
+              "long": "The full deployment includes all available services for the Arkitekt platform and comes included with both Omero and das DASK Kluster",
               "description": "The next deployment",
               "features": [
                 {
-                  "name": "Easy",
-                  "description": "Easy to use",
-                  "long": "This deployment is easy to use"
+                  "name": "Full",
+                  "description": "Full Features Set",
+                  "long": "This deployment contains the full feature set of Arkitekt"
                 }
               ],
               "preview": true,
-              "builder": "jhnnsrs/arkitekt_paper_builder",
+              "builder": "jhnnsrs/paperbuilder:latest",
               "forms": ["check_gpu", "admin_user", "users", "groups"],
               "defaults": {
                 "name": "mydeployment",
@@ -64,103 +73,37 @@
                     "password": "demo",
                     "groups": ["mygroup"]
                 }]
-              },
-              "availableApps": [{
-                "name": "orkestrator",
-                "identifier": "github.io.jhnnsrs.orkestrator",
-                "version": "latest",
-                "description": "The interface",
-                "long": "Orkestrator is the default interface for the platform, enabling you to visualize and control your data and apps",
-                "image":
-                "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-                "requires": ["lok", "rekuest", "mikro"],
-                "scopes": ["read"],
-                "redirect_uris": [
-                "http://localhost:8090",
-                "http://localhost:6789/callback",
-                "http://localhost:6789",
-                "http://localhost:7890",
-                "http://localhost:7890/",
-                "http://localhost:7890/callback"
-                ],
-                "client_kind": "WEBSITE"
-                }],
 
-            "availableServices": [{
-                    "name": "redis",
-                    "interface": "redis",
-                    "description": "The pubsub",
-                    "long":"This allows services to publish and subscribe to events",
-                    "image": "redis:latest",
-                    "requires": [],
-                    "is_backend": true,
-                    "extras": {}
-                    }
-            ]
+              }
             },
             {
-                "name": "next",
-                "title": "next",
-                "experimental": true,
-                "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/next.png",
-                "long": "The next deployment contains breaking changes and is not yet stable. It does however give an impression of the future of Arkitekt",
-                "description": "The next deployment",
-                "features": [
-                  {
-                    "name": "Easy",
-                    "description": "Easy to use",
-                    "long": "This deployment is easy to use"
-                  }
-                ],
-                "preview": true,
-                "builder": "jhnnsrs/arkitekt_paper_builder",
-                "forms": ["check_gpu", "admin_user", "users", "groups"],
-                "defaults": {
-                  "name": "mydeployment",
-                  "adminUsername": "admin",
-                  "adminPassword": "admin",
-                  "groups": [{
-                      "name": "mygroup",
-                      "description": "mygroup"
-                  }],
-                  "users": [{
-                      "username": "demo",
-                      "password": "demo",
-                      "groups": ["mygroup"]
-                  }]
+              "name": "omero",
+              "title": "omero",
+              "experimental": true,
+              "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/omero.png",
+              "long": "This deployment contains only omero without any Arkitekt installation",
+              "description": "The OMERO deployment",
+              "features": [
+                {
+                  "name": "OMERO",
+                  "description": "Only OMERO",
+                  "long": "This deployment contains only OMERO"
+                }
+              ],
+              "preview": true,
+              "builder": "jhnnsrs/omerobuilder:latest",
+              "forms": [],
+              "defaults": {
+                "omero_server": {
+                  "enabled": true
                 },
-                "availableApps": [{
-                  "name": "orkestrator",
-                  "identifier": "github.io.jhnnsrs.orkestrator",
-                  "version": "latest",
-                  "description": "The interface",
-                  "long": "Orkestrator is the default interface for the platform, enabling you to visualize and control your data and apps",
-                  "image":
-                  "https://cdn.sstatic.net/Img/teams/teams-illo-free-sidebar-promo.svg?v=47faa659a05e",
-                  "requires": ["lok", "rekuest", "mikro"],
-                  "scopes": ["read"],
-                  "redirect_uris": [
-                  "http://localhost:8090",
-                  "http://localhost:6789/callback",
-                  "http://localhost:6789",
-                  "http://localhost:7890",
-                  "http://localhost:7890/",
-                  "http://localhost:7890/callback"
-                  ],
-                  "client_kind": "WEBSITE"
-                  }],
-  
-              "availableServices": [{
-                      "name": "redis",
-                      "interface": "redis",
-                      "description": "The pubsub",
-                      "long":"This allows services to publish and subscribe to events",
-                      "image": "redis:latest",
-                      "requires": [],
-                      "is_backend": true,
-                      "extras": {}
-                      }
-              ]
+                "omero_ark": {
+                  "enabled": false
+                },
+                "omero_web": {
+                  "enabled": true
+                }
               }
+            }
         ] 
 }
