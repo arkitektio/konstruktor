@@ -41,7 +41,7 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({
     (repoResult: any) => {
       try {
         console.log(repoResult)
-        let result = repoSchema.validateSync(repoResult, { abortEarly: false });
+        let result = repoSchema.parse(repoResult);
         ensureChannels(result.channels);
       }
       catch (e) {

@@ -11,6 +11,7 @@ import {
   Group,
   SetupValues,
   User,
+  repoSchema,
   useRepo,
 } from "../../repo/repo-context";
 import { useStorage } from "../../storage/storage-context";
@@ -22,7 +23,7 @@ import { ServiceSelection } from "./forms/ServiceSelection";
 import { UsersForm } from "./forms/UsersForm";
 import { GroupsForm } from "./forms/GroupsForm";
 import { ChannelGreeting } from "./forms/ChannelGreeting";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCommand, useLazyCommand } from "../../hooks/useCommand";
 import {
   Dialog,
@@ -41,16 +42,29 @@ export const debugUser = {
   groups: ["myteam"],
 };
 import { type } from '@tauri-apps/api/os';
-import { halloPlugin } from "./plugins/HalloPlugin";
-import { WizardPlugin } from "./plugins/build";
-import { portPlugin } from "./plugins/PortPlugin";
+import channelsJson from "../../repo/channels.json"
+import * as yup from "yup"
+import { ConditionalStep } from "./ChannelSetup";
 
 
 
-export type ConditionalStep = Step & {
-  name: AvailableForms;
 
-};
+
+
+export const NewSetupWrapper = () => {
+
+  const [channel, setChannel ] = useState<Channel | undefined>(undefined)
+
+  useEffect(() => {
+
+    repoSchema.validate(channelsJson).then(x => setChannel(x.channels.at(0)))
+
+
+  }, [])
+
+  return <>{channel && <NewSetup channel={channel} name="hallo" />}</>
+
+}
 
 export const allSteps: ConditionalStep[] = [
   {
@@ -145,43 +159,17 @@ export const allSteps: ConditionalStep[] = [
 
 
 
-export type PluginKeys =  Channel["plugins"][0]["type"]
 
 
 
-const pluginRegistry: Record<PluginKeys, WizardPlugin> = {
-  "hallo": halloPlugin,
-  "port": portPlugin
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-export const ChannelSetup = ({
-  channel,
-  name,
+export const NewSetup = ({channel, name
 }: {
   channel: Channel;
   name: string;
 }) => {
   const { installApp, deleteApp } = useStorage();
+
+  
 
   const { run, logs, finished } = useLazyCommand({
     logLength: 50,
@@ -192,8 +180,6 @@ export const ChannelSetup = ({
   const [status, setStatus] = useState<string | undefined>(undefined);
 
   const navigate = useNavigate();
-
-  
 
   const handleSubmit = async (
     values: Partial<SetupValues>,
@@ -297,26 +283,34 @@ export const ChannelSetup = ({
     }
   };
 
-  const plugins = allSteps.filter((step) => {
+  const steps = [allSteps.filter((step) => {
     return (
       channel.forms.includes(step.name as AvailableForms) ||
       step.name === "done" ||
       step.name === "greeting" ||
       step.name ==  "check_gpu"
     );
-  });
+  })]
 
   return (
-    <form.Provider>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            void form.handleSubmit()
-          }}
-        >
-          <div>
-            {/* A type-safe field component*/}
+    <FormikWizard
+      initialValues={{...channel.defaults, name: name} || {}}
+      onSubmit={handleSubmit}
+      validateOnNext
+      validateOnMount
+      validateOnChange
+      activeStepIndex={0}
+      steps={steps}
+    >
+      {({
+        currentStepIndex,
+        renderComponent,
+        handlePrev,
+        handleNext,
+        isSubmitting,
+        isNextDisabled,
+        isPrevDisabled,
+      }: RenderProps) => {
         return (
           <Page
             buttons={

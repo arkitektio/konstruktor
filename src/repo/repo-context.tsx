@@ -1,5 +1,7 @@
 import React, { useContext } from "react";
 import * as  Yup from "yup";
+import * as zod from "zod";
+import { pluginSchema } from "../screens/wizard/plugins/global";
 export type App = {
   name: string;
   long?: string;
@@ -92,32 +94,6 @@ export type Feature = {
 
 
 
-export const appSchema = Yup.object().shape({
-  name: Yup.string().required("Name is required"),
-  long: Yup.string(),
-  logo: Yup.string(),
-  description: Yup.string().required("Description is required"),
-  identifier: Yup.string().required("Identifier is required"),
-  version: Yup.string().required("Version is required"),
-  scopes: Yup.array().of(Yup.string().required()).required("Scopes are required"),
-  requires:  Yup.array().of(Yup.string().required()),
-  client_kind: Yup.string().oneOf(clientKindOptions).required(),
-  experimental: Yup.boolean(),
-  redirect_uris: Yup.array().of(Yup.string().required()),
-});
-
-export const serviceSchema = Yup.object().shape({
-  name: Yup.string().required("Name is required"),
-  image: Yup.string().required("Image is required"),
-  long: Yup.string(),
-  logo: Yup.string(),
-  description: Yup.string(),
-  requires:  Yup.array().of(Yup.string().required()),
-  experimental: Yup.boolean(),
-  interface: Yup.string().required("Interface is required"),
-});
-
-
 export const featureSchema = Yup.object().shape({
   name: Yup.string(),
   description: Yup.string(),
@@ -127,20 +103,6 @@ export const featureSchema = Yup.object().shape({
 export const availableForms = Yup.array().of<AvailableForms>(Yup.string().oneOf(availableFormsValue).required()).required("Forms are required");
 
 
-export type Channel = {
-  title: string;
-  name: string;
-  builder: string;
-  logo?: string;
-  long?: string;
-  experimental?: boolean;
-  description?: string;
-  features?: Feature[];
-  forms: AvailableForms[];
-  defaults?: Partial<SetupValues>;
-  availableApps?: App[];
-  availableServices?: Service[];
-};
 
 
 const usersSchema = Yup.array().of(
@@ -170,34 +132,46 @@ export const setupSchema = Yup.object().shape({
 
 
 
-export const channelSchema = Yup.object().shape({
-  name: Yup.string()
-    .required("Name is required")
-    .min(3, "Name must be at least 3 characters")
-    .max(20, "Name must be at most 20 characters"),
-  builder: Yup.string()
-    .required("Builder is required"),
-  availableApps: Yup.array().of(appSchema),
-  availableServices: Yup.array().of(serviceSchema),
-  logo: Yup.string(),
-  long: Yup.string(),
-  experimental: Yup.boolean(),
-  defaults: setupSchema,
-  description: Yup.string(),
-  title: Yup.string().required("Title is required"),
-  forms: availableForms,
-
-});
-  
 
 
 
-export const repoSchema = Yup.object().shape({
-  repo: Yup.string()
-    .required("Name is required")
-    .min(3, "Name must be at least 3 characters"),
-  channels: Yup.array().of(channelSchema).required("Channels are required"),
-});
+
+
+
+
+export const channelSchema = zod.object({
+  name: zod.string(),
+  builder: zod.string(),
+  logo: zod.optional(zod.string()),
+  long: zod.optional(zod.string()),
+  experimental: zod.optional(zod.boolean()),
+  description: zod.optional(zod.string()),
+  title: zod.optional(zod.string()),
+  plugins: zod.array(pluginSchema),
+  forms: zod.array(zod.string()),
+  defaults: zod.any()
+})
+
+
+export type Channel = zod.TypeOf<typeof channelSchema>
+
+
+
+export const repoSchema = zod.object({
+  repo: zod.string(),
+  channels: zod.array(channelSchema)
+
+})
+
+
+export type Repo = zod.TypeOf<typeof repoSchema>
+
+
+
+
+
+
+
 
 
 

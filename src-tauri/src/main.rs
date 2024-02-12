@@ -38,6 +38,7 @@ fn main() {
             cmd::directory_stop_cmd,
             cmd::advertise_endpoint,
             cmd::list_network_interfaces,
+            cmd::check_port_available
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

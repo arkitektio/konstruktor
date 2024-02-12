@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::fs::canonicalize;
-use std::net::UdpSocket;
+use std::net::{TcpListener, UdpSocket};
 use std::process::Command;
 use std::str;
 use std::time::Duration;
@@ -155,6 +155,28 @@ pub async fn test_docker(event: String) -> Option<String> {
 
     Some(serde_json::to_string(&info).unwrap())
 }
+
+
+fn port_is_available(port: u16) -> bool {
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+
+#[command]
+pub async fn check_port_available(port: u16) -> bool {
+    return port_is_available(port)
+}
+
+
+
+
+
+
+
+
 
 #[command]
 pub async fn advertise_endpoint(signals: Vec<BeaconSignal>) -> Option<String> {

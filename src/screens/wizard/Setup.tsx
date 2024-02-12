@@ -25,6 +25,37 @@ export const debugUser = {
   groups: ["myteam"],
 };
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export const Setup: React.FC<{}> = (props) => {
   const { call } = useCommunication();
   const { installApp, apps } = useStorage();

@@ -5,9 +5,10 @@ export enum DockerConnectionStrategy {
   REMOTE = "REMOTE",
 }
 
-export type StepProps = {
+export type StepProps<T extends any = {}> = {
   errors: FormikErrors<FormikValues>;
   values: FormikValues;
+  schema: T
   handleChange: FormikHandlers["handleChange"];
 };
 

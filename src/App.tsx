@@ -19,15 +19,34 @@ import { AlerterDialog } from "./alerter/AlerterDialog";
 import { ChannelSetup, ChannelSetupPage } from "./screens/wizard/ChannelSetup";
 import { RepoProvider } from "./repo/repo-provider";
 import { RepoSearcher } from "./repo/RepoSearcher";
+import { NewSetup } from "./screens/wizard/NewSetup";
+
+
+
+import { Channel, repoSchema } from "./repo/repo-context";
+import { useEffect, useState } from "react";
+import { TestRepo } from "./repo/TestRepo";
+
+
+
+
+
+
 
 function App() {
   const location = useLocation();
+
+
+  
+
+
 
   return (
     <CommunicationProvider>
       <BindingsProvider>
         <RepoProvider>
           <RepoSearcher url="https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/repo/channels.json" />
+          <TestRepo/>
           <AlerterProvider>
             <AlerterDialog />
             <BeaconProvider>

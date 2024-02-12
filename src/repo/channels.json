@@ -1,0 +1,71 @@
+{
+    "repo": "default",
+    "channels": 
+        [
+            {
+                "name": "paper",
+                "title": "Paper",
+                "experimental": false,
+                "logo": "https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/public/paper.png",
+                "long": "The paper deployment to reproduce the paper.",
+                "description": "The original paper deployment. That can be used to generate the conditions of deployment as presented in the paper. It comes with a default set of enabled applications",
+                "features": [
+                    {
+                    "name": "Easy",
+                    "description": "Easy to use",
+                    "long": "This deployment is easy to use"
+                    }
+                ],
+                "preview": false,
+                "builder": "jhnnsrs/paperbuilder:latest",
+                "forms": ["check_gpu", "admin_user", "users", "groups" ],
+                "defaults": {
+                    "name": "paper",
+                    "adminUsername": "admin",
+                    "adminPassword": "admin"
+                },
+                "plugins": [{
+                  "type": "hallo",
+                  "hello": "You cutepy",
+                  "defaults": {
+                    "name": "paper"
+                  }
+                },
+                {
+                  "type": "check_gpu",
+                  "hello": "You cutepy"
+                },
+                {
+                  "type": "admin_user",
+                  "hello": "Admin User",
+                  "defaults": [{
+                    "adminUsername": "admin",
+                    "adminPassword": "admin"
+                  }]
+                },
+                {
+                  "type": "users",
+                  "hello": "Admin User",
+                  "defaults": [{
+                    "username": "demo",
+                    "password": "demo",
+                    "groups": ["mygroup"]
+                }]
+                  
+                },
+                {
+                  "type": "groups",
+                  "hello": "Admin User",
+                  "defaults":  [{
+                    "name": "mygroup",
+                    "description": "mygroup"
+                  }]
+                }
+              
+              
+              ]
+                 
+            }
+           
+        ] 
+}
