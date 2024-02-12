@@ -265,7 +265,6 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
     },
   });
 
-  const lok_port = 8000;
   let deployment = app.name.toLowerCase();
   const [bindings, setAvailableBindings] = useState<BeaconInterface[]>([]);
 
@@ -384,6 +383,8 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
         alert(err);
       });
   };
+
+  const lok_port = 11000;
 
 
 
