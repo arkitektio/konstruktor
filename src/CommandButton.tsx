@@ -35,9 +35,7 @@ export const CommandButton = (props: {
           });
         }}
         disabled={running}
-        className={`border cursor-pointer shadow-md shadow hover:bg-gray-200 border-1 border-gray-300 rounded p-2 bg-white text-black ${
-          running ? "animate-pulse" : ""
-        }`}
+        className={running ? "animate-pulse" : undefined}
       >
         {running && props.runningTitle ? props.runningTitle : props.title}
       </Button>

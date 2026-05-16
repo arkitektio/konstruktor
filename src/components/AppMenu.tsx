@@ -1,4 +1,4 @@
-import { DialogTrigger } from "@radix-ui/react-dialog";
+import { DialogTrigger } from "./ui/dialog";
 import { useCommand } from "../hooks/useCommand";
 import { Logo } from "../layout/Logo";
 import { useSettings } from "../settings/settings-context";
@@ -45,9 +45,9 @@ export const LogoMenu = () => {
           <Logo
             width={"25"}
             height={"25"}
-            cubeColor={"hsl(var(--accent)"}
-            aColor={"hsl(var(--foreground)"}
-            strokeColor={"hsl(var(--foreground)"}
+            cubeColor={"var(--primary)"}
+            aColor={"var(--foreground)"}
+            strokeColor={"var(--foreground)"}
           />
         </div>
         Konstruktor

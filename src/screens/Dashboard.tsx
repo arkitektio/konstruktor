@@ -15,14 +15,14 @@ export const ServiceHealth = (props: { service: any }) => {
     <ResponsiveGrid>
       {props?.service?.ok &&
         Object.keys(props?.service?.ok).map((key) => (
-          <div className="border rounded bg-green-200 border-green-600 bg-white p-3 shadow-xl">
+          <div className="border rounded bg-green-500/10 border-green-500/50 p-3">
             <div className="font-light">{key}</div>
             {JSON.stringify((props?.service?.ok as any)[key])}
           </div>
         ))}
       {props?.service?.error &&
         Object.keys(props?.service?.error).map((key) => (
-          <div className="border rounded bg-red-200 border-red-600 bg-white p-3 shadow-xl">
+          <div className="border rounded bg-destructive/10 border-destructive/50 p-3">
             <div className="font-light">{key}</div>
             {JSON.stringify((props?.service?.error as any)[key])}
           </div>
@@ -54,29 +54,29 @@ export type Service = {
 
 const getServiceColor = (service: Service) => {
   if (service.containers.length === 0) {
-    return "bg-gray-200 border-gray-600";
+    return "bg-muted border-muted-foreground/30";
   }
   if (service.containers.every((c) => c.state == "running")) {
-    return "bg-green-400 border-green-600";
+    return "bg-green-500/15 border-green-500/50";
   }
   if (service.containers.some((c) => c.state == "running")) {
-    return "bg-yellow-200 border-yellow-600";
+    return "bg-amber-500/15 border-amber-500/50";
   }
 
-  return "bg-red-500 border-red-600";
+  return "bg-destructive/10 border-destructive/50";
 };
 
 const getContainerColor = (container: Container) => {
   if (container.state == "running") {
-    return "border-green-600";
+    return "border-green-500/50";
   }
   if (container.state == "exited") {
-    return "border-red-600";
+    return "border-destructive/50";
   }
 };
 
 
-import { DialogTrigger } from "@radix-ui/react-dialog";
+import { DialogTrigger } from "../components/ui/dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
 import { BaseDirectory, DirEntry, readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { CommandButton, DangerousButton, DangerousCommandButton } from "../CommandButton";
@@ -171,7 +171,7 @@ export const HealthIndicator = (props: { healthz: string | undefined, s: any }) 
   
 
   return props.healthz ? <div
-  className={`h-3 w-3 rounded-full border ${healthy ? "bg-green-400 border-green-600" : "border-red-600"} inline-block`}
+  className={`h-3 w-3 rounded-full border ${healthy ? "bg-green-500 border-green-500/60" : "bg-destructive/20 border-destructive"} inline-block`}
 ></div> : <div
   className={`h-3 w-3 rounded-full border ${getServiceColor(
     props.s
@@ -458,7 +458,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
               <DialogContent className="bg-card">
                 <DialogTitle>{dialogStatus}</DialogTitle>
                 {logs.length > 0 && (
-                  <ScrollArea className="w-full h-[50vh] bg-gray-900 p-3 rounded rounded-md overflow-scroll">
+                  <ScrollArea className="w-full h-[50vh] bg-muted p-3 rounded-md overflow-scroll font-mono text-xs">
                     {logs.map((p, i) => (
                       <div className="w-full grid grid-cols-12 ">
                         <div className="col-span-1">{i}</div>
@@ -661,7 +661,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
                     {s.containers.map((c, index) => {
                       return (
                         <div
-                          className={`group border border-1 white p-2 p-3 rounded rounded-md ${getContainerColor(
+                          className={`group border border-border p-3 rounded-md ${getContainerColor(
                             c
                           )}`}
                         >

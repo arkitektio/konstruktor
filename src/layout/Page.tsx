@@ -15,13 +15,13 @@ export const Page = ({
   buttons?: React.ReactNode;
 }) => {
   return (
-    <div className="h-screen w-screen bg-back-900 text-white w-screen flex h-full overflow-y-hidden flex flex-col relative">
+    <div className="h-screen w-screen bg-background text-foreground flex h-full overflow-y-hidden flex-col relative">
       <div className="h-[5%]">{menu || <AppMenu />}</div>
       <ScrollArea className={cn("flex flex-col p-6 h-[90%]", className)}>
         {children}
       </ScrollArea>
 
-      <div className="absolute w-full bottom-0 flex-initial flex flex-row-reverse gap-2 p-3 bg-card h-[10%] border-t border-foreground">
+      <div className="absolute w-full bottom-0 flex-initial flex flex-row-reverse gap-2 p-3 bg-card h-[10%] border-t border-border">
         {buttons}
       </div>
     </div>

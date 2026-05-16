@@ -25,9 +25,9 @@ export const AppMenu = () => {
             <Logo
               width={"25"}
               height={"25"}
-              cubeColor={"hsl(var(--accent)"}
-              aColor={"hsl(var(--foreground)"}
-              strokeColor={"hsl(var(--foreground)"}
+              cubeColor={"var(--primary)"}
+              aColor={"var(--foreground)"}
+              strokeColor={"var(--foreground)"}
             />
           </div>
           Konstruktor

@@ -42,9 +42,9 @@ export const Home: React.FC<{}> = (props) => {
                       <Logo
                         width={"40"}
                         height={"40"}
-                        cubeColor={"hsl(var(--accent)"}
-                        aColor={"hsl(var(--foreground)"}
-                        strokeColor={"hsl(var(--foreground)"}
+                        cubeColor={"var(--primary)"}
+                        aColor={"var(--foreground)"}
+                        strokeColor={"var(--foreground)"}
                       />
                     </div>
 
@@ -69,9 +69,9 @@ export const Home: React.FC<{}> = (props) => {
             <Logo
               width={"120"}
               height={"120"}
-              cubeColor={"hsl(var(--accent)"}
-              aColor={"hsl(var(--foreground)"}
-              strokeColor={"hsl(var(--foreground)"}
+              cubeColor={"var(--primary)"}
+              aColor={"var(--foreground)"}
+              strokeColor={"var(--foreground)"}
             />
           </div>
           <div className="text-2xl font-bold">Welcome to Konstruktor</div>
