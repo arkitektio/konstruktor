@@ -1,34 +1,119 @@
-@import "tailwindcss";
-@import "tw-animate-css";
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/noto-sans';
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant selected (&[data-selected="true"]);
+@custom-variant b-selected (&[data-bselected="true"]);
+@custom-variant over (&[data-over="true"]);
+@custom-variant dragging (&[data-dragging="true"]);
+@custom-variant isdropping (&[data-isdropping="true"]);
+@custom-variant can-drop (&[data-can-drop="true"]);
+
+:root {
+  /* --- MASTER THEME CONTROLS --- */
+  --brand-hue: 267.256;
+  --brand-chroma: 0.20962;
+
+  /* Base Neutrals */
+  --background: oklch(1 0 0);
+  --backgroundpaired: oklch(26.448% 0.005 var(--brand-hue));
+  --foreground: oklch(0.145 0.005 var(--brand-hue));
+
+  /* Surfaces */
+  --card: var(--background);
+  --card-foreground: var(--foreground);
+  --popover: var(--background);
+  --popover-foreground: var(--foreground);
+
+  /* Primary Colors */
+  --primary: oklch(31.185% var(--brand-chroma) var(--brand-hue));
+  --primary-similar: oklch(from var(--primary) calc(l + 0.46) calc(c - 0.09) h);
+  --primary-foreground: oklch(0.98 0.02 var(--brand-hue));
+
+  /* Secondary & Accents */
+  --secondary: oklch(0.967 0.005 var(--brand-hue));
+  --secondary-foreground: oklch(0.21 0.006 var(--brand-hue));
+  --muted: oklch(0.97 0.002 var(--brand-hue));
+  --muted-foreground: oklch(0.556 0.01 var(--brand-hue));
+  --accent: oklch(0.97 0.01 var(--brand-hue));
+  --accent-foreground: oklch(0.205 0.01 var(--brand-hue));
+
+  /* Interactive & Status */
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0.922 0.005 var(--brand-hue));
+  --input: oklch(0.922 0.005 var(--brand-hue));
+  --ring: oklch(from var(--primary) 0.708 calc(c * 0.5) h);
+
+  /* Charts */
+  --chart-1: oklch(0.85 0.13 calc(var(--brand-hue) - 100));
+  --chart-2: oklch(0.77 0.15 calc(var(--brand-hue) - 104));
+  --chart-3: oklch(0.7 0.15 calc(var(--brand-hue) - 105));
+  --chart-4: oklch(0.6 0.13 calc(var(--brand-hue) - 104));
+  --chart-5: oklch(0.51 0.1 calc(var(--brand-hue) - 101));
+
+  --radius: 0.625rem;
+
+  /* Sidebar */
+  --sidebar: oklch(0.985 0.002 var(--brand-hue));
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+.dark {
+  /* --- MASTER THEME CONTROLS --- */
+  --brand-hue: 165.057;
+  --brand-chroma: 0.14384;
+
+  --background: oklch(0% 0 0);
+  --backgroundpaired: oklch(34.846% 0.005 var(--brand-hue));
+  --foreground: oklch(0.985 0.005 var(--brand-hue));
+
+  --card: oklch(0.205 0.01 var(--brand-hue));
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(70.058% var(--brand-chroma) var(--brand-hue));
+  --primary-similar: oklch(from var(--primary) calc(l - 0.19) calc(c - 0.04) h);
+  --primary-foreground: oklch(0.15 0.02 var(--brand-hue));
+
+  --secondary: oklch(0.274 0.006 var(--brand-hue));
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.269 0.005 var(--brand-hue));
+  --muted-foreground: oklch(0.708 0.01 var(--brand-hue));
+  --accent: oklch(0.371 0.01 var(--brand-hue));
+  --accent-foreground: var(--foreground);
+
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(from var(--primary) 0.556 calc(c * 0.5) h);
+
+  /* Charts */
+  --chart-1: oklch(0.85 0.13 var(--brand-hue));
+  --chart-2: oklch(0.77 0.15 calc(var(--brand-hue) - 2));
+  --chart-3: oklch(0.7 0.15 calc(var(--brand-hue) - 3));
+  --chart-4: oklch(0.6 0.13 calc(var(--brand-hue) - 2));
+  --chart-5: oklch(0.51 0.1 calc(var(--brand-hue) + 1));
+
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: oklch(0.26 0.05 var(--brand-hue));
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --animate-accordion-down: accordion-down 0.2s ease-out;
-  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --font-sans: 'Noto Sans Variable', sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -37,109 +122,308 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
-}
-
-@layer base {
-  :root {
-    --background: hsl(255 71.4% 9.1%);
-    --foreground: hsl(210 20% 98%);
-
-    --card: hsl(224 71.4% 6.1%);
-    --card-foreground: hsl(210 20% 98%);
-
-    --popover: hsl(224 71.4% 4.1%);
-    --popover-foreground: hsl(210 20% 98%);
-
-    --primary: hsl(210 20% 98%);
-    --primary-foreground: hsl(220.9 39.3% 11%);
-
-    --secondary: hsl(215 27.9% 16.9%);
-    --secondary-foreground: hsl(210 20% 98%);
-
-    --muted: hsl(215 27.9% 16.9%);
-    --muted-foreground: hsl(217.9 10.6% 64.9%);
-
-    --accent: hsl(215 27.9% 16.9%);
-    --accent-foreground: hsl(210 20% 98%);
-
-    --destructive: hsl(0 80.8% 90.6%);
-    --destructive-foreground: hsl(210 20% 98%);
-
-    --border: hsl(215 27.9% 16.9%);
-    --input: hsl(215 27.9% 16.9%);
-    --ring: hsl(216 12.2% 83.9%);
-
-    --radius: 0.5rem;
-  }
-
-  .dark {
-    --background: hsl(224 71.4% 4.1%);
-    --foreground: hsl(210 20% 98%);
-
-    --card: hsl(224 71.4% 4.1%);
-    --card-foreground: hsl(210 20% 98%);
-
-    --popover: hsl(224 71.4% 4.1%);
-    --popover-foreground: hsl(210 20% 98%);
-
-    --primary: hsl(210 20% 98%);
-    --primary-foreground: hsl(220.9 39.3% 11%);
-
-    --secondary: hsl(215 27.9% 16.9%);
-    --secondary-foreground: hsl(210 20% 98%);
-
-    --muted: hsl(215 27.9% 16.9%);
-    --muted-foreground: hsl(217.9 10.6% 64.9%);
-
-    --accent: hsl(215 27.9% 16.9%);
-    --accent-foreground: hsl(210 20% 98%);
-
-    --destructive: hsl(0 62.8% 30.6%);
-    --destructive-foreground: hsl(210 20% 98%);
-
-    --border: hsl(215 27.9% 16.9%);
-    --input: hsl(215 27.9% 16.9%);
-    --ring: hsl(216 12.2% 83.9%);
-  }
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
 }
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply font-sans bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
   }
 }
 
-@keyframes accordion-down {
-  from { height: 0; }
-  to { height: var(--radix-accordion-content-height); }
+::-webkit-scrollbar {
+  @apply w-2 h-2;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-border border-[1px] border-transparent border-solid bg-clip-padding;
 }
 
-@keyframes accordion-up {
-  from { height: var(--radix-accordion-content-height); }
-  to { height: 0; }
+.smartdraggable {
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
-:root {
-  --sidebar: hsl(0 0% 98%);
-  --sidebar-foreground: hsl(240 5.3% 26.1%);
-  --sidebar-primary: hsl(240 5.9% 10%);
-  --sidebar-primary-foreground: hsl(0 0% 98%);
-  --sidebar-accent: hsl(240 4.8% 95.9%);
-  --sidebar-accent-foreground: hsl(240 5.9% 10%);
-  --sidebar-border: hsl(220 13% 91%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+/* ══════════════════════════════════════════════════════════
+   Theme: Abyss Overwrite — shadcn/ui Card Aesthetic
+   ══════════════════════════════════════════════════════════ */
+
+/* Force all structural wrappers to be transparent to remove the "generic background" */
+.dockview-theme-abyss,
+.dockview-theme-abyss .dv-dockview,
+.dockview-theme-abyss .dv-split-view-container,
+.dockview-theme-abyss .dv-view-container {
+  background-color: transparent !important;
 }
 
-.dark {
-  --sidebar: hsl(240 5.9% 10%);
-  --sidebar-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-primary: hsl(224.3 76.3% 48%);
-  --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(240 3.7% 15.9%);
-  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-border: hsl(240 3.7% 15.9%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+.dockview-theme-abyss {
+  --dv-paneview-active-outline-color: transparent !important; /* Changed from white to prevent double borders */
+  --dv-separator-border: transparent !important; /* Keep transparent so sash does the work */
+
+  --dv-tabs-and-actions-container-font-size: 13px;
+  --dv-tabs-and-actions-container-height: 44px;
+  --dv-drag-over-background-color: color-mix(in srgb, var(--primary) 8%, transparent);
+  --dv-drag-over-border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  --dv-drag-over-border: 2px dashed color-mix(in srgb, var(--primary) 35%, transparent);
+  --dv-tabs-container-scrollbar-color: color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+  --dv-icon-hover-background-color: var(--muted);
+  --dv-floating-box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --dv-overlay-z-index: 999;
+  --dv-tab-font-size: 0.8rem;
+  --dv-border-radius: var(--radius);
+  --dv-tab-margin: 0px;
+
+  /* Nullify default sash colors so our custom ones take over completely */
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: transparent !important;
+  --dv-active-sash-transition-duration: 0.1s;
+  --dv-active-sash-transition-delay: 0.3s;
+
+  --dv-scrollbar-background-color: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
+
+  /* Core Card Colors */
+  --dv-group-view-background-color: var(--card);
+  --dv-tabs-and-actions-container-background-color: transparent;
+
+  /* Tab Backgrounds (Strictly Transparent) */
+  --dv-activegroup-visiblepanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+
+  /* Text Colors */
+  --dv-activegroup-visiblepanel-tab-color: var(--foreground);
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-hiddenpanel-tab-color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+
+  /* Borders */
+  --dv-tab-divider-color: transparent;
+  --dv-paneview-header-border-color: var(--border);
+
+  box-sizing: border-box;
+}
+
+/* Force inner React tab contents to inherit the state-driven color from Dockview */
+.dockview-theme-abyss .dv-tab .dv-react-part { color: inherit; }
+.dockview-theme-abyss .dv-view  { color: inherit; }
+.dockview-theme-abyss .dv-tab .dv-react-part * { color: inherit; }
+
+.dockview-theme-abyss .dv-active-group,
+.dockview-theme-abyss .dv-inactive-group {
+  border-color: transparent !important;
+  border-radius: var(--dv-border-radius) !important;
+}
+
+/* Strip padding */
+.dockview-theme-abyss .dv-tabs-and-actions-container .dv-tab {
+  padding: 0 !important;
+}
+
+/* Base Card Styles */
+/* Base Card Styles - Borderless & Floating */
+.dockview-theme-abyss .dv-groupview {
+  overflow: hidden;
+  border-radius: var(--dv-border-radius);
+  border: none !important; /* Kills the ugly outer boundary */
+  background-color: var(--card);
+  /* Slightly enhanced shadow to compensate for the missing border */
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05) !important;
+  outline: 1px solid transparent;
+  outline-offset: -1px; /* Keeps the outline inside the card so it doesn't clip */
+  transition: outline 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Active Card Focus State - Uses a subtle colored outline instead of a thick border */
+.dockview-theme-abyss .dv-groupview.dv-active-group {
+  border: none !important;
+}
+
+.dockview-theme-abyss .dv-groupview.dv-inactive-group {
+  opacity: 0.95;
+}
+
+/* Active Card Focus State */
+.dockview-theme-abyss .dv-groupview.dv-active-group {
+  border-color: color-mix(in srgb, var(--border) 80%, var(--primary)) !important;
+  border-radius: var(--dv-border-radius) !important;
+}
+.dockview-theme-abyss .dv-groupview.dv-inactive-group {
+  opacity: 0.95;
+}
+
+/* Header Separator Line */
+.dockview-theme-abyss .dv-groupview .dv-tabs-and-actions-container {
+  border-bottom: 0px solid var(--border) !important;
+  padding: 0 0px;
+  background-color: transparent !important;
+}
+
+/* Single Tabs Integration */
+.dockview-theme-abyss .dv-groupview .dv-tabs-and-actions-container.dv-single-tab {
+  border-bottom: none;
+}
+
+/* Active Tab Underline */
+.dockview-theme-abyss .dv-active-group .dv-tabs-container > .dv-active-tab {
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+.dockview-theme-abyss .dv-inactive-group .dv-tabs-container > .dv-active-tab {
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+/* Tab Hover */
+.dockview-theme-abyss .dv-groupview .dv-tabs-and-actions-container .dv-tab:hover {
+  background-color: transparent !important;
+  color: var(--foreground);
+}
+
+/* Card Spacing - Creates the "Floating" effect */
+.dockview-theme-abyss .dv-view:has(> .dv-groupview) {
+  padding: 6px;
+  border-radius: 5px;
+}
+
+/* Utilities / Draggers */
+.dockview-theme-abyss .dv-drop-target-container .dv-drop-target-anchor.dv-drop-target-anchor-container-changed { opacity: 0; transition: none; }
+.dockview-theme-abyss .dv-resize-container:has(> .dv-groupview) { border-radius: var(--dv-border-radius); }
+.dockview-theme-abyss .dv-resize-container { border-radius: var(--dv-border-radius) !important; border: none; box-shadow: none; }
+.dockview-theme-abyss .dv-groupview .dv-content-container { background-color: transparent !important; }
+
+.dockview-theme-abyss .dv-default-tab-action,
+.dockview-theme-abyss .dv-void-container,
+.dockview-theme-abyss .dv-right-actions-container { display: none; }
+
+.dockview-theme-abyss .dv-drop-target-anchor { border-radius: calc(var(--dv-border-radius) / 4); }
+.dockview-theme-abyss .dv-drop-target-anchor.dv-drop-target-content { border-radius: var(--dv-border-radius); }
+.dockview-theme-abyss .dv-tabs-overflow-container,
+.dockview-theme-abyss .dv-tabs-overflow-dropdown-default { border-radius: 0.5rem; height: unset !important; }
+
+.dockview-theme-abyss .dv-tab { transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
+
+
+/* ══════════════════════════════════════════════════════════
+   TAB FONT, BACKGROUND & TEXT COLOR OVERRIDES
+   ══════════════════════════════════════════════════════════ */
+.dockview-theme-abyss .dv-tab {
+  border: transparent !important;
+  background-color: transparent !important;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif !important;
+  font-weight: 500 !important;
+  font-size: 0.875rem !important;
+  transition: color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Force active/inactive text colors */
+.dockview-theme-abyss .dv-tab.dv-active-tab {
+  color: var(--foreground) !important;
+  border: transparent !important;
+}
+.dockview-theme-abyss .dv-tab.dv-inactive-tab {
+  color: var(--muted-foreground) !important;
+  border: transparent !important;
+}
+
+/* Force all Dockview native dividers to be transparent so our sash draws the only line */
+.dockview-theme-abyss .dv-split-view-container.dv-separator-border > .dv-view-container > .dv-view:not(:first-child) {
+  border-color: transparent !important;
+}
+.dockview-theme-abyss .dv-split-view-container.dv-separator-border {
+  border-color: transparent !important;
+}
+
+/* Overpower Tailwind inside the React tab node so colors actually apply */
+.dockview-theme-abyss .dv-tab .dv-react-part,
+.dockview-theme-abyss .dv-tab .dv-react-part > div {
+  color: inherit !important;
+  background-color: transparent !important;
+}
+
+
+/* ══════════════════════════════════════════════════════════
+   RESIZE HANDLES (SASHES) — True shadcn/ui Style
+   ══════════════════════════════════════════════════════════ */
+
+/* Keep the actual invisible grab zone transparent */
+.dockview-theme-abyss .dv-sash {
+  background-color: transparent !important;
+  border: none !important;
+}
+
+/* 1. Vertical Splitters (Line goes up and down) */
+.dockview-theme-abyss .dv-horizontal > .dv-sash-container > .dv-sash::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 100%;
+  width: 1px; /* Ultra-thin neutral line */
+  background-color: var(--border);
+  transform: translateX(-50%);
+  transition: background-color 0.2s ease, width 0.2s ease;
+  display: block !important;
+}
+
+/* 2. Horizontal Splitters (Line goes left and right) */
+.dockview-theme-abyss .dv-vertical > .dv-sash-container > .dv-sash::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: 1px; /* Ultra-thin neutral line */
+  background-color: var(--border);
+  transform: translateY(-50%);
+  transition: background-color 0.2s ease, height 0.2s ease;
+  display: block !important;
+}
+
+/* Hover & Drag States: Glows slightly and gets 2px thicker */
+.dockview-theme-abyss .dv-horizontal > .dv-sash-container > .dv-sash:hover::after,
+.dockview-theme-abyss .dv-horizontal > .dv-sash-container > .dv-sash.dv-active-sash::after {
+  background-color: var(--primary) !important;
+  width: 2px !important;
+}
+
+.dockview-theme-abyss .dv-vertical > .dv-sash-container > .dv-sash:hover::after,
+.dockview-theme-abyss .dv-vertical > .dv-sash-container > .dv-sash.dv-active-sash::after {
+  background-color: var(--primary) !important;
+  height: 2px !important;
 }
