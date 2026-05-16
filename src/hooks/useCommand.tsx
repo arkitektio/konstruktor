@@ -3,7 +3,7 @@ import {
   ChildProcess,
   Command,
   SpawnOptions,
-} from "@tauri-apps/api/shell";
+} from "@tauri-apps/plugin-shell";
 import { useEffect, useState } from "react";
 
 export type CommandParams = {
@@ -19,12 +19,12 @@ export type CommandParams = {
 
 export const useCommand = (params: CommandParams) => {
   const [command] = useState(
-    () => new Command(params.program, params.args, params.options)
+    () => Command.create(params.program, params.args, params.options)
   );
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState<boolean>(false);
-  const [finished, setFinished] = useState<ChildProcess | null>(null);
+  const [finished, setFinished] = useState<ChildProcess<string> | null>(null);
 
   const listener = (data: string) => {
     console.log(data);
@@ -37,10 +37,11 @@ export const useCommand = (params: CommandParams) => {
     setError(data);
   };
 
-  const closeListener = (code: number) => {
+  const closeListener = (payload: { code: number | null; signal: number | null }) => {
+    const code = payload.code;
     console.log("close", code);
     if (code === 0) {
-      params.onClose && params.onClose(code);
+      params.onClose && params.onClose(code ?? 0);
     } else {
       params.onError && params.onError(error ? error : "Error");
     }
@@ -96,11 +97,11 @@ export type RunParams = {
 };
 
 export const useLazyCommand = (params: LazyCommandParams) => {
-  const [command, setCommand] = useState<Command | null>(null);
+  const [command, setCommand] = useState<Command<string> | null>(null);
 
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [finished, setFinished] = useState<ChildProcess | null>(null);
+  const [finished, setFinished] = useState<ChildProcess<string> | null>(null);
 
   const listener = (data: string) => {
     setLogs((prevLogs) => [ ...prevLogs, data,].slice(0, params.logLength));
@@ -111,9 +112,10 @@ export const useLazyCommand = (params: LazyCommandParams) => {
     setError(data);
   };
 
-  const closeListener = (code: number) => {
+  const closeListener = (payload: { code: number | null; signal: number | null }) => {
+    const code = payload.code;
     if (code === 0) {
-      params.onClose && params.onClose(code);
+      params.onClose && params.onClose(code ?? 0);
     } else {
       params.onError && params.onError(error ? error : "Error");
     }
@@ -135,7 +137,7 @@ export const useLazyCommand = (params: LazyCommandParams) => {
   }, [command]);
 
   const run = async (params: RunParams) => {
-    let command = new Command(params.program, params.args, params.options);
+    let command = Command.create(params.program, params.args, params.options);
     setFinished(null);
     setCommand(command);
     setLogs([]);

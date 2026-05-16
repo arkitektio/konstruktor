@@ -1,4 +1,4 @@
-import { ChildProcess } from "@tauri-apps/api/shell";
+import { ChildProcess } from "@tauri-apps/plugin-shell";
 import { CommandParams, useCommand } from "./hooks/useCommand";
 import { callbackify } from "util";
 import { useState } from "react";
@@ -10,7 +10,7 @@ import { PopoverClose, PopoverTrigger } from "@radix-ui/react-popover";
 export const CommandButton = (props: {
   params: CommandParams;
   title: string;
-  callback?: (x: ChildProcess) => void;
+  callback?: (x: ChildProcess<string>) => void;
   runningTitle?: string;
 }) => {
   const { run, logs, error, finished, running } = useCommand(props.params);
@@ -48,7 +48,7 @@ export const CommandButton = (props: {
 export const DangerousCommandButton = (props: {
   params: CommandParams;
   title: string;
-  callback?: (x: ChildProcess) => void;
+  callback?: (x: ChildProcess<string>) => void;
   confirmTitle?: string;
   confirmDescription?: string;
   runningTitle?: string;

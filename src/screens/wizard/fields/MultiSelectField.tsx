@@ -40,13 +40,14 @@ export const MultiSelectField = <T extends Option>({
           return person[label].toLowerCase().includes(query.toLowerCase());
         });
 
-  const setValues = async (values: T[]) => {
-    helpers.setValue(values);
+  const setValues = async (values: T[] | null) => {
+    helpers.setValue(values ?? []);
     setQuery("");
   };
 
   return (
-    <Combobox<T[]> value={field.value} onChange={setValues} multiple>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    <Combobox value={field.value as any} onChange={setValues as any} multiple>
       <div className="flex flex-row bg-white text-black focus-within:ring-5 focus-within:ring ring-primary-400 rounded ring-offset-1 gap-1 p-1">
         {field.value.map((option) => (
           <div
@@ -83,11 +84,7 @@ export const MultiSelectField = <T extends Option>({
           <Combobox.Option
             key={option[unique]}
             value={option}
-            className={({ active }) =>
-              `relative cursor-default select-none py-2 pl-10 pr-4 ${
-                active ? "bg-primary-400 text-white" : "text-gray-900"
-              }`
-            }
+            className="relative cursor-default select-none py-2 pl-10 pr-4 data-[active]:bg-primary data-[active]:text-white text-gray-900"
           >
             {option[label]}
           </Combobox.Option>
@@ -113,15 +110,16 @@ export const MultiSelectReduceField = <T extends Option>({
           return person[label].toLowerCase().includes(query.toLowerCase());
         });
 
-  const setValues = async (values: (typeof unique)[]) => {
+  const setValues = async (values: (typeof unique)[] | null) => {
     console.log(values);
-    helpers.setValue(values);
+    helpers.setValue(values ?? []);
   };
 
   return (
-    <Combobox<(typeof unique)[]>
-      value={field.value}
-      onChange={setValues}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    <Combobox
+      value={field.value as any}
+      onChange={setValues as any}
       multiple
     >
       <div className="flex flex-row bg-white text-black focus-within:ring-5 focus-within:ring ring-primary-400 rounded ring-offset-1 gap-1 p-1">
@@ -160,11 +158,7 @@ export const MultiSelectReduceField = <T extends Option>({
           <Combobox.Option
             key={option[unique]}
             value={option[unique]}
-            className={({ active }) =>
-              `relative cursor-default select-none py-2 pl-10 pr-4 ${
-                active ? "bg-primary-400 text-white" : "text-gray-900"
-              }`
-            }
+            className="relative cursor-default select-none py-2 pl-10 pr-4 data-[active]:bg-primary data-[active]:text-white text-gray-900"
           >
             {option[label]}
           </Combobox.Option>

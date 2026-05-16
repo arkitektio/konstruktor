@@ -3,7 +3,7 @@ import { useCommunication } from "../../../communication/communication-context";
 import { Alert } from "../../../components/ui/alert";
 import { Button } from "../../../components/ui/button";
 import { StepProps } from "../types";
-import {open} from "@tauri-apps/api/shell"
+import {open} from "@tauri-apps/plugin-shell"
 
 export const CheckDocker: React.FC<StepProps> = (props) => {
   const { call, status, interfaceStatus } = useCommunication();

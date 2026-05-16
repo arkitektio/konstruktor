@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api";
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { BeaconContext } from "./context";
 
@@ -36,7 +36,7 @@ export const BeaconProvider = ({ children }: { children: React.ReactNode }) => {
       advertiseEndpoint();
       const interval = setInterval(() => {
         advertiseEndpoint();
-      }, 2000 || 3000);
+      }, 2000);
       return () => clearInterval(interval);
     }
     return () => {};

@@ -31,7 +31,7 @@ import {
 } from "../../components/ui/dialog";
 import { DialogTitle } from "@radix-ui/react-dialog";
 import { ScrollArea } from "@radix-ui/react-scroll-area";
-import { writeText, readText } from "@tauri-apps/api/clipboard";
+import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { CheckGPUDocker } from "./forms/CheckGPUDocker";
 export const debugUser = {
   name: "debug",
@@ -40,7 +40,7 @@ export const debugUser = {
   email: "debug@debug.com",
   groups: ["myteam"],
 };
-import { type } from '@tauri-apps/api/os';
+import { type } from '@tauri-apps/plugin-os';
 
 
 export type ConditionalStep = Step & {
@@ -191,7 +191,7 @@ export const ChannelSetup = ({
         console.log("OS", osType);
 
 
-        if (osType == "Linux" || osType == "Darwin") {
+        if (osType == "linux" || osType == "macos") {
           setStatus("Running ...");
           let uid = await run({
             program: "id",
@@ -270,7 +270,7 @@ export const ChannelSetup = ({
 
   return (
     <FormikWizard
-      initialValues={{...channel.defaults, name: name} || {}}
+      initialValues={{...channel.defaults, name: name}}
       onSubmit={handleSubmit}
       validateOnNext
       validateOnMount

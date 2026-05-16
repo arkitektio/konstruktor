@@ -5,7 +5,7 @@ import {
   DockerInterfaceStatus,
   DockerStatus,
 } from "./communication-context";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 export type ICommunicationProviderProps = {
   children: React.ReactNode;
 };

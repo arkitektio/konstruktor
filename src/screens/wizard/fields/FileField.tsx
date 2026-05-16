@@ -1,5 +1,5 @@
 import { useField } from "formik";
-import { open } from "@tauri-apps/api/dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 
 export const FileField = ({ ...props }: any) => {
   const [field, meta, helpers] = useField(props);

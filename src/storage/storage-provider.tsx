@@ -3,13 +3,14 @@ import React, { useEffect, useState } from "react";
 import { App, StorageContext } from "../storage/storage-context";
 import { stringify, parse } from "yaml";
 import {
-  createDir,
+  mkdir,
   BaseDirectory,
   writeTextFile,
   readDir,
   readTextFile,
-  removeDir,
-} from "@tauri-apps/api/fs";
+  remove,
+} from "@tauri-apps/plugin-fs";
+import { appDataDir, join } from "@tauri-apps/api/path";
 import { InstalledApp } from "../screens/wizard/types";
 import { Channel, SetupValues } from "../repo/repo-context";
 
@@ -24,49 +25,47 @@ const StorageProvider: React.FC<{ children: React.ReactNode }> = ({
     channel: Channel,
     values: Partial<SetupValues>
   ) => {
-    await createDir(`apps/${name}`, {
-      dir: BaseDirectory.App,
+    await mkdir(`apps/${name}`, {
+      baseDir: BaseDirectory.AppData,
       recursive: true,
     });
     await writeTextFile(`apps/${name}/setup.yaml`, stringify(values), {
-      dir: BaseDirectory.App,
+      baseDir: BaseDirectory.AppData,
     });
     await writeTextFile(`apps/${name}/channel.yaml`, stringify(channel), {
-      dir: BaseDirectory.App,
+      baseDir: BaseDirectory.AppData,
     });
 
-    let entries = await readDir("apps", { dir: BaseDirectory.App });
-
-    let path = entries.find((x) => x.name == name)?.path;
-    if (!path) {
-      throw new Error("Could not find path");
-    }
+    const basePath = await appDataDir();
+    const appPath = await join(basePath, "apps", name);
     setReset(!reset);
-    return path;
+    return appPath;
   };
 
   const deleteApp = async (name: string) => {
-    await removeDir(`apps/${name}`, {
-      dir: BaseDirectory.App,
+    await remove(`apps/${name}`, {
+      baseDir: BaseDirectory.AppData,
       recursive: true,
     });
     setReset(!reset);
   };
 
   const listAppDir = async () => {
-    let entries = await readDir("apps", { dir: BaseDirectory.App });
+    let entries = await readDir("apps", { baseDir: BaseDirectory.AppData });
     console.log(entries);
+    const basePath = await appDataDir();
     let apps: InstalledApp[] = [];
 
     for (let entry of entries) {
-      if (entry.children) {
+      if (entry.isDirectory) {
         let setup_string = await readTextFile(`apps/${entry.name}/setup.yaml`, {
-          dir: BaseDirectory.App,
+          baseDir: BaseDirectory.AppData,
         });
         try {
           let setup = parse(setup_string) as SetupValues;
           if (entry.name) {
-            apps.push({ name: entry.name, path: entry.path });
+            const appPath = await join(basePath, "apps", entry.name);
+            apps.push({ name: entry.name, path: appPath });
           }
         } catch (e) {
           console.error(e);

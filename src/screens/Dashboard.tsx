@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api";
+import { invoke } from "@tauri-apps/api/core";
 import React, { useEffect, useState } from "react";
 import { TbReload } from "react-icons/tb";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -8,7 +8,7 @@ import { ResponsiveGrid } from "../layout/ResponsiveGrid";
 import { App, useStorage } from "../storage/storage-context";
 import { BeaconInterface } from "../types";
 
-import { open } from "@tauri-apps/api/shell";
+import { open } from "@tauri-apps/plugin-shell";
 
 export const ServiceHealth = (props: { service: any }) => {
   return (
@@ -78,7 +78,7 @@ const getContainerColor = (container: Container) => {
 
 import { DialogTrigger } from "@radix-ui/react-dialog";
 import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
-import { BaseDirectory, FileEntry, readDir, readTextFile, writeTextFile } from "@tauri-apps/api/fs";
+import { BaseDirectory, DirEntry, readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { CommandButton, DangerousButton, DangerousCommandButton } from "../CommandButton";
 import { LogoMenu, SettingsMenu } from "../components/AppMenu";
 import { Button } from "../components/ui/button";
@@ -116,8 +116,6 @@ import { parse, stringify } from "yaml";
 import { Alert } from "../components/ui/alert";
 import * as yup from "yup";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { f } from "@tauri-apps/api/path-c062430b";
-
 
 export const KonstruktSchema = yup.object().shape({
   pulled: yup.date().required("Required"),
@@ -213,7 +211,7 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
       `apps/${app.name}/konstruktor.yaml`,
       stringify(konstruktInfo),
       {
-        dir: BaseDirectory.App,
+        baseDir: BaseDirectory.AppData,
       }
     );
     console.log(written);
@@ -282,11 +280,11 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
   }, []);
 
 
-  const processKonstruktorYAML = async (entry: FileEntry) => {
+  const processKonstruktorYAML = async () => {
     
     try {
-      let setup_string = await readTextFile(entry.path, {
-        dir: BaseDirectory.App,
+      let setup_string = await readTextFile(`apps/${app.name}/konstruktor.yaml`, {
+        baseDir: BaseDirectory.AppData,
       });
 
       let setup = parse(setup_string);
@@ -305,26 +303,20 @@ export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
 
 
 
-  const processEntries = (entries: FileEntry[]) => {
+  const processEntries = (entries: DirEntry[]) => {
     for (const entry of entries) {
       if (entry.name == "docker-compose.yaml") {
         setInitialized(true);
       }
       if (entry.name == "konstruktor.yaml") {
-        processKonstruktorYAML(entry);
-      }
-
-      console.log(`Entry: ${entry.path}`);
-      if (entry.children) {
-        processEntries(entry.children);
+        processKonstruktorYAML();
       }
     }
   };
 
   const checkFiles = async () => {
     const entries = await readDir(`apps/${app.name}/`, {
-      dir: BaseDirectory.App,
-      recursive: true,
+      baseDir: BaseDirectory.AppData,
     });
     processEntries(entries);
   };

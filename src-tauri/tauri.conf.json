@@ -2,86 +2,53 @@
   "build": {
     "beforeDevCommand": "yarn dev",
     "beforeBuildCommand": "yarn build",
-    "devPath": "http://localhost:1420",
-    "distDir": "../dist",
-    "withGlobalTauri": false
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
   },
-  "package": {
-    "productName": "konstruktor",
-    "version": "0.0.1"
-  },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "os": {
-        "all": true 
-      },
-      "fs": {
-        "all": true,
-        "scope": ["$APP/**/*", "$APPDATA/**/*", "$APPLOCALDATA/**/*","$HOME/**/*", "$DATA/**/*", "$XDG_CONFIG_HOME/**/*", "$TMP/**/*", "$TEMP/**/*", "$TMPDIR/**/*"]
-      },
-      "clipboard": {
-        "all": true
-      },
-      "shell": {
-        "all": true,
-        "open": ".*",
-        "scope": [
-          {"name": "/usr/local/bin/docker", "cmd": "docker", "args": true},
-          {"name": "docker", "cmd": "docker", "args": true},
-          {"name": "id", "cmd": "id", "args": true}
-        ]
-      },
-      "dialog": {
-        "all": true, 
-        "open": true, 
-        "save": true 
-      }
-    
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "",
+    "targets": "all",
+    "externalBin": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
     },
-    "bundle": {
-      "active": true,
-      "category": "DeveloperTool",
-      "copyright": "",
+    "longDescription": "",
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "resources": [],
+    "shortDescription": "",
+    "linux": {
       "deb": {
         "depends": []
-      },
-      "externalBin": [],
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "identifier": "io.github.jhnnsrs.konstruktor",
-      "longDescription": "",
-      "macOS": {
-        "entitlements": null,
-        "exceptionDomain": "",
-        "frameworks": [],
-        "providerShortName": null,
-        "signingIdentity": null
-      },
-      "resources": [],
-      "shortDescription": "",
-      "targets": "all",
-      "windows": {
-        "certificateThumbprint": null,
-        "digestAlgorithm": "sha256",
-        "timestampUrl": ""
       }
-    },
-
-    "systemTray": {
+    }
+  },
+  "productName": "konstruktor",
+  "mainBinaryName": "konstruktor",
+  "version": "0.0.1",
+  "identifier": "io.github.jhnnsrs.konstruktor",
+  "plugins": {},
+  "app": {
+    "withGlobalTauri": false,
+    "trayIcon": {
       "iconPath": "icons/icon.png",
       "iconAsTemplate": true
-    },
-    "security": {
-      "csp": null
-    },
-    "updater": {
-      "active": false
     },
     "windows": [
       {
@@ -89,8 +56,12 @@
         "height": 600,
         "resizable": true,
         "title": "konstruktor",
-        "width": 800
+        "width": 800,
+        "useHttpsScheme": true
       }
-    ]
+    ],
+    "security": {
+      "csp": null
+    }
   }
 }
