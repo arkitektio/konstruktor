@@ -36,15 +36,15 @@ fn generated_secrets_have_the_shape_the_python_cli_produces() {
     assert!(
         django
             .chars()
-            .all(|c| c.is_ascii_lowercase()
-                || c.is_ascii_digit()
-                || "!@#$%^&*(-_=+)".contains(c)),
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "!@#$%^&*(-_=+)".contains(c)),
         "unexpected character in {django}"
     );
 
     let alnum = generate_alpha_numeric_string(40);
     assert_eq!(alnum.chars().count(), 40);
-    assert!(alnum.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    assert!(alnum
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
 }
 
 /// Rejection sampling has a loop in it; a bad `limit` would either bias the output or

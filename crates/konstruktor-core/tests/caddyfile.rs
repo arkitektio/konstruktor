@@ -72,8 +72,7 @@ fn caddyfile_for(fixture: &str) -> String {
 #[track_caller]
 fn assert_matches_golden(fixture: &str, golden: &str) {
     let generated = caddyfile_for(fixture);
-    let expected =
-        std::fs::read_to_string(fixtures().join(golden)).expect("golden is readable");
+    let expected = std::fs::read_to_string(fixtures().join(golden)).expect("golden is readable");
 
     if generated != expected {
         // Bytes, not lines: the divergence is likely to be invisible whitespace.

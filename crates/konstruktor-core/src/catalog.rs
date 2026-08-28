@@ -56,7 +56,10 @@ impl ServiceId {
     /// `_uses_datalayer`. A service that stores no objects itself still gets its buckets
     /// created — it just receives no `datalayer` block, and upstream's models reject one.
     pub fn uses_datalayer(self) -> bool {
-        matches!(self, ServiceId::Mikro | ServiceId::Kraph | ServiceId::Elektro)
+        matches!(
+            self,
+            ServiceId::Mikro | ServiceId::Kraph | ServiceId::Elektro
+        )
     }
 }
 
@@ -80,6 +83,9 @@ pub struct ServiceMeta {
     pub id: ServiceId,
     pub name: String,
     pub description: String,
+    /// What the service is actually for, in the words somebody deciding whether they
+    /// need it would use. The one-line `description` names it; this says who wants it.
+    pub purpose: String,
     /// Pre-ticked when nothing else is said.
     pub default: bool,
     /// Whether the generator actually emits it. Lovekit has no published image, so
@@ -91,23 +97,77 @@ pub fn catalog() -> Vec<ServiceMeta> {
     SERVICE_IDS
         .into_iter()
         .map(|id| {
-            let (name, description) = match id {
-                ServiceId::Rekuest => ("Rekuest", "Task orchestration and workflow execution"),
-                ServiceId::Mikro => ("Mikro", "Microscopy data management and analysis"),
-                ServiceId::Fluss => ("Fluss", "Workflow definition and management"),
-                ServiceId::Kabinet => ("Kabinet", "Container and deployment management"),
-                ServiceId::Kraph => ("Kraph", "Knowledge graph and data relationships"),
-                ServiceId::Elektro => ("Elektro", "Electrophysiology data management"),
-                ServiceId::Alpaka => ("Alpaka", "AI/ML model management"),
+            let (name, description, purpose) = match id {
+                ServiceId::Rekuest => (
+                    "Rekuest",
+                    "Task orchestration and workflow execution",
+                    "The one every other service checks against. It hands out the work, \
+                     runs it wherever an app has registered itself, and signs what \
+                     happened so the result can be traced back to the code and the \
+                     person that produced it.",
+                ),
+                ServiceId::Mikro => (
+                    "Mikro",
+                    "Microscopy data management and analysis",
+                    "Where images and their metadata live. Acquisitions, stacks, \
+                     regions of interest and the results of analysing them, stored so \
+                     they can be found again by what they are rather than by filename.",
+                ),
+                ServiceId::Fluss => (
+                    "Fluss",
+                    "Workflow definition and management",
+                    "The workflow editor and the graphs it produces. Take the tasks \
+                     Rekuest knows about, wire them into a pipeline, and keep it as \
+                     something that can be run again and shared.",
+                ),
+                ServiceId::Kabinet => (
+                    "Kabinet",
+                    "Container and deployment management",
+                    "The app store. It tracks which analysis containers exist, what \
+                     each one offers, and lets them be installed into this hub without \
+                     anybody touching a compose file.",
+                ),
+                ServiceId::Kraph => (
+                    "Kraph",
+                    "Knowledge graph and data relationships",
+                    "The graph that ties the rest together: which sample an image came \
+                     from, which experiment it belonged to, what was measured. For \
+                     asking questions that span more than one dataset.",
+                ),
+                ServiceId::Elektro => (
+                    "Elektro",
+                    "Electrophysiology traces and recordings",
+                    "What Mikro is for images, Elektro is for electrophysiology: patch \
+                     clamp and multi-electrode recordings, their stimuli and their \
+                     metadata, stored so a trace can be found by what it is. Add it if \
+                     this hub will hold recordings — it is off by default because a hub \
+                     that will not gains a container and a database for nothing.",
+                ),
+                ServiceId::Alpaka => (
+                    "Alpaka",
+                    "Language models, chat and agents",
+                    "Language models, and the chat and agent interfaces over them, \
+                     offered to the platform as another kind of task. It needs a \
+                     provider to talk to: its settings can run an Ollama container \
+                     alongside this hub, or point at one that already exists.",
+                ),
                 ServiceId::Lovekit => (
                     "Lovekit",
                     "LiveKit integration for real-time communication",
+                    "Live video and audio between people using the platform, over \
+                     LiveKit. Not published yet.",
                 ),
             };
             ServiceMeta {
                 id,
                 name: name.to_string(),
                 description: description.to_string(),
+                purpose: purpose.split_whitespace().collect::<Vec<_>>().join(" "),
+                // Alpaka is on by default: a hub without it can still be asked
+                // questions, but nothing answers them, and adding it later means
+                // regenerating the stack. Elektro is deliberately *not* — it is for one
+                // kind of data, and a hub that will never hold traces gains a container
+                // and a database for nothing.
                 default: matches!(
                     id,
                     ServiceId::Rekuest
@@ -115,6 +175,7 @@ pub fn catalog() -> Vec<ServiceMeta> {
                         | ServiceId::Fluss
                         | ServiceId::Kabinet
                         | ServiceId::Kraph
+                        | ServiceId::Alpaka
                 ),
                 emitted: !matches!(id, ServiceId::Lovekit),
             }
@@ -146,8 +207,23 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_the_five_the_wizard_pre_ticks() {
+    fn the_defaults_are_what_the_wizard_pre_ticks() {
         let names: Vec<&str> = default_services().iter().map(|id| id.as_str()).collect();
-        assert_eq!(names, ["rekuest", "mikro", "fluss", "kabinet", "kraph"]);
+        assert_eq!(
+            names,
+            ["rekuest", "mikro", "fluss", "kabinet", "kraph", "alpaka"]
+        );
+    }
+
+    /// Elektro is the one emitted service left off on purpose, and Lovekit the one that
+    /// cannot be switched on at all. Pinned so neither changes by accident.
+    #[test]
+    fn elektro_is_offered_but_not_pre_ticked() {
+        let elektro = catalog()
+            .into_iter()
+            .find(|s| s.id == ServiceId::Elektro)
+            .expect("elektro is in the catalog");
+        assert!(elektro.emitted, "it must be offerable");
+        assert!(!elektro.default, "but not chosen for people");
     }
 }

@@ -34,9 +34,9 @@ pub struct CreateArgs {
     /// Comma-separated. Defaults to rekuest,mikro,fluss,kabinet,kraph.
     #[arg(long, value_delimiter = ',')]
     pub services: Option<Vec<String>>,
-    #[arg(long, default_value_t = 80)]
+    #[arg(long, default_value_t = 7080)]
     pub http_port: u16,
-    #[arg(long, default_value_t = 443)]
+    #[arg(long, default_value_t = 7443)]
     pub https_port: u16,
     #[arg(long)]
     pub ssl: bool,
@@ -124,14 +124,12 @@ pub async fn run(args: CreateArgs) -> Result<()> {
 
     // Created before it is validated, as `git init` also does — so a mistyped path leaves
     // an empty folder behind. It has to exist for `canonicalize` to have an answer.
-    std::fs::create_dir_all(requested)
-        .with_context(|| format!("creating {requested}"))?;
+    std::fs::create_dir_all(requested).with_context(|| format!("creating {requested}"))?;
 
     // Load-bearing, and it has to happen before `HubAnswers` is built: the core hands
     // `answers.dir` straight to the registry, which compares paths as raw strings. A
     // relative path there would defeat the collision check and be recorded unusable.
-    let dir = std::fs::canonicalize(requested)
-        .with_context(|| format!("resolving {requested}"))?;
+    let dir = std::fs::canonicalize(requested).with_context(|| format!("resolving {requested}"))?;
 
     if profile::holds_a_hub(&dir) {
         bail!(
@@ -226,7 +224,8 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         .mesh_key
         .clone()
         .or_else(|| std::env::var("KONSTRUKTOR_MESH_KEY").ok());
-    if args.mesh == MeshMode::Manual && mesh_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if args.mesh == MeshMode::Manual && mesh_key.as_deref().map(str::trim).unwrap_or("").is_empty()
+    {
         bail!("`--mesh manual` needs a key — pass --mesh-key or set KONSTRUKTOR_MESH_KEY");
     }
 
@@ -261,6 +260,9 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         start: !args.no_start,
         dev_hub: args.dev,
         dev_branch: args.dev_branch.clone(),
+        // `--dev` is all or nothing here. Picking source mode for one service at a time
+        // is a wizard affordance; the flag stays the CLI's whole answer.
+        service_options: Default::default(),
     };
 
     summarise(&answers);
@@ -278,7 +280,10 @@ pub async fn run(args: CreateArgs) -> Result<()> {
     let created = create_hub(&answers, &cancel, &|event| report(event, open_browser)).await?;
 
     ui::say("");
-    ui::ok(&format!("Hub created at {}", created.path.to_string_lossy()));
+    ui::ok(&format!(
+        "Hub created at {}",
+        created.path.to_string_lossy()
+    ));
     if answers.mesh_mode != MeshMode::None {
         if created.mesh_granted {
             ui::step(&ui::dim(
@@ -326,7 +331,9 @@ fn report(event: CreateEvent, open_browser: bool) {
             ui::ok("Accepted.");
         }
         CreateEvent::Writing { file } => ui::step(&ui::dim(&format!("wrote {file}"))),
-        CreateEvent::Cloning { service, branch, .. } => ui::step(&ui::dim(&match branch {
+        CreateEvent::Cloning {
+            service, branch, ..
+        } => ui::step(&ui::dim(&match branch {
             Some(branch) => format!("checking {service} out at {branch}…"),
             None => format!("checking {service} out…"),
         })),

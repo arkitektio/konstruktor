@@ -74,9 +74,7 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
                 buckets: id
                     .bucket_purposes()
                     .iter()
-                    .filter_map(|purpose| {
-                        block.bucket(purpose).map(|b| b.bucket_name.clone())
-                    })
+                    .filter_map(|purpose| block.bucket(purpose).map(|b| b.bucket_name.clone()))
                     .collect(),
             }
         })
@@ -84,7 +82,11 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
 
     files.insert(
         "configs/Caddyfile".to_string(),
-        caddy::build_caddyfile(&caddy_services, &config.minio.host, config.minio.internal_port),
+        caddy::build_caddyfile(
+            &caddy_services,
+            &config.minio.host,
+            config.minio.internal_port,
+        ),
     );
 
     // --- the compose project ------------------------------------------------

@@ -1,4 +1,4 @@
-import { Cog } from "lucide-react";
+import { ArrowLeft, Cog } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useCommunication } from "../communication/communication-context";
 import { Logo } from "../layout/Logo";
@@ -54,16 +54,37 @@ export const DockerDot = () => {
 export const AppMenu = ({
   /** What this screen is, shown after the app name. */
   breadcrumb,
+  /**
+   * Where "back" goes, for a screen that has somewhere to go back to. It sits with the
+   * breadcrumb rather than in the footer: the footer is for what a screen *does* —
+   * Start, Save, Authorize — and a Back button among those competes with them for the
+   * eye while being the one thing nobody needs to find. The home page passes nothing.
+   */
+  back,
   /** Screen-specific controls, before the settings button. */
   actions,
 }: {
   breadcrumb?: React.ReactNode;
+  back?: string;
   actions?: React.ReactNode;
 } = {}) => {
   const navigate = useNavigate();
 
   return (
     <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/60">
+      {back && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-sm" asChild>
+              <Link to={back} aria-label="Back">
+                <ArrowLeft className="size-4" />
+              </Link>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Back</TooltipContent>
+        </Tooltip>
+      )}
+
       <button
         type="button"
         onClick={() => navigate("/")}

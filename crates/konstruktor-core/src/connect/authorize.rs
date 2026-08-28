@@ -85,8 +85,10 @@ pub enum HubAuthorizationError {
     Cancelled,
     #[error("The token endpoint answered {status}: {reason}")]
     TokenEndpoint { status: u16, reason: String },
-    #[error("The coordination server returned a grant with no JWKS URL; the hub's \
-             services would trust nothing.")]
+    #[error(
+        "The coordination server returned a grant with no JWKS URL; the hub's \
+             services would trust nothing."
+    )]
     NoJwksUrl,
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
@@ -98,12 +100,11 @@ pub async fn start(
     request: &HubStartRequest,
 ) -> Result<HubGrant, HubAuthorizationError> {
     let well_known = discover(server).await?;
-    let endpoint = well_known
-        .hub_authorization_endpoint
-        .clone()
-        .ok_or(CoordinationServerError::NoHubAuthorization {
+    let endpoint = well_known.hub_authorization_endpoint.clone().ok_or(
+        CoordinationServerError::NoHubAuthorization {
             server: server.to_string(),
-        })?;
+        },
+    )?;
 
     let response = reqwest::Client::new()
         .post(&endpoint)
@@ -129,8 +130,8 @@ pub async fn start(
         return Err(HubAuthorizationError::Refused(detail));
     }
 
-    let mut grant: HubGrant = serde_json::from_value(body)
-        .map_err(|_| HubAuthorizationError::NoDeviceCode)?;
+    let mut grant: HubGrant =
+        serde_json::from_value(body).map_err(|_| HubAuthorizationError::NoDeviceCode)?;
     if grant.device_code.is_empty() || grant.token_endpoint.is_empty() {
         return Err(HubAuthorizationError::NoDeviceCode);
     }
@@ -164,12 +165,11 @@ pub async fn poll_once(grant: &HubGrant) -> Result<PollStatus, HubAuthorizationE
     let payload: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
 
     if status.is_success() {
-        let envelope: HubEnvelope = serde_json::from_value(payload).map_err(|e| {
-            HubAuthorizationError::TokenEndpoint {
+        let envelope: HubEnvelope =
+            serde_json::from_value(payload).map_err(|e| HubAuthorizationError::TokenEndpoint {
                 status: status.as_u16(),
                 reason: format!("the envelope did not parse: {e}"),
-            }
-        })?;
+            })?;
         return Ok(PollStatus::Granted(Box::new(envelope)));
     }
 
@@ -206,8 +206,16 @@ pub async fn wait_for_hub(
     cancel: &tokio_util::sync::CancellationToken,
     on_waiting: &(dyn Fn(WaitProgress) + Sync),
 ) -> Result<HubEnvelope, HubAuthorizationError> {
-    let mut interval = if grant.interval > 0 { grant.interval } else { 5 };
-    let total = if grant.expires_in > 0 { grant.expires_in } else { 600 };
+    let mut interval = if grant.interval > 0 {
+        grant.interval
+    } else {
+        5
+    };
+    let total = if grant.expires_in > 0 {
+        grant.expires_in
+    } else {
+        600
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(total);
     let mut polls = 0u32;
 

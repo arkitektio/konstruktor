@@ -136,12 +136,19 @@ pub fn find_project_collision<'a>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FolderVerdict {
     /// Usable. `not_empty` is worth saying out loud, but does not block.
-    Create { not_empty: bool },
+    Create {
+        not_empty: bool,
+    },
     /// Already holds a hub config — offer to adopt it instead of creating.
     Import,
     Missing,
-    AlreadyRegistered { name: String },
-    ProjectCollision { other: String, project: String },
+    AlreadyRegistered {
+        name: String,
+    },
+    ProjectCollision {
+        other: String,
+        project: String,
+    },
 }
 
 pub fn inspect_folder(registry: &RegistryFile, path: &Path) -> FolderVerdict {
@@ -286,7 +293,10 @@ mod tests {
     #[test]
     fn resolves_the_same_appdata_path_the_desktop_app_uses() {
         let path = registry_path().expect("a data dir on this platform");
-        assert!(path.ends_with("io.github.jhnnsrs.konstruktor/deployments.json"), "{path:?}");
+        assert!(
+            path.ends_with("io.github.jhnnsrs.konstruktor/deployments.json"),
+            "{path:?}"
+        );
     }
 
     #[test]
@@ -295,7 +305,9 @@ mod tests {
         let registry = registry_with(&[("MyHub", &dir.to_string_lossy())]);
         assert_eq!(
             inspect_folder(&registry, &dir),
-            FolderVerdict::AlreadyRegistered { name: "MyHub".into() }
+            FolderVerdict::AlreadyRegistered {
+                name: "MyHub".into()
+            }
         );
     }
 
@@ -314,7 +326,14 @@ mod tests {
     #[test]
     fn re_registering_a_path_replaces_rather_than_duplicates() {
         let mut registry = registry_with(&[("MyHub", "/home/someone/MyHub")]);
-        register(&mut registry, "Renamed", "/home/someone/MyHub", None, None, "now".into());
+        register(
+            &mut registry,
+            "Renamed",
+            "/home/someone/MyHub",
+            None,
+            None,
+            "now".into(),
+        );
         assert_eq!(registry.deployments.len(), 1);
         assert_eq!(registry.deployments[0].name, "Renamed");
     }
@@ -334,7 +353,10 @@ mod tests {
     #[test]
     fn recording_a_regeneration_updates_in_place() {
         let mut registry = registry_with(&[("hub", "/tmp/hub")]);
-        let before = find_by_path(&registry, "/tmp/hub").expect("registered").id.clone();
+        let before = find_by_path(&registry, "/tmp/hub")
+            .expect("registered")
+            .id
+            .clone();
 
         assert!(record_regeneration(
             &mut registry,
@@ -356,7 +378,13 @@ mod tests {
     #[test]
     fn recording_a_regeneration_for_an_unknown_folder_adds_nothing() {
         let mut registry = registry_with(&[("hub", "/tmp/hub")]);
-        assert!(!record_regeneration(&mut registry, "/tmp/other", None, None, "later".into()));
+        assert!(!record_regeneration(
+            &mut registry,
+            "/tmp/other",
+            None,
+            None,
+            "later".into()
+        ));
         assert_eq!(registry.deployments.len(), 1);
     }
 

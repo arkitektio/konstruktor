@@ -44,6 +44,26 @@ pub struct DownArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct SuperuserArgs {
+    /// The service whose admin site the account is for. Each keeps its own database, so
+    /// an account made in one is not an account in another.
+    pub service: String,
+    /// The deployment: a path, or the name of a registered one. Defaults to here.
+    // A flag, for the reason `CheckoutArgs` gives: two optional positionals of different
+    // kinds cannot be told apart, and here the service is the one worth the positional.
+    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    pub in_deployment: Option<String>,
+    #[arg(long)]
+    pub username: Option<String>,
+    /// Left out, it is asked for without echoing — which is the only way it does not end
+    /// up in the shell's history.
+    #[arg(long)]
+    pub password: Option<String>,
+    #[arg(long)]
+    pub email: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct LogsArgs {
     #[command(flatten)]
     pub target: Target,
@@ -103,11 +123,17 @@ pub async fn doctor() -> Result<()> {
     let rows = vec![
         (
             "docker".to_string(),
-            probe.cli_version.clone().unwrap_or_else(|| "not found".into()),
+            probe
+                .cli_version
+                .clone()
+                .unwrap_or_else(|| "not found".into()),
         ),
         (
             "compose".to_string(),
-            probe.compose_version.clone().unwrap_or_else(|| "not found".into()),
+            probe
+                .compose_version
+                .clone()
+                .unwrap_or_else(|| "not found".into()),
         ),
         (
             "daemon".to_string(),
@@ -125,9 +151,13 @@ pub async fn doctor() -> Result<()> {
         // deployment runs published images without it. It must not decide the verdict.
         (
             "git".to_string(),
-            git.cli_version
-                .clone()
-                .unwrap_or_else(|| if git.cli { "installed".into() } else { "not found".into() }),
+            git.cli_version.clone().unwrap_or_else(|| {
+                if git.cli {
+                    "installed".into()
+                } else {
+                    "not found".into()
+                }
+            }),
         ),
     ];
     ui::table(&rows);
@@ -145,9 +175,9 @@ pub async fn doctor() -> Result<()> {
         Ok(())
     } else {
         // The three failures have three different remedies, worded once in the core.
-        Err(anyhow!(create::CreateError::Docker(create::describe_docker(
-            &probe
-        ))))
+        Err(anyhow!(create::CreateError::Docker(
+            create::describe_docker(&probe)
+        )))
     }
 }
 
@@ -180,13 +210,25 @@ pub fn checkout(args: &CheckoutArgs) -> Result<()> {
         }
     }
 
-    let Some(branch) = args.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) else {
+    let Some(branch) = args
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+    else {
         ui::say("");
         for checkout in &checkouts {
             let state = match (&checkout.error, &checkout.branch) {
                 (Some(error), _) => error.clone(),
                 (None, Some(branch)) => {
-                    format!("{branch}{}", if checkout.dirty { " (uncommitted changes)" } else { "" })
+                    format!(
+                        "{branch}{}",
+                        if checkout.dirty {
+                            " (uncommitted changes)"
+                        } else {
+                            ""
+                        }
+                    )
                 }
                 (None, None) => "detached HEAD".to_string(),
             };
@@ -273,7 +315,10 @@ pub fn list() -> Result<()> {
         ui::say(&format!("    {}", ui::dim(&record.path)));
         if let Some(server) = &record.coord_server {
             let identifier = record.identifier.as_deref().unwrap_or("—");
-            ui::say(&format!("    {}", ui::dim(&format!("{identifier} at {server}"))));
+            ui::say(&format!(
+                "    {}",
+                ui::dim(&format!("{identifier} at {server}"))
+            ));
         }
     }
     ui::say("");
@@ -424,6 +469,80 @@ pub async fn ps(target: &Target) -> Result<()> {
     if !status.success() {
         bail!("docker compose ps exited with {status}");
     }
+    Ok(())
+}
+
+/// `konstruktor superuser <service>`: an admin account in one running service.
+///
+/// The same `docker compose exec` the desktop app runs. Deliberately not part of
+/// creating a hub — the container has to be up and its migrations applied before there
+/// is a table to write to.
+pub fn superuser(args: SuperuserArgs) -> Result<()> {
+    let dir = Target {
+        target: args.in_deployment.clone(),
+    }
+    .resolve()?;
+
+    let username = match args.username {
+        Some(name) => name,
+        None if ui::is_interactive() => inquire::Text::new("Username")
+            .with_default("admin")
+            .prompt()
+            .context("reading the username")?,
+        None => bail!("--username is required when this is not a terminal"),
+    };
+
+    let password = match args.password {
+        Some(password) => password,
+        None if ui::is_interactive() => inquire::Password::new("Password")
+            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+            .prompt()
+            .context("reading the password")?,
+        None => bail!("--password is required when this is not a terminal"),
+    };
+
+    if username.trim().is_empty() || password.is_empty() {
+        bail!("a username and a password are both required");
+    }
+
+    let argv = compose::create_superuser(
+        &args.service,
+        username.trim(),
+        &password,
+        args.email.as_deref().map(str::trim).filter(|e| !e.is_empty()),
+    );
+
+    ui::say("");
+    ui::step(&format!(
+        "Creating {} in {}…",
+        ui::bold(username.trim()),
+        ui::bold(&args.service)
+    ));
+
+    let output = std::process::Command::new("docker")
+        .args(&argv)
+        .current_dir(&dir)
+        .output()
+        .context("running docker")?;
+
+    if !output.status.success() {
+        // Django's own complaint — "that username is already taken" and the like — is
+        // what the user needs, not the exit code.
+        let message = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        bail!("{}", message.trim());
+    }
+
+    ui::say("");
+    ui::ok(&format!(
+        "{} can now sign in to {}'s admin site.",
+        username.trim(),
+        args.service
+    ));
+    ui::say("");
     Ok(())
 }
 

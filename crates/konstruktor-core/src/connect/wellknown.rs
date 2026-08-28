@@ -143,16 +143,23 @@ mod tests {
     #[test]
     fn reads_the_tailnet_a_server_declares() {
         assert_eq!(
-            fakts(r#"{"mesh_domain":"acme-org.ts.net"}"#).mesh_domain().as_deref(),
+            fakts(r#"{"mesh_domain":"acme-org.ts.net"}"#)
+                .mesh_domain()
+                .as_deref(),
             Some("acme-org.ts.net")
         );
         // Nothing is settled server-side yet, so the plausible spellings all work.
         assert_eq!(
-            fakts(r#"{"magic_dns_suffix":".acme-org.ts.net"}"#).mesh_domain().as_deref(),
+            fakts(r#"{"magic_dns_suffix":".acme-org.ts.net"}"#)
+                .mesh_domain()
+                .as_deref(),
             Some("acme-org.ts.net")
         );
         // A server that says nothing leaves every tailnet address unattributed.
-        assert_eq!(fakts(r#"{"issuer":"https://go.arkitekt.live"}"#).mesh_domain(), None);
+        assert_eq!(
+            fakts(r#"{"issuer":"https://go.arkitekt.live"}"#).mesh_domain(),
+            None
+        );
         assert_eq!(fakts(r#"{"mesh_domain":"  "}"#).mesh_domain(), None);
     }
 
@@ -169,7 +176,10 @@ mod tests {
     #[test]
     fn a_scheme_is_taken_as_given() {
         assert_eq!(base_url("http://localhost:8000"), "http://localhost:8000");
-        assert_eq!(base_url("https://go.arkitekt.live/"), "https://go.arkitekt.live");
+        assert_eq!(
+            base_url("https://go.arkitekt.live/"),
+            "https://go.arkitekt.live"
+        );
     }
 
     #[test]

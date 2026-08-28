@@ -80,7 +80,11 @@ pub fn clone_service(
     branch: Option<&str>,
     into: &Path,
 ) -> Result<bool, CloneError> {
-    if into.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+    if into
+        .read_dir()
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
+    {
         return Ok(false);
     }
 
@@ -235,7 +239,11 @@ pub fn branches(path: &Path) -> Result<Vec<String>, String> {
 
     for remote in git_in(
         path,
-        &["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"],
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/remotes/origin",
+        ],
     )
     .unwrap_or_default()
     .lines()
@@ -257,8 +265,10 @@ pub fn branches(path: &Path) -> Result<Vec<String>, String> {
 pub enum SwitchError {
     #[error("git is not installed")]
     NoGit,
-    #[error("{service} has uncommitted changes. Commit or stash them first — switching \
-             branches over them would lose work.")]
+    #[error(
+        "{service} has uncommitted changes. Commit or stash them first — switching \
+             branches over them would lose work."
+    )]
     Dirty { service: String },
     #[error("no branch called `{branch}`, here or on origin")]
     NoSuchBranch { branch: String },
@@ -291,11 +301,24 @@ pub fn switch_branch(service: &str, path: &Path, branch: &str) -> Result<(), Swi
 
     let _ = git_in(path, &["fetch", "--prune", "--quiet"]);
 
-    let local = git_in(path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
-        .is_ok();
+    let local = git_in(
+        path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok();
     let remote = git_in(
         path,
-        &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}"),
+        ],
     )
     .is_ok();
 
@@ -304,7 +327,13 @@ pub fn switch_branch(service: &str, path: &Path, branch: &str) -> Result<(), Swi
     } else if remote {
         git_in(
             path,
-            &["checkout", "-b", branch, "--track", &format!("origin/{branch}")],
+            &[
+                "checkout",
+                "-b",
+                branch,
+                "--track",
+                &format!("origin/{branch}"),
+            ],
         )
         .map_err(SwitchError::Git)?;
     } else {
@@ -322,7 +351,8 @@ pub fn switch_branch(service: &str, path: &Path, branch: &str) -> Result<(), Swi
 /// cloned into is by construction the folder compose bind-mounts and the one a branch is
 /// switched in.
 pub fn checkout_dir(dir: &Path, service_host: &str) -> std::path::PathBuf {
-    dir.join(crate::generate::compose::MOUNTS_DIR).join(service_host)
+    dir.join(crate::generate::compose::MOUNTS_DIR)
+        .join(service_host)
 }
 
 /// Every checkout this deployment has, in the profile's service order.

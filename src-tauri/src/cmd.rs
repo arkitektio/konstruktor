@@ -2,9 +2,10 @@ use std::collections::HashSet;
 use std::fs::canonicalize;
 use std::sync::Mutex;
 
+use konstruktor_core::connect::reachability;
+use konstruktor_core::destroy::{self, DataPurge, Deletion, DeletionPlan};
 use konstruktor_core::docker::{self, Container, DockerProbe};
 use konstruktor_core::git::{self, Checkout, GitProbe};
-use konstruktor_core::connect::reachability;
 use konstruktor_core::hosts;
 use serde::{Deserialize, Serialize};
 use tauri::command;
@@ -116,7 +117,10 @@ pub async fn host_candidates(
     };
     let candidates = hosts::host_candidates(&hosts::bindings().await?, &mesh);
     let presets = hosts::reach_presets(&candidates);
-    Ok(hosts::HostDiscovery { candidates, presets })
+    Ok(hosts::HostDiscovery {
+        candidates,
+        presets,
+    })
 }
 
 /// What address the internet sees this machine as.
@@ -255,6 +259,10 @@ pub fn preview_hub_files(answers: HubAnswers) -> Vec<String> {
         http_port: Some(answers.http_port),
         https_port: Some(answers.https_port),
         ssl: answers.ssl,
+        // The bind mounts a source checkout adds live in the compose file, so the
+        // preview only tells the truth if it knows which services asked for one.
+        dev_hub: answers.dev_hub,
+        service_options: answers.service_options.clone(),
         ..Default::default()
     });
     generate_hub_files(&config, &IssuedIdentity::default())
@@ -264,7 +272,9 @@ pub fn preview_hub_files(answers: HubAnswers) -> Vec<String> {
 
 #[command]
 pub async fn discover_server(server: String) -> Result<WellKnownFakts, String> {
-    wellknown::discover(&server).await.map_err(|e| e.to_string())
+    wellknown::discover(&server)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// The tailnet a coordination server runs, if it declares one.
@@ -316,6 +326,69 @@ pub fn forget_deployment(id: String) -> Result<(), String> {
     let mut store = registry::load();
     store.deployments.retain(|d| d.id != id);
     registry::save(&store).map_err(|e| e.to_string())
+}
+
+/// What deleting a deployment would take with it, so the dialog can say so before asking.
+#[command]
+pub fn plan_deletion(id: String) -> Result<DeletionPlan, String> {
+    let store = registry::load();
+    let record = store
+        .deployments
+        .iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| destroy::DeleteError::UnknownDeployment.to_string())?;
+    destroy::plan(record)
+        .map(|(_, plan)| plan)
+        .map_err(|e| e.to_string())
+}
+
+/// Deletes a deployment and everything it put on this machine.
+///
+/// By id, never by path: the folder is resolved from the registry inside the core, so no
+/// caller can name an arbitrary directory to be removed recursively. The sequence and its
+/// guards live in `konstruktor_core::destroy`; this only hands the result back and stops
+/// the exit hook from trying to take down a folder that is no longer there.
+///
+/// Off the main thread. A delete is `docker compose down --volumes --remove-orphans`
+/// followed by a recursive removal of the folder — seconds at best, and a great deal
+/// longer for a dev hub with checkouts in it. A synchronous command runs on the thread
+/// that draws the window, so the whole app, including the dialog's own "Deleting…",
+/// froze for the duration and looked like a hang.
+#[command]
+pub async fn delete_deployment(
+    started: tauri::State<'_, StartedStacks>,
+    id: String,
+) -> Result<Deletion, String> {
+    let deleted = tauri::async_runtime::spawn_blocking(move || destroy::delete(&id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    started.stopped(&deleted.path);
+    Ok(deleted)
+}
+
+/// Deletes a hub's data and leaves the hub itself standing.
+///
+/// By id, for the same reason `delete_deployment` is: the folder and the data directories
+/// inside it are resolved and guarded in the core, so no caller can name a directory to be
+/// removed recursively.
+///
+/// This is the *only* path in the app that destroys data. `docker compose down --volumes`
+/// is not — the stack keeps its database in a bind mount and declares no named volumes, so
+/// that command removes nothing.
+/// Blocking, and so run off the main thread for the reason `delete_deployment` is.
+#[command]
+pub async fn purge_deployment_data(
+    started: tauri::State<'_, StartedStacks>,
+    id: String,
+) -> Result<DataPurge, String> {
+    let purged = tauri::async_runtime::spawn_blocking(move || destroy::purge_data(&id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    // The purge took the stack down with it, so the exit hook has nothing left to stop.
+    started.stopped(&purged.path);
+    Ok(purged)
 }
 
 /// One service, as the dashboard lists it.
@@ -407,7 +480,9 @@ pub fn hub_status(path: String) -> Result<HubStatus, String> {
             let meta = catalog.iter().find(|m| m.id == id);
             ServiceView {
                 id: id.as_str().to_string(),
-                name: meta.map(|m| m.name.clone()).unwrap_or_else(|| id.as_str().into()),
+                name: meta
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| id.as_str().into()),
                 host: block.host.clone(),
                 url: format!("{gateway_url}/{}", block.host),
                 image: block.image.clone(),
@@ -420,7 +495,11 @@ pub fn hub_status(path: String) -> Result<HubStatus, String> {
     tags.sort();
     tags.dedup();
     let channel = ChannelView {
-        tag: if tags.len() == 1 { tags.first().cloned() } else { None },
+        tag: if tags.len() == 1 {
+            tags.first().cloned()
+        } else {
+            None
+        },
         tags,
     };
 
@@ -501,6 +580,46 @@ pub fn service_catalog() -> Vec<konstruktor_core::catalog::ServiceMeta> {
     konstruktor_core::catalog::catalog()
 }
 
+/// Makes a Django superuser in one service, after the fact.
+///
+/// Not part of creating a hub: the account has to be made in a container that is running,
+/// against a database that exists, and it is per service — so it belongs on the dashboard
+/// next to the service it is for, not in a wizard step asked before anything is up.
+#[command]
+pub async fn create_superuser(
+    path: String,
+    service: String,
+    username: String,
+    password: String,
+    email: Option<String>,
+) -> Result<String, String> {
+    let args = compose::create_superuser(
+        &service,
+        &username,
+        &password,
+        email.as_deref().map(str::trim).filter(|e| !e.is_empty()),
+    );
+
+    let output = std::process::Command::new("docker")
+        .args(&args)
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        // Django says why on stderr — "that username is already taken", most often, which
+        // is a thing the user needs to read rather than a generic failure.
+        Err(format!(
+            "{}{}",
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
 /// Runs one `docker compose` subcommand in a deployment folder.
 #[command]
 pub async fn compose_command(
@@ -514,7 +633,6 @@ pub async fn compose_command(
         "up" => compose::up().into_iter().map(String::from).collect(),
         "stop" => compose::stop().into_iter().map(String::from).collect(),
         "down" => compose::down().into_iter().map(String::from).collect(),
-        "down-volumes" => compose::down_volumes().into_iter().map(String::from).collect(),
         "pull" => compose::pull().into_iter().map(String::from).collect(),
         "ps" => compose::ps().into_iter().map(String::from).collect(),
         "logs" => compose::logs(service.as_deref(), tail.unwrap_or(200)),
@@ -533,7 +651,7 @@ pub async fn compose_command(
         // down themselves — otherwise quitting would stop a stack a second time.
         match action.as_str() {
             "up" => started.started(&path),
-            "stop" | "down" | "down-volumes" => started.stopped(&path),
+            "stop" | "down" => started.stopped(&path),
             _ => {}
         }
         Ok(stdout)

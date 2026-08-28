@@ -55,6 +55,8 @@ export type WizardRenderProps = {
   /** Jump straight to an earlier step. Forward jumps are refused. */
   goBackTo: (index: number) => void;
   isSubmitting: boolean;
+  /** The current step's schema is satisfied. A caller may hide "Next" until it is. */
+  isValid: boolean;
   isNextDisabled: boolean;
   isPrevDisabled: boolean;
   /** No applicable step follows: "Next" submits. */
@@ -228,6 +230,7 @@ export const Wizard = <T extends FieldValues>({
           handleNext,
           goBackTo,
           isSubmitting: formState.isSubmitting,
+          isValid: formState.isValid,
           isNextDisabled: !formState.isValid || formState.isSubmitting,
           isPrevDisabled:
             seek(currentStepIndex, -1) === undefined || formState.isSubmitting,

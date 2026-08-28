@@ -405,16 +405,31 @@ mod tests {
     #[test]
     fn scopes_an_address_by_how_far_it_reaches() {
         // The literals win over whatever category came with them.
-        assert_eq!(alias_scope("localhost", HostCategory::Private), AliasScope::Local);
-        assert_eq!(alias_scope("127.0.0.1", HostCategory::Private), AliasScope::Local);
+        assert_eq!(
+            alias_scope("localhost", HostCategory::Private),
+            AliasScope::Local
+        );
+        assert_eq!(
+            alias_scope("127.0.0.1", HostCategory::Private),
+            AliasScope::Local
+        );
         assert_eq!(
             alias_scope("hub.tail1234.ts.net", HostCategory::Private),
             AliasScope::Ionscale
         );
 
-        assert_eq!(alias_scope("127.0.0.53", HostCategory::Loopback), AliasScope::Local);
-        assert_eq!(alias_scope("10.0.0.4", HostCategory::Private), AliasScope::Network);
-        assert_eq!(alias_scope("140.78.80.150", HostCategory::Public), AliasScope::Public);
+        assert_eq!(
+            alias_scope("127.0.0.53", HostCategory::Loopback),
+            AliasScope::Local
+        );
+        assert_eq!(
+            alias_scope("10.0.0.4", HostCategory::Private),
+            AliasScope::Network
+        );
+        assert_eq!(
+            alias_scope("140.78.80.150", HostCategory::Public),
+            AliasScope::Public
+        );
 
         // The bug this table exists for: a tailnet address is not a public one.
         assert_eq!(
@@ -422,17 +437,32 @@ mod tests {
             AliasScope::Ionscale
         );
 
-        assert_eq!(alias_scope("hub.local", HostCategory::MdnsName), AliasScope::Network);
-        assert_eq!(alias_scope("hub", HostCategory::BareHostname), AliasScope::Network);
-        assert_eq!(alias_scope("hub.example.org", HostCategory::Fqdn), AliasScope::Network);
+        assert_eq!(
+            alias_scope("hub.local", HostCategory::MdnsName),
+            AliasScope::Network
+        );
+        assert_eq!(
+            alias_scope("hub", HostCategory::BareHostname),
+            AliasScope::Network
+        );
+        assert_eq!(
+            alias_scope("hub.example.org", HostCategory::Fqdn),
+            AliasScope::Network
+        );
         assert_eq!(
             alias_scope("hub.example.org", HostCategory::VerifiedFqdn),
             AliasScope::Public
         );
 
         // Never advertised, but if one slips through it must not be offered to peers.
-        assert_eq!(alias_scope("172.17.0.1", HostCategory::Virtual), AliasScope::Local);
-        assert_eq!(alias_scope("169.254.1.1", HostCategory::LinkLocal), AliasScope::Local);
+        assert_eq!(
+            alias_scope("172.17.0.1", HostCategory::Virtual),
+            AliasScope::Local
+        );
+        assert_eq!(
+            alias_scope("169.254.1.1", HostCategory::LinkLocal),
+            AliasScope::Local
+        );
     }
 
     /// The wire vocabulary is fixed at four values, and the server that validates them is
@@ -449,7 +479,10 @@ mod tests {
             AliasScope::Ionscale,
         ] {
             let json = serde_json::to_string(&scope).expect("serializes");
-            assert!(KNOWN.contains(&json.trim_matches('"')), "unexpected scope {json}");
+            assert!(
+                KNOWN.contains(&json.trim_matches('"')),
+                "unexpected scope {json}"
+            );
         }
 
         for kind in [
@@ -520,7 +553,11 @@ mod tests {
     fn asks_for_a_mesh_key_only_when_told_to() {
         let config = build_hub_config(&HubConfigOptions::default());
 
-        assert!(!build_hub_request(&config, &HubManifestOptions::default()).hub.request_auth_key);
+        assert!(
+            !build_hub_request(&config, &HubManifestOptions::default())
+                .hub
+                .request_auth_key
+        );
         assert!(
             build_hub_request(
                 &config,

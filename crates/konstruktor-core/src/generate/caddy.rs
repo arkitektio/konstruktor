@@ -42,11 +42,7 @@ pub struct CaddyService<'a> {
 /// Two passes in [`HUB_SERVICE_ORDER`]: every service's own route first, then every
 /// bucket of every service. Then the minio catch-all — note `path /minio/*`, with a slash
 /// before the star, unlike the service routes.
-pub fn build_caddyfile(
-    services: &[CaddyService<'_>],
-    minio_host: &str,
-    minio_port: u16,
-) -> String {
+pub fn build_caddyfile(services: &[CaddyService<'_>], minio_host: &str, minio_port: u16) -> String {
     let ordered = |f: &mut dyn FnMut(&CaddyService<'_>)| {
         for id in HUB_SERVICE_ORDER {
             if let Some(service) = services.iter().find(|s| s.id == id) {

@@ -1,16 +1,17 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog::ServiceId;
-use crate::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
+use crate::config::hub::{build_hub_config, HubConfig, HubConfigOptions, ServiceOptions};
 use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshOptions};
 use crate::connect::authorize::{self, HubAuthorizationError};
 use crate::connect::manifest::{build_hub_request, AdvertisedHost, HubManifestOptions};
 use crate::credentials::{write_credentials, HubCredentials};
-use crate::generate::write::write_generated_files;
 use crate::generate::generate_hub_files;
+use crate::generate::write::write_generated_files;
 use crate::profile::{hub_profile, write_profile};
 use crate::{compose, docker, git, registry};
 
@@ -78,9 +79,15 @@ pub struct HubAnswers {
     #[serde(default)]
     pub dev_hub: bool,
     /// The branch to check out, for a dev hub. Left out, each repository's own default
-    /// branch is used — they do not all agree on what it is called.
+    /// branch is used — they do not all agree on what it is called. A service that names
+    /// its own branch in `service_options` wins over this.
     #[serde(default)]
     pub dev_branch: Option<String>,
+    /// What was asked of individual services: whether each runs from a checkout of its
+    /// source, and on which branch. The wizard asks this per service; `dev_hub` is the
+    /// CLI's "all of them" and the two are a union.
+    #[serde(default)]
+    pub service_options: BTreeMap<ServiceId, ServiceOptions>,
 }
 
 fn local() -> String {
@@ -90,10 +97,10 @@ fn admin() -> String {
     "admin".into()
 }
 fn http_port() -> u16 {
-    80
+    7080
 }
 fn https_port() -> u16 {
-    443
+    7443
 }
 fn yes() -> bool {
     true
@@ -147,11 +154,15 @@ pub enum CreateError {
     Authorization(#[from] HubAuthorizationError),
     #[error("Could not write the deployment: {0}")]
     Write(#[from] std::io::Error),
-    #[error("The deployment was written, but `docker compose up -d` failed. You can \
-             retry with `konstruktor up`.")]
+    #[error(
+        "The deployment was written, but `docker compose up -d` failed. You can \
+             retry with `konstruktor up`."
+    )]
     StartFailed,
-    #[error("The deployment is written and registered, but the source checkout failed: \
-             {0}. Fix the checkout under `mounts/` and start it as usual.")]
+    #[error(
+        "The deployment is written and registered, but the source checkout failed: \
+             {0}. Fix the checkout under `mounts/` and start it as usual."
+    )]
     Clone(#[from] crate::git::CloneError),
 }
 
@@ -216,6 +227,7 @@ pub async fn create_hub(
         global_description: answers.global_description.clone(),
         mesh: manual_mesh,
         dev_hub: answers.dev_hub,
+        service_options: answers.service_options.clone(),
         ..Default::default()
     });
 
@@ -255,7 +267,9 @@ pub async fn create_hub(
 
     let issued_key = envelope.auth.ionscale_auth_key.clone();
     let mesh_granted = issued_key.is_some();
-    on(CreateEvent::Granted { mesh_key: mesh_granted });
+    on(CreateEvent::Granted {
+        mesh_key: mesh_granted,
+    });
 
     // Fold a minted key into the config that was *just* accepted, rather than rebuilding.
     let mut config = config;
@@ -301,7 +315,7 @@ pub async fn create_hub(
     );
     let _ = registry::save(&store);
 
-    // --- check the source out, on a dev hub ---------------------------------
+    // --- check the source out, for the services that run from source --------
     //
     // Deliberately *after* the deployment is registered and before the stack is started.
     // Before `up`, because compose already declares the bind mounts and an empty
@@ -309,15 +323,30 @@ pub async fn create_hub(
     // because the device grant above is single-use: a clone that fails must leave a hub
     // the app can still see and the user can fix by hand, not an authorized folder
     // nothing knows about and no second run can reproduce.
-    if answers.dev_hub {
-        let branch = answers
+    {
+        let fallback = answers
             .dev_branch
             .as_deref()
             .map(str::trim)
             .filter(|b| !b.is_empty());
 
-        for id in config.enabled_services() {
+        // Driven by the profile, not by the answers: `mount_github` is where both
+        // `--dev` and a single service's "run from source" end up, and it is the field
+        // the compose file's bind mounts were written from. Cloning anything else — or
+        // less — is how a container gets handed an empty workspace.
+        for id in config
+            .enabled_services()
+            .into_iter()
+            .filter(|id| config.service(*id).mount_github)
+        {
             let service = config.service(id);
+            let branch = answers
+                .service_options
+                .get(&id)
+                .and_then(|asked| asked.branch.as_deref())
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+                .or(fallback);
             let into = git::checkout_dir(&dir, &service.host);
             std::fs::create_dir_all(&into)?;
 
@@ -354,7 +383,9 @@ pub async fn create_hub(
             .output()?;
 
         for line in String::from_utf8_lossy(&output.stderr).lines() {
-            on(CreateEvent::Log { line: line.to_string() });
+            on(CreateEvent::Log {
+                line: line.to_string(),
+            });
         }
         if !output.status.success() {
             return Err(CreateError::StartFailed);
@@ -494,18 +525,27 @@ mod tests {
 
     #[test]
     fn suggests_an_identifier_the_server_will_accept() {
-        assert_eq!(identifier_from_folder(Path::new("/home/someone/MyHub")), "myhub");
+        assert_eq!(
+            identifier_from_folder(Path::new("/home/someone/MyHub")),
+            "myhub"
+        );
         assert_eq!(
             identifier_from_folder(Path::new("/home/someone/My Lab Hub")),
             "my-lab-hub"
         );
-        assert_eq!(identifier_from_folder(Path::new("/home/someone/hub (2)")), "hub-2");
+        assert_eq!(
+            identifier_from_folder(Path::new("/home/someone/hub (2)")),
+            "hub-2"
+        );
         assert_eq!(
             identifier_from_folder(Path::new("/home/someone/lab.hub_2-a")),
             "lab.hub_2-a"
         );
         // A leading dot or dash would fail the server's pattern.
-        assert_eq!(identifier_from_folder(Path::new("/home/someone/.hidden")), "hidden");
+        assert_eq!(
+            identifier_from_folder(Path::new("/home/someone/.hidden")),
+            "hidden"
+        );
         // Below the two-character minimum: better an empty field than a wrong one.
         assert_eq!(identifier_from_folder(Path::new("/home/someone/x")), "");
         assert_eq!(identifier_from_folder(Path::new("/home/someone/...")), "");
@@ -590,7 +630,9 @@ pub async fn reauthorize(
     .await?;
 
     let mesh_granted = envelope.auth.ionscale_auth_key.is_some();
-    on(CreateEvent::Granted { mesh_key: mesh_granted });
+    on(CreateEvent::Granted {
+        mesh_key: mesh_granted,
+    });
 
     if answers.request_auth_key {
         if let Some(key) = envelope.auth.ionscale_auth_key.clone() {

@@ -5,6 +5,9 @@ import type {
   Checkout,
   ComposeAction,
   CreateEvent,
+  DataPurge,
+  Deletion,
+  DeletionPlan,
   DeploymentRecord,
   DockerProbe,
   GitProbe,
@@ -131,6 +134,27 @@ export const probeReachability = (
   ssl: boolean
 ) => invoke<ProbeResult>("probe_reachability", { prober, host, port, ssl });
 
+/**
+ * An admin account in one running service, made after the fact.
+ *
+ * Per service because each keeps its own database and its own admin site. The container
+ * has to be up: this is `docker compose exec`, not a file that gets written.
+ */
+export const createSuperuser = (
+  path: string,
+  service: string,
+  username: string,
+  password: string,
+  email?: string
+) =>
+  invoke<string>("create_superuser", {
+    path,
+    service,
+    username,
+    password,
+    email: email ?? null,
+  });
+
 // --- creating a hub ---------------------------------------------------------
 
 export const serviceCatalog = () => invoke<ServiceMeta[]>("service_catalog");
@@ -172,6 +196,30 @@ export const listDeployments = () => invoke<DeploymentRecord[]>("list_deployment
 
 export const forgetDeployment = (id: string) =>
   invoke<void>("forget_deployment", { id });
+
+/** What deleting this deployment would take with it. Nothing is removed by asking. */
+export const planDeletion = (id: string) =>
+  invoke<DeletionPlan>("plan_deletion", { id });
+
+/**
+ * Deletes a deployment outright: containers, volumes, folder, registry entry.
+ *
+ * By id rather than by path — the core resolves and guards the folder itself, so the only
+ * thing this can ever delete is a deployment Konstruktor already lists.
+ */
+export const deleteDeployment = (id: string) =>
+  invoke<Deletion>("delete_deployment", { id });
+
+/**
+ * Erases a hub's data in place: the containers first, then the bind-mounted database and
+ * object storage directories. The folder, `hub_config.yaml`, the credentials,
+ * `docker-compose.yaml` and `configs/` all stay, so the hub starts again empty.
+ *
+ * By id rather than by path, like `deleteDeployment` and for the same reason — the core
+ * resolves and guards every directory it removes.
+ */
+export const purgeDeploymentData = (id: string) =>
+  invoke<DataPurge>("purge_deployment_data", { id });
 
 export const hubStatus = (path: string) => invoke<HubStatus>("hub_status", { path });
 

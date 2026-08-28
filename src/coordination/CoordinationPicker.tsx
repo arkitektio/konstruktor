@@ -95,6 +95,7 @@ export const CoordinationPicker = ({
                 : "Used before on this machine"
             }
             badge={server === DEFAULT_COORDINATION_SERVER ? "Recommended" : undefined}
+            reachable={selected && discovery.state === "found"}
             detail={selected ? <Detail discovery={discovery} /> : null}
           />
         );
@@ -104,6 +105,7 @@ export const CoordinationPicker = ({
         selected={custom}
         onSelect={openCustom}
         icon={Pencil}
+        reachable={custom && discovery.state === "found"}
         name="Another server"
         note="Your institute's own, or one running on this network"
         detail={
@@ -135,6 +137,7 @@ const ServerCard = ({
   name,
   note,
   badge,
+  reachable,
   detail,
 }: {
   selected: boolean;
@@ -143,6 +146,8 @@ const ServerCard = ({
   name: string;
   note: string;
   badge?: string;
+  /** Something answered at this address: the whole answer, as a tick. */
+  reachable?: boolean;
   detail?: React.ReactNode;
 }) => (
   <Card
@@ -164,6 +169,9 @@ const ServerCard = ({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-medium truncate">{name}</span>
+          {reachable && (
+            <CircleCheck className="size-4 shrink-0 text-primary animate-in fade-in zoom-in-50 duration-300" />
+          )}
           {badge && (
             <Badge variant="outline" className="font-normal text-[10px]">
               {badge}
@@ -177,7 +185,13 @@ const ServerCard = ({
   </Card>
 );
 
-/** What answered at that address — the reason to look it up while typing. */
+/**
+ * The lookup, while it has not landed: the spinner, and the failure with its reason.
+ *
+ * A success says nothing here — the tick on the card is the whole answer. What the
+ * server calls itself, its version and its blurb were facts nobody acts on, and they
+ * pushed the two fields of this step apart every time one resolved.
+ */
 const Detail = ({ discovery }: { discovery: ReturnType<typeof useDiscovery> }) => {
   if (discovery.state === "idle") return null;
 
@@ -199,21 +213,7 @@ const Detail = ({ discovery }: { discovery: ReturnType<typeof useDiscovery> }) =
     );
   }
 
-  const { name, description, version } = discovery.wellKnown;
-  return (
-    <div className="flex items-start gap-2 text-xs">
-      <CircleCheck className="size-3.5 shrink-0 mt-0.5 text-primary" />
-      <div className="min-w-0">
-        <div className="font-medium">
-          {name ?? "An Arkitekt coordination server"}
-          {version ? (
-            <span className="text-muted-foreground font-normal"> · {version}</span>
-          ) : null}
-        </div>
-        {description && (
-          <div className="text-muted-foreground mt-0.5">{description}</div>
-        )}
-      </div>
-    </div>
-  );
+  // Reached: the tick on the card says it. The name, version and description the server
+  // reports about itself are its business, not a decision anybody makes on this step.
+  return null;
 };

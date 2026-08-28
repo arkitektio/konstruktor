@@ -382,7 +382,10 @@ mod dev_hub {
     #[test]
     fn an_ordinary_hub_mounts_only_the_config() {
         let plain = built(false);
-        assert!(plain.enabled_services().iter().all(|id| !plain.service(*id).mount_github));
+        assert!(plain
+            .enabled_services()
+            .iter()
+            .all(|id| !plain.service(*id).mount_github));
         assert_eq!(
             volumes_of(&compose(&plain), "rekuest"),
             vec!["./configs/rekuest.yaml:/workspace/config.yaml"]
@@ -413,7 +416,9 @@ mod dev_hub {
         );
 
         // Only the services run from source; infrastructure is untouched.
-        assert!(volumes_of(&dev, "db").iter().all(|v| !v.contains("/mounts/")));
+        assert!(volumes_of(&dev, "db")
+            .iter()
+            .all(|v| !v.contains("/mounts/")));
     }
 
     #[test]
@@ -426,5 +431,210 @@ mod dev_hub {
                 "{id:?} has no repository to clone: {repo}"
             );
         }
+    }
+}
+
+/// The two places the generated stack deliberately goes beyond the Python CLI.
+///
+/// Both are opt-in, and that is the whole safety argument: a hub nobody customized still
+/// generates byte-for-byte what upstream generates, which is what the golden cases above
+/// assert. These pin the other half — that asking actually changes something.
+mod beyond_upstream {
+    use super::*;
+    use konstruktor_core::catalog::ServiceId;
+    use konstruktor_core::config::hub::{
+        build_hub_config, HubConfigOptions, OllamaChoice, ServiceOptions,
+    };
+    use std::collections::BTreeMap;
+
+    fn with(options: BTreeMap<ServiceId, ServiceOptions>) -> HubConfig {
+        build_hub_config(&HubConfigOptions {
+            services: Some(vec![ServiceId::Rekuest, ServiceId::Alpaka, ServiceId::Kabinet]),
+            service_options: options,
+            ..Default::default()
+        })
+    }
+
+    fn files(config: &HubConfig) -> GeneratedFiles {
+        generate_hub_files(config, &IssuedIdentity::default())
+    }
+
+    fn yaml(files: &GeneratedFiles, name: &str) -> Value {
+        serde_norway::from_str(&files[name]).expect("valid YAML")
+    }
+
+    /// A hub that answered nothing must not gain a container, a volume or a config key.
+    #[test]
+    fn a_hub_nobody_customized_gains_nothing() {
+        let config = with(BTreeMap::new());
+        assert!(config.local_ollama.is_none());
+
+        let files = files(&config);
+        let compose = yaml(&files, "docker-compose.yaml");
+        assert!(
+            compose["services"].get("ollama").is_none(),
+            "no ollama service without being asked"
+        );
+        assert!(compose["volumes"].get("ollama_models").is_none());
+        assert!(yaml(&files, "configs/alpaka.yaml").get("ollama").is_none());
+        assert!(
+            yaml(&files, "configs/kabinet.yaml")
+                .get("ensured_repositories")
+                .is_none(),
+            "the seeded default stays out of the generated config, as upstream leaves it"
+        );
+    }
+
+    #[test]
+    fn running_ollama_here_adds_the_container_its_volume_and_the_url() {
+        let config = with(BTreeMap::from([(
+            ServiceId::Alpaka,
+            ServiceOptions {
+                ollama: Some(OllamaChoice {
+                    run_locally: true,
+                    url: None,
+                }),
+                ..Default::default()
+            },
+        )]));
+
+        let files = files(&config);
+        let compose = yaml(&files, "docker-compose.yaml");
+        assert_eq!(compose["services"]["ollama"]["image"], "ollama/ollama:latest");
+        // Without the volume every restart re-downloads gigabytes of models.
+        assert_eq!(
+            compose["services"]["ollama"]["volumes"][0],
+            "ollama_models:/root/.ollama"
+        );
+        assert!(compose["volumes"].get("ollama_models").is_some());
+
+        assert_eq!(
+            yaml(&files, "configs/alpaka.yaml")["ollama"]["url"],
+            "http://ollama:11434"
+        );
+        assert_eq!(config.alpaka.ollama_config.as_ref().unwrap().kind, "local");
+    }
+
+    #[test]
+    fn pointing_at_an_ollama_elsewhere_adds_no_container() {
+        let config = with(BTreeMap::from([(
+            ServiceId::Alpaka,
+            ServiceOptions {
+                ollama: Some(OllamaChoice {
+                    run_locally: false,
+                    url: Some("gpu-box.lab:11434".into()),
+                }),
+                ..Default::default()
+            },
+        )]));
+
+        let files = files(&config);
+        assert!(yaml(&files, "docker-compose.yaml")["services"]
+            .get("ollama")
+            .is_none());
+        // A bare host is plain HTTP, which is what an Ollama on the next machine is.
+        assert_eq!(
+            yaml(&files, "configs/alpaka.yaml")["ollama"]["url"],
+            "http://gpu-box.lab:11434"
+        );
+        assert_eq!(config.alpaka.ollama_config.as_ref().unwrap().kind, "global");
+    }
+
+    /// Alpaka not being in the hub is the case where pulling several gigabytes for a
+    /// service that does not exist would be worst.
+    #[test]
+    fn no_ollama_for_a_hub_without_alpaka() {
+        let config = build_hub_config(&HubConfigOptions {
+            services: Some(vec![ServiceId::Rekuest]),
+            service_options: BTreeMap::from([(
+                ServiceId::Alpaka,
+                ServiceOptions {
+                    ollama: Some(OllamaChoice {
+                        run_locally: true,
+                        url: None,
+                    }),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        });
+        assert!(config.local_ollama.is_none());
+    }
+
+    #[test]
+    fn a_customized_repository_list_reaches_kabinet() {
+        let config = with(BTreeMap::from([(
+            ServiceId::Kabinet,
+            ServiceOptions {
+                repositories: Some(vec!["myinstitute/apps:main".into()]),
+                ..Default::default()
+            },
+        )]));
+
+        assert_eq!(
+            config.kabinet.ensured_repositories.as_deref(),
+            Some(["myinstitute/apps:main".to_string()].as_slice()),
+            "an answer replaces the seeded pair rather than adding to it"
+        );
+        assert_eq!(
+            yaml(&files(&config), "configs/kabinet.yaml")["ensured_repositories"][0],
+            "myinstitute/apps:main"
+        );
+    }
+
+    /// The dashboard reconciles the compose file against `stack_images`, so a container
+    /// the generator emits but that list forgets shows up as unaccounted for.
+    #[test]
+    fn the_ollama_container_is_accounted_for_like_every_other() {
+        let config = with(BTreeMap::from([(
+            ServiceId::Alpaka,
+            ServiceOptions {
+                ollama: Some(OllamaChoice {
+                    run_locally: true,
+                    url: None,
+                }),
+                ..Default::default()
+            },
+        )]));
+
+        let compose = yaml(&files(&config), "docker-compose.yaml");
+        let emitted: Vec<String> = compose["services"]
+            .as_mapping()
+            .expect("a services mapping")
+            .keys()
+            .map(|k| k.as_str().expect("a name").to_string())
+            .collect();
+        let reported: Vec<String> = config
+            .stack_images()
+            .into_iter()
+            .map(|(host, _)| host)
+            .collect();
+
+        assert!(emitted.contains(&"ollama".to_string()));
+        assert!(
+            reported.contains(&"ollama".to_string()),
+            "stack_images must know about it: {reported:?}"
+        );
+    }
+
+    /// `debug` is the one new setting that needed no generator work: it was already being
+    /// written, and only the question was missing.
+    #[test]
+    fn debug_reaches_the_service_config() {
+        let config = with(BTreeMap::from([(
+            ServiceId::Kabinet,
+            ServiceOptions {
+                debug: true,
+                ..Default::default()
+            },
+        )]));
+
+        let files = files(&config);
+        assert_eq!(yaml(&files, "configs/kabinet.yaml")["django"]["debug"], true);
+        assert_eq!(
+            yaml(&files, "configs/rekuest.yaml")["django"]["debug"],
+            false,
+            "it is per service, not per hub"
+        );
     }
 }

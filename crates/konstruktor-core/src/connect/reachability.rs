@@ -102,11 +102,11 @@ pub async fn egress_identity(endpoint: &str) -> Result<EgressIdentity, Reachabil
             source,
         })?;
 
-    address_from_echo(&body).map(|address| EgressIdentity { address }).ok_or(
-        ReachabilityError::NotAnAddress {
+    address_from_echo(&body)
+        .map(|address| EgressIdentity { address })
+        .ok_or(ReachabilityError::NotAnAddress {
             endpoint: endpoint.to_string(),
-        },
-    )
+        })
 }
 
 /// Pulls an address out of whatever an echo service answered with.
@@ -159,14 +159,15 @@ pub async fn probe(prober: &str, target: &str) -> ProbeResult {
     }
 
     let separator = if prober.contains('?') { '&' } else { '?' };
-    let url = format!(
-        "{prober}{separator}url={}",
-        urlencode(target)
-    );
+    let url = format!("{prober}{separator}url={}", urlencode(target));
 
     let sent = match client() {
         Ok(client) => client.get(&url).send().await,
-        Err(error) => return ProbeResult::Unreachable { reason: error.to_string() },
+        Err(error) => {
+            return ProbeResult::Unreachable {
+                reason: error.to_string(),
+            }
+        }
     };
 
     match sent {
@@ -179,13 +180,17 @@ pub async fn probe(prober: &str, target: &str) -> ProbeResult {
                 Ok(report) => ProbeResult::Unreachable {
                     reason: report.error.unwrap_or_else(|| "no answer".to_string()),
                 },
-                Err(error) => ProbeResult::Unreachable { reason: error.to_string() },
+                Err(error) => ProbeResult::Unreachable {
+                    reason: error.to_string(),
+                },
             }
         }
         Ok(response) => ProbeResult::Unreachable {
             reason: format!("the prober answered {}", response.status().as_u16()),
         },
-        Err(error) => ProbeResult::Unreachable { reason: error.to_string() },
+        Err(error) => ProbeResult::Unreachable {
+            reason: error.to_string(),
+        },
     }
 }
 
@@ -228,20 +233,35 @@ mod tests {
 
     #[test]
     fn builds_a_probe_url_for_the_gateway_root() {
-        assert_eq!(probe_url("140.78.80.150", 80, false), "http://140.78.80.150:80/");
-        assert_eq!(probe_url("hub.example.org", 443, true), "https://hub.example.org:443/");
+        assert_eq!(
+            probe_url("140.78.80.150", 80, false),
+            "http://140.78.80.150:80/"
+        );
+        assert_eq!(
+            probe_url("hub.example.org", 443, true),
+            "https://hub.example.org:443/"
+        );
     }
 
     /// A v6 literal needs brackets before a port, or the last group reads as the port.
     #[test]
     fn brackets_a_v6_literal() {
-        assert_eq!(probe_url("2001:db8::1", 443, true), "https://[2001:db8::1]:443/");
-        assert_eq!(probe_url("[2001:db8::1]", 443, true), "https://[2001:db8::1]:443/");
+        assert_eq!(
+            probe_url("2001:db8::1", 443, true),
+            "https://[2001:db8::1]:443/"
+        );
+        assert_eq!(
+            probe_url("[2001:db8::1]", 443, true),
+            "https://[2001:db8::1]:443/"
+        );
     }
 
     #[test]
     fn reads_an_address_out_of_whatever_the_echo_answered() {
-        assert_eq!(address_from_echo("140.78.80.150\n").as_deref(), Some("140.78.80.150"));
+        assert_eq!(
+            address_from_echo("140.78.80.150\n").as_deref(),
+            Some("140.78.80.150")
+        );
         assert_eq!(
             address_from_echo(r#"{"ip":"140.78.80.150"}"#).as_deref(),
             Some("140.78.80.150")
@@ -256,26 +276,47 @@ mod tests {
 
     #[tokio::test]
     async fn an_unconfigured_prober_checks_nothing() {
-        assert_eq!(probe("", "http://10.0.0.4:80/").await, ProbeResult::NotChecked);
-        assert_eq!(probe("   ", "http://10.0.0.4:80/").await, ProbeResult::NotChecked);
+        assert_eq!(
+            probe("", "http://10.0.0.4:80/").await,
+            ProbeResult::NotChecked
+        );
+        assert_eq!(
+            probe("   ", "http://10.0.0.4:80/").await,
+            ProbeResult::NotChecked
+        );
     }
 
     #[test]
     fn encodes_the_target_into_the_query() {
-        assert_eq!(urlencode("http://10.0.0.4:80/"), "http%3A%2F%2F10.0.0.4%3A80%2F");
+        assert_eq!(
+            urlencode("http://10.0.0.4:80/"),
+            "http%3A%2F%2F10.0.0.4%3A80%2F"
+        );
     }
 
     /// Any status means the socket answered — a 502 from the gateway still proves the
     /// port is open, which is the only thing being asked.
     #[test]
     fn any_status_counts_as_reachable() {
-        let answered = ProbeReport { status: Some(502), reachable: None, error: None };
+        let answered = ProbeReport {
+            status: Some(502),
+            reachable: None,
+            error: None,
+        };
         assert!(answered.reachable());
 
-        let nothing = ProbeReport { status: None, reachable: None, error: Some("timeout".into()) };
+        let nothing = ProbeReport {
+            status: None,
+            reachable: None,
+            error: Some("timeout".into()),
+        };
         assert!(!nothing.reachable());
 
-        let explicit = ProbeReport { status: Some(200), reachable: Some(false), error: None };
+        let explicit = ProbeReport {
+            status: Some(200),
+            reachable: Some(false),
+            error: None,
+        };
         assert!(!explicit.reachable());
     }
 }

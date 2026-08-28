@@ -241,7 +241,12 @@ export const ConnectScreen: React.FC<{}> = () => {
         onClose={() => setAuthorizing(emptyCreateState)}
       />
       <Page
-        menu={<AppMenu breadcrumb={`${deployment.name} · authorize`} />}
+        menu={
+          <AppMenu
+            back={`/dashboard/${deployment.id}`}
+            breadcrumb={`${deployment.name} · authorize`}
+          />
+        }
         buttons={
           <>
             <Button

@@ -46,6 +46,8 @@ enum Command {
     Logs(manage::LogsArgs),
     /// A dev hub's source checkouts: list their branches, or switch to one.
     Checkout(manage::CheckoutArgs),
+    /// Create an admin account in one running service.
+    Superuser(manage::SuperuserArgs),
     /// Check whether Docker is ready.
     Doctor,
 }
@@ -104,7 +106,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Doctor => manage::doctor().await,
         Command::List => manage::list(),
         Command::Status(target) => manage::status(&target).await,
-        Command::Up(target) => manage::compose(&target, konstruktor_core::compose::up(), "Starting"),
+        Command::Up(target) => {
+            manage::compose(&target, konstruktor_core::compose::up(), "Starting")
+        }
         Command::Stop(target) => {
             manage::compose(&target, konstruktor_core::compose::stop(), "Stopping")
         }
@@ -114,6 +118,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Ps(target) => manage::ps(&target).await,
         Command::Logs(args) => manage::logs(args),
+        Command::Superuser(args) => manage::superuser(args),
     }
 }
 

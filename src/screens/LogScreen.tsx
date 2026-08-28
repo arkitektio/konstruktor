@@ -1,6 +1,6 @@
-import { ArrowLeft, Loader2, RefreshCw, ScrollText } from "lucide-react";
+import { Loader2, RefreshCw, ScrollText } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { AppMenu } from "../components/AppMenu";
 import { Alert } from "../components/ui/alert";
@@ -43,18 +43,11 @@ export const Logs: React.FC<{
     <Page
       menu={
         <AppMenu
+          back={`/dashboard/${deployment.id}`}
           breadcrumb={
             service ? `${deployment.name} · ${service}` : `${deployment.name} · logs`
           }
         />
-      }
-      buttons={
-        <Button asChild>
-          <Link to={`/dashboard/${deployment.id}`}>
-            <ArrowLeft className="size-3.5" />
-            Back
-          </Link>
-        </Button>
       }
     >
       <div className="flex flex-col gap-4">

@@ -23,6 +23,8 @@ export type ServiceMeta = {
   id: ServiceId;
   name: string;
   description: string;
+  /** What it is actually for — the paragraph the picker shows beside the list. */
+  purpose: string;
   /** Pre-ticked when nothing else is said. */
   default: boolean;
   /** Lovekit has no published image, so ticking it would change nothing. */
@@ -163,10 +165,40 @@ export type HubAnswers = {
   mesh_auth_key?: string | null;
   mesh_coord_url?: string | null;
   start: boolean;
-  /** Check the services' source out and mount it into the containers. Needs git. */
+  /**
+   * Every service's source, checked out and mounted into its container. The CLI's
+   * `--dev`; the wizard asks per service through `service_options` instead.
+   */
   dev_hub: boolean;
   /** The branch to check out. Null means each repository's own default branch. */
   dev_branch?: string | null;
+  /** What was asked of one service in particular. Absent services take the default. */
+  service_options?: Partial<Record<ServiceId, ServiceOptions>>;
+};
+
+/** The per-service answers the gear on the services step collects. */
+export type ServiceOptions = {
+  /** Run this one from a checkout of its repository, mounted over the image. Needs git. */
+  from_source: boolean;
+  /** The branch to check out. Null means the repository's own default. */
+  branch?: string | null;
+  /** Django's debug mode, for this service alone. */
+  debug?: boolean;
+  /** Alpaka only: where its language models come from. */
+  ollama?: OllamaChoice | null;
+  /** Kabinet only: the app repositories this hub offers, replacing the default pair. */
+  repositories?: string[] | null;
+};
+
+/**
+ * Where Alpaka's models come from.
+ *
+ * `run_locally` adds an Ollama container to the generated stack; otherwise `url` names
+ * one that already exists.
+ */
+export type OllamaChoice = {
+  run_locally: boolean;
+  url?: string | null;
 };
 
 /**
@@ -281,11 +313,62 @@ export type HubConfigView = {
   };
 };
 
-export type ComposeAction =
-  | "up"
-  | "stop"
-  | "down"
-  | "down-volumes"
-  | "pull"
-  | "ps"
-  | "logs";
+/**
+ * No `down-volumes`. It named an action that removed nothing — the stack keeps its data
+ * in bind mounts and declares no named volumes — and having it in the vocabulary is what
+ * let the menu promise something it never did. Erasing data is `purgeDeploymentData`.
+ */
+export type ComposeAction = "up" | "stop" | "down" | "pull" | "ps" | "logs";
+
+/**
+ * What deleting a deployment would take with it, worked out before the user is asked.
+ *
+ * `checkouts` and `was_authorized` exist so the confirmation can name what it cannot
+ * undo: a dev hub's `mounts/` trees may hold work that is nowhere else, and an authorized
+ * hub keeps an identifier on a coordination server that a local delete cannot revoke.
+ */
+export type DeletionPlan = {
+  path: string;
+  name: string;
+  checkouts: string[];
+  was_authorized: boolean;
+  /**
+   * The data directories, resolved. Named by the core rather than assumed by the UI:
+   * `db_data` and `minio_data` are defaults, not constants, and a profile in the wild can
+   * point somewhere else.
+   */
+  data_dirs: string[];
+  skipped: SkippedMount[];
+  /** On a mesh: the tailnet state is a volume, and the key that joined it was single-use. */
+  on_a_mesh: boolean;
+};
+
+/** What a delete actually managed to remove, step by step. */
+export type Deletion = {
+  path: string;
+  stack_removed: boolean;
+  folder_removed: boolean;
+  forgotten: boolean;
+};
+
+/** A mount the purge left alone, and why. */
+export type SkippedMount = {
+  mount: string;
+  /** Already in words — a front end does not need to know the reasons by name. */
+  explanation: string;
+};
+
+/**
+ * What a data purge removed, and what it deliberately did not.
+ *
+ * Not `compose down --volumes`: the database and object storage are bind mounts inside
+ * the deployment folder and the stack declares no named volumes, so that command took no
+ * data with it at all.
+ */
+export type DataPurge = {
+  path: string;
+  stack_removed: boolean;
+  /** The data directories that are gone, as absolute paths. */
+  removed: string[];
+  skipped: SkippedMount[];
+};

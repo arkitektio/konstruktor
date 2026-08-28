@@ -19,8 +19,9 @@ export const PortsStep = () => {
       lead={
         <>
           The gateway publishes these ports on this machine, and routes every service
-          behind them — <code>/rekuest</code>, <code>/mikro</code> and so on. Pick
-          something else if 80 and 443 are already taken.
+          behind them — <code>/rekuest</code>, <code>/mikro</code> and so on. The
+          defaults are high ports nothing else is likely to hold; change them if this
+          machine already uses them, or set 80 and 443 to serve on the usual ones.
         </>
       }
     >

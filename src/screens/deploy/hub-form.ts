@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { AdvertisedHost, MeshMode, ServiceId } from "../../api";
+import type {
+  AdvertisedHost,
+  MeshMode,
+  ServiceId,
+  ServiceOptions,
+} from "../../api";
 
 /**
  * The wizard's form shape.
@@ -37,14 +42,54 @@ export type HubForm = {
   meshAuthKey: string;
   meshCoordUrl: string;
   /**
-   * Run the services from a source checkout instead of the published images. Offered
-   * only when git is on the machine — the Advanced step disables it otherwise, and
-   * clears it if a later probe finds git gone.
+   * What was asked of individual services under the gear on the services step: whether
+   * each runs from a checkout of its source rather than its published image, and on
+   * which branch. Only the services somebody touched are in here.
+   *
+   * Source mode needs git, so every entry is cleared if a probe comes back without it.
    */
-  devHub: boolean;
-  /** The branch to check out, for a dev hub. Empty means each repository's default. */
-  devBranch: string;
+  serviceOptions: Partial<Record<ServiceId, ServiceOverride>>;
 };
+
+/** One service's answers. Empty strings rather than nulls, as the inputs produce them. */
+export type ServiceOverride = {
+  fromSource: boolean;
+  branch: string;
+  /**
+   * Django's debug mode for this one service. The only setting here that needed nothing
+   * from the generator — it was already being written, and only the question was missing.
+   */
+  debug: boolean;
+  /**
+   * Alpaka only. `""` means nothing was asked and the profile keeps saying what it says
+   * today: a provider that nothing starts.
+   */
+  ollama: "" | "local" | "remote";
+  /** Alpaka only, and only for `ollama: "remote"`. */
+  ollamaUrl: string;
+  /**
+   * Kabinet only: one repository per line, as the textarea gives them. Empty leaves the
+   * seeded pair alone.
+   */
+  repositories: string;
+};
+
+/** What an untouched service carries, so the gear never reads `undefined`. */
+export const emptyOverride: ServiceOverride = {
+  fromSource: false,
+  branch: "",
+  debug: false,
+  ollama: "",
+  ollamaUrl: "",
+  repositories: "",
+};
+
+/** The textarea's lines, trimmed and without the blanks. */
+export const repositoryList = (text: string): string[] =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 
 /** A bare host means https; anything with a scheme is taken as given. */
 export const baseUrl = (server: string): string => {
@@ -78,4 +123,34 @@ export const basename = (path: string): string => {
   const trimmed = path.replace(/[\\/]+$/, "");
   const parts = trimmed.split(/[\\/]/);
   return parts[parts.length - 1] ?? "";
+};
+
+/**
+ * One service's gear answers, or `undefined` when it was left alone.
+ *
+ * Absent is not the same as all-false: the core reads a missing service as "take the
+ * default", and sending an empty answer for every service would be noise in the profile.
+ */
+export const serviceAnswer = (asked: ServiceOverride): ServiceOptions | undefined => {
+  const repositories = repositoryList(asked.repositories ?? "");
+  const url = asked.ollamaUrl?.trim() ?? "";
+
+  const ollama =
+    asked.ollama === "local"
+      ? { run_locally: true, url: null }
+      : asked.ollama === "remote" && url
+        ? { run_locally: false, url }
+        : null;
+
+  const answer: ServiceOptions = {
+    from_source: asked.fromSource,
+    branch: asked.fromSource ? asked.branch?.trim() || null : null,
+    debug: asked.debug,
+    ollama,
+    repositories: repositories.length > 0 ? repositories : null,
+  };
+
+  const untouched =
+    !answer.from_source && !answer.debug && !answer.ollama && !answer.repositories;
+  return untouched ? undefined : answer;
 };

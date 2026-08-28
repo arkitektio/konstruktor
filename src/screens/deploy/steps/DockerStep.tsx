@@ -3,6 +3,7 @@ import {
   CircleCheck,
   Download,
   ExternalLink,
+  GitBranch,
   Loader2,
   Play,
   RefreshCw,
@@ -107,16 +108,15 @@ const ICON_TONE = {
 /**
  * The individual findings, so "it says no" is never the whole answer.
  *
- * Git sits here with the rest but is not one of the three: it is reported, never
- * required. A missing git leaves the deployment entirely possible and only takes the
- * dev-hub option away — which is why it does not touch the verdict above it.
+ * Only the three Docker asks itself about live here. Git is checked in a section of its
+ * own further down: it is reported, never required, and a grey dot next to the three
+ * that decide whether the wizard can continue reads like a fourth failure.
  */
-const Findings = ({ probe, git }: { probe: DockerProbe; git: GitProbe | null }) => (
+const Findings = ({ probe }: { probe: DockerProbe }) => (
   <div className="flex flex-wrap gap-1.5 mt-3">
     <Finding ok={probe.cli} label="docker" detail={probe.cli_version} />
     <Finding ok={probe.compose} label="compose" detail={probe.compose_version} />
     <Finding ok={probe.daemon} label="daemon" detail={probe.api_version && `API ${probe.api_version}`} />
-    <Finding ok={git?.cli ?? false} label="git" detail={git?.cli_version} optional />
   </div>
 );
 
@@ -124,29 +124,103 @@ const Finding = ({
   ok,
   label,
   detail,
-  optional,
 }: {
   ok: boolean;
   label: string;
   detail?: string | null;
-  /** Reported but not required — absent is a fact, not a failure. */
-  optional?: boolean;
 }) => (
   <Badge
     variant="outline"
     className={cn("gap-1 font-normal", ok ? "text-foreground" : "text-muted-foreground")}
   >
     <span
-      className={cn(
-        "size-1.5 rounded-full",
-        ok ? "bg-primary" : optional ? "bg-muted-foreground/25" : "bg-muted-foreground/40"
-      )}
+      className={cn("size-1.5 rounded-full", ok ? "bg-primary" : "bg-muted-foreground/40")}
     />
     {label}
     {ok && detail ? <span className="text-muted-foreground">{detail}</span> : null}
-    {!ok && optional ? <span className="text-muted-foreground">optional</span> : null}
   </Badge>
 );
+
+/**
+ * Git, checked on its own.
+ *
+ * It is a separate question from Docker with a separate answer: Docker decides whether
+ * this wizard can go on at all, git only decides whether one option under Advanced is
+ * offered. Folding it into the Docker verdict made a missing git look like a broken
+ * prerequisite; here "not found" can be stated plainly and be an acceptable outcome.
+ *
+ * The re-check button is its own too, because the Docker card hides its own once Docker
+ * is ready — which is exactly the state somebody installing git would come back to.
+ */
+const GitSection = ({
+  git,
+  checking,
+  recheck,
+}: {
+  git: GitProbe | null;
+  checking: boolean;
+  recheck: () => void;
+}) => {
+  const found = git?.cli ?? false;
+
+  return (
+    <div className="mt-6">
+      <div className="text-sm font-medium">Git</div>
+      <p className="text-sm text-muted-foreground mt-0.5 leading-relaxed">
+        Optional, and only for one thing: the dev hub option under Advanced, which runs
+        the services from a source checkout instead of published images.
+      </p>
+
+      <Card className="gap-0 py-4 mt-3 border border-border">
+        <div className="px-4 flex items-start gap-3">
+          <GitBranch
+            className={cn(
+              "size-4.5 shrink-0 mt-0.5",
+              found ? "text-primary" : "text-muted-foreground"
+            )}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">
+              {git === null
+                ? "Looking for git…"
+                : found
+                  ? `git is available${git.cli_version ? ` — ${git.cli_version}` : ""}`
+                  : "git was not found"}
+            </div>
+            {git !== null && !found && (
+              <>
+                <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                  That is fine for an ordinary hub, which runs published images. It only
+                  means the dev hub option is unavailable. Install git and check again to
+                  get it back.
+                </p>
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => open("https://git-scm.com/downloads")}
+                  >
+                    <ExternalLink className="size-3.5" />
+                    Install git
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={checking}
+                    onClick={() => recheck()}
+                  >
+                    <RefreshCw className={cn("size-3.5", checking && "animate-spin")} />
+                    {checking ? "Checking…" : "Check again"}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+};
 
 /**
  * The first thing the wizard asks, and the only question it answers by itself.
@@ -198,7 +272,7 @@ export const DockerStep = () => {
                 "Checking whether the Docker command line, the compose plugin and the daemon are all here."}
             </p>
 
-            {probe && <Findings probe={probe} git={git} />}
+            {probe && <Findings probe={probe} />}
 
             <div className="flex flex-wrap items-center gap-2 mt-4">
               {verdict?.action && (
@@ -227,14 +301,8 @@ export const DockerStep = () => {
         <Alert className="mt-3 text-xs text-muted-foreground">{probe.error}</Alert>
       )}
 
-      {/* Said once, here, so nobody is surprised by a disabled control further on. */}
-      {git && !git.cli && (
-        <Alert className="mt-3 text-xs text-muted-foreground">
-          git was not found. That is fine for an ordinary hub, which runs published
-          images — it only means the dev hub option under Advanced, which runs the
-          services from a source checkout, is not available.
-        </Alert>
-      )}
+      {/* Its own section: a different question, with a different answer, from Docker's. */}
+      <GitSection git={git} checking={checking} recheck={recheck} />
 
       <ErrorDisplay name="dockerOk" className="mt-3" />
     </StepFrame>

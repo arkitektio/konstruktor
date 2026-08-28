@@ -103,7 +103,10 @@ async fn refuses_a_server_that_does_not_offer_hub_authorization() {
         .await;
 
     let error = start(&server.uri(), &request()).await.unwrap_err();
-    assert!(matches!(error, HubAuthorizationError::Server(_)), "got {error:?}");
+    assert!(
+        matches!(error, HubAuthorizationError::Server(_)),
+        "got {error:?}"
+    );
 }
 
 async fn grant_for(server: &MockServer) -> konstruktor_core::connect::authorize::HubGrant {
@@ -167,7 +170,10 @@ async fn refuses_a_grant_that_carries_no_jwks_url() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, HubAuthorizationError::NoJwksUrl), "got {error:?}");
+    assert!(
+        matches!(error, HubAuthorizationError::NoJwksUrl),
+        "got {error:?}"
+    );
 }
 
 #[tokio::test]
@@ -201,7 +207,10 @@ async fn returns_the_envelope_and_any_mesh_key_with_it() {
         envelope.auth.jwks_url.as_deref(),
         Some("https://coord.example.org/.well-known/jwks.json")
     );
-    assert_eq!(envelope.auth.ionscale_auth_key.as_deref(), Some("tskey-auth-minted"));
+    assert_eq!(
+        envelope.auth.ionscale_auth_key.as_deref(),
+        Some("tskey-auth-minted")
+    );
 }
 
 /// Ctrl-C during a poll interval used to land up to `interval` seconds late; the wait is
@@ -213,9 +222,11 @@ async fn a_cancelled_wait_returns_immediately() {
     let cancel = CancellationToken::new();
     cancel.cancel();
 
-    let error =
-        konstruktor_core::connect::authorize::wait_for_hub(&grant, &cancel, &|_| {})
-            .await
-            .unwrap_err();
-    assert!(matches!(error, HubAuthorizationError::Cancelled), "got {error:?}");
+    let error = konstruktor_core::connect::authorize::wait_for_hub(&grant, &cancel, &|_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, HubAuthorizationError::Cancelled),
+        "got {error:?}"
+    );
 }

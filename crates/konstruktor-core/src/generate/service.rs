@@ -46,9 +46,10 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         .issuer
         .clone()
         .unwrap_or_else(|| config.coord_server.clone());
-    let jwks = issued.jwks_url.clone().unwrap_or_else(|| {
-        format!("https://{}/.well-known/jwks.json", config.coord_server)
-    });
+    let jwks = issued
+        .jwks_url
+        .clone()
+        .unwrap_or_else(|| format!("https://{}/.well-known/jwks.json", config.coord_server));
 
     let mut pairs = vec![
         ("issuers", list(vec![jwks_issuer(&iss, &jwks)])),
@@ -76,10 +77,7 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
     };
 
     if let Some(issuer) = provenance {
-        pairs.push((
-            "provenance",
-            map(vec![("issuers", list(vec![issuer]))]),
-        ));
+        pairs.push(("provenance", map(vec![("issuers", list(vec![issuer]))])));
     }
 
     map(pairs)
@@ -114,11 +112,7 @@ fn build_datalayer(config: &HubConfig, id: ServiceId, service: &ServiceBlock) ->
 }
 
 /// The `configs/<service>.yaml` a service reads at startup.
-pub fn build_service_config(
-    config: &HubConfig,
-    id: ServiceId,
-    issued: &IssuedIdentity,
-) -> Value {
+pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedIdentity) -> Value {
     let service = config.service(id);
 
     let csrf = config
@@ -193,11 +187,19 @@ pub fn build_service_config(
             map(vec![
                 (
                     "issuer",
-                    service.provenance_issuer.as_deref().map(s).unwrap_or(Value::Null),
+                    service
+                        .provenance_issuer
+                        .as_deref()
+                        .map(s)
+                        .unwrap_or(Value::Null),
                 ),
                 (
                     "kid",
-                    service.provenance_kid.as_deref().map(s).unwrap_or(Value::Null),
+                    service
+                        .provenance_kid
+                        .as_deref()
+                        .map(s)
+                        .unwrap_or(Value::Null),
                 ),
                 ("private_key", s(&pair.private_key)),
                 ("public_key", s(&pair.public_key)),
@@ -205,5 +207,43 @@ pub fn build_service_config(
         ));
     }
 
+    // --- beyond upstream ------------------------------------------------------
+    //
+    // The two blocks below have no counterpart in the Python generator, which writes
+    // `ollama_config` and `ensured_repositories` into the *profile* and then emits
+    // neither into the service's own config — so nothing ever reaches the container.
+    //
+    // **The key shapes here are inferred, not sourced.** If a service disagrees with
+    // them, this is the place to correct, and the golden fixtures will not catch it:
+    // both are emitted only when somebody asked for something upstream cannot express,
+    // so a stock hub still generates exactly what the Python CLI generates.
+    if id == ServiceId::Alpaka {
+        if let Some(ollama) = &config.local_ollama {
+            pairs.push(("ollama", map(vec![("url", s(&ollama.url))])));
+        }
+    }
+
+    if id == ServiceId::Kabinet {
+        if let Some(repositories) = service
+            .ensured_repositories
+            .as_ref()
+            .filter(|asked| !is_the_seeded_default(asked))
+        {
+            pairs.push((
+                "ensured_repositories",
+                list(repositories.iter().map(|r| s(r)).collect()),
+            ));
+        }
+    }
+
     map(pairs)
+}
+
+/// Whether Kabinet's repository list is the one the config builder seeds.
+///
+/// A hub nobody customized has to keep generating what upstream generates, and upstream
+/// emits no such key at all — so the default is written into the profile (where upstream
+/// puts it too) and left out of the generated config.
+fn is_the_seeded_default(repositories: &[String]) -> bool {
+    repositories == ["jhnnsrs/ome:main", "jhnnsrs/renderer:main"]
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Container, HubStatus, ImageState } from "../../../api";
 import {
+  isInitContainer,
   runSummary,
   serviceUpdates,
   stages,
@@ -54,6 +55,29 @@ describe("runSummary", () => {
     ]);
     expect(summary.state).toBe("partial");
     expect(summary.total).toBe(2);
+  });
+});
+
+describe("init containers", () => {
+  it("knows the run-once ones by their compose service", () => {
+    expect(isInitContainer(container({ service: "minio_init" }))).toBe(true);
+    expect(isInitContainer(container({ service: "db" }))).toBe(false);
+    expect(isInitContainer(container({ service: undefined }))).toBe(false);
+  });
+
+  /** The whole point: an init container that exited is not a stack that half fell over. */
+  it("leaves them out of the run summary", () => {
+    const summary = runSummary([
+      container({ id: "a", service: "rekuest", state: "running" }),
+      container({ id: "b", service: "minio_init", state: "exited" }),
+    ]);
+    expect(summary).toEqual({ state: "running", running: 1, total: 1 });
+  });
+
+  it("still reports an empty project as never started", () => {
+    expect(
+      runSummary([container({ service: "minio_init", state: "exited" })]).state
+    ).toBe("never");
   });
 });
 

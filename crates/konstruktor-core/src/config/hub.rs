@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::catalog::{ServiceId, SERVICE_IDS};
 use crate::config::mesh::{build_mesh_block, MeshBlock, MeshOptions};
 use crate::secrets::{
-    generate_alpha_numeric_string, generate_django_secret_key,
-    generate_name, KeyPair,
+    generate_alpha_numeric_string, generate_django_secret_key, generate_name, KeyPair,
 };
 
 /// The `hub_config.yaml` Konstruktor writes.
@@ -47,10 +47,14 @@ pub struct Kinded {
 
 impl Kinded {
     fn local() -> Self {
-        Self { kind: "local".into() }
+        Self {
+            kind: "local".into(),
+        }
     }
     fn global() -> Self {
-        Self { kind: "global".into() }
+        Self {
+            kind: "global".into(),
+        }
     }
 }
 
@@ -164,6 +168,63 @@ pub struct RedisBlock {
     pub internal_port: u16,
 }
 
+/// Where Alpaka's language models come from.
+///
+/// Present only when somebody answered the question. Alpaka needs a model provider and
+/// upstream's generator supplies none — `ollama_config: {kind: local}` names a provider
+/// that nothing starts and no generated config points at. This block is what makes that
+/// answer real, either by adding a container to the stack or by naming one that already
+/// exists.
+///
+/// Like [`MeshBlock`] it is omitted entirely rather than written disabled: upstream's
+/// model has no key for it, and there a present-but-unknown key is a hard failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OllamaBlock {
+    /// Run the container in this stack. False means [`Self::url`] points somewhere else
+    /// and nothing is added to the compose file.
+    pub enabled: bool,
+    /// What Alpaka talks to. Derived from the host and port when we run it ourselves.
+    pub url: String,
+    /// The compose service name, when we run it.
+    pub host: String,
+    pub image: String,
+    pub internal_port: u16,
+    /// Pulled models are gigabytes and worth keeping across a `down`, so they live in a
+    /// named volume rather than in the deployment folder.
+    pub volume_name: String,
+}
+
+impl OllamaBlock {
+    /// A container in this stack, reached over the internal network by service name.
+    pub fn local() -> Self {
+        let (host, port) = ("ollama", 11434);
+        Self {
+            enabled: true,
+            url: format!("http://{host}:{port}"),
+            host: host.into(),
+            image: "ollama/ollama:latest".into(),
+            internal_port: port,
+            volume_name: "ollama_models".into(),
+        }
+    }
+
+    /// One that already exists. A bare host is taken as plain HTTP, which is what an
+    /// Ollama on another machine on the same network almost always is.
+    pub fn remote(url: &str) -> Self {
+        let trimmed = url.trim().trim_end_matches('/');
+        let url = if trimmed.contains("://") {
+            trimmed.to_string()
+        } else {
+            format!("http://{trimmed}")
+        };
+        Self {
+            enabled: false,
+            url,
+            ..Self::local()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubConfig {
     pub alpaka: ServiceBlock,
@@ -184,6 +245,9 @@ pub struct HubConfig {
     pub kabinet: ServiceBlock,
     pub kraph: ServiceBlock,
     pub local_redis: RedisBlock,
+    /// Present only when the hub runs its own Ollama. See [`OllamaBlock`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_ollama: Option<OllamaBlock>,
     /// Present only on a hub that joined a mesh. Upstream's config model does not know
     /// this key, so it is omitted entirely rather than written as `enabled: false`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -253,7 +317,10 @@ impl HubConfig {
             .collect();
 
         images.push((DB_COMPOSE_SERVICE.to_string(), self.db.image.clone()));
-        images.push((self.local_redis.host.clone(), self.local_redis.image.clone()));
+        images.push((
+            self.local_redis.host.clone(),
+            self.local_redis.image.clone(),
+        ));
         images.push((self.minio.host.clone(), self.minio.image.clone()));
         images.push((
             self.minio.init_container_host.clone(),
@@ -263,6 +330,9 @@ impl HubConfig {
 
         if let Some(mesh) = self.mesh.as_ref().filter(|m| m.enabled) {
             images.push((mesh.host.clone(), mesh.image.clone()));
+        }
+        if let Some(ollama) = self.local_ollama.as_ref().filter(|o| o.enabled) {
+            images.push((ollama.host.clone(), ollama.image.clone()));
         }
         images
     }
@@ -415,12 +485,61 @@ pub struct HubConfigOptions {
     pub mesh: Option<MeshOptions>,
     /// Injected by the tests; generated fresh otherwise.
     pub provenance_key_pair: Option<KeyPair>,
-    /// A *dev hub*: every service's source is checked out on this machine and mounted
-    /// over the image's workspace, so `mount_github` is set on each service block and
-    /// the generated compose file carries the bind mounts. The branch is not part of the
-    /// config — upstream's model has no key for it, and it is only needed at the moment
-    /// the checkout happens.
+    /// A *dev hub*: **every** service's source is checked out on this machine and
+    /// mounted over the image's workspace, so `mount_github` is set on each service
+    /// block and the generated compose file carries the bind mounts. The branch is not
+    /// part of the config — upstream's model has no key for it, and it is only needed at
+    /// the moment the checkout happens.
+    ///
+    /// The CLI's `--dev` still means all of them. The wizard asks per service instead,
+    /// through [`Self::service_options`]; the two are a union, never a conflict.
     pub dev_hub: bool,
+    /// What was asked of one service in particular. Only the services that were given an
+    /// answer appear — everything absent takes the deployment-wide default.
+    pub service_options: BTreeMap<ServiceId, ServiceOptions>,
+}
+
+/// What a front end can say about a single service, beyond whether it runs at all.
+///
+/// Everything here is something the person creating the hub has to decide *per service*
+/// and that cannot be derived. Two of the fields apply to one service each, which is why
+/// they are `Option` and why nothing complains when they are set on a service that has no
+/// use for them — a front end that offers them elsewhere is the thing at fault, and
+/// making the type enforce it would mean a variant per service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceOptions {
+    /// Check this service's repository out into `mounts/<service>` and mount it over the
+    /// image's workspace. Needs git, which the caller is responsible for having found.
+    #[serde(default)]
+    pub from_source: bool,
+    /// The branch to check out. Absent, the repository's own default branch is used —
+    /// they do not all agree on what it is called.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Django's debug mode for this one service. It reaches the container: the generator
+    /// already writes it as `django.debug` in `configs/<service>.yaml`.
+    #[serde(default)]
+    pub debug: bool,
+    /// **Alpaka only.** Where its language models come from.
+    #[serde(default)]
+    pub ollama: Option<OllamaChoice>,
+    /// **Kabinet only.** The app repositories this hub should offer, replacing the
+    /// default pair. Absent leaves the default alone.
+    #[serde(default)]
+    pub repositories: Option<Vec<String>>,
+}
+
+/// Where Alpaka's models come from.
+///
+/// `run_locally` adds an Ollama container to the stack; otherwise `url` names one that
+/// already exists. Both empty is the same as not answering, and leaves the profile saying
+/// what it says today — a `local` provider that nothing starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OllamaChoice {
+    #[serde(default)]
+    pub run_locally: bool,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 impl Default for HubConfigOptions {
@@ -430,8 +549,8 @@ impl Default for HubConfigOptions {
             coord_server: String::new(),
             rekuest_server: "local".into(),
             services: None,
-            http_port: Some(80),
-            https_port: Some(443),
+            http_port: Some(7080),
+            https_port: Some(7443),
             ssl: false,
             domain: None,
             global_admin: "admin".into(),
@@ -442,6 +561,7 @@ impl Default for HubConfigOptions {
             mesh: None,
             provenance_key_pair: None,
             dev_hub: false,
+            service_options: BTreeMap::new(),
         }
     }
 }
@@ -472,8 +592,38 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         }
     }
 
+    // A dev hub mounts every service's source; asking for one service on its own mounts
+    // that one. Both write the same field, so the generator and `git::checkouts` never
+    // have to know which of the two answers put it there.
+    for (id, block) in blocks.iter_mut() {
+        if let Some(asked) = options.service_options.get(id) {
+            block.mount_github = block.mount_github || asked.from_source;
+            block.debug = block.debug || asked.debug;
+
+            // Kabinet's app repositories: an answer replaces the seeded pair outright
+            // rather than adding to it, because "these are the apps this hub offers" is
+            // the question, not "these as well".
+            if let Some(repositories) = &asked.repositories {
+                block.ensured_repositories = Some(repositories.clone());
+            }
+
+            // Alpaka's provider. `local` means one runs in this stack, `global` means it
+            // is somewhere else — the same two words upstream's model already uses.
+            if let Some(ollama) = &asked.ollama {
+                if ollama.run_locally {
+                    block.ollama_config = Some(Kinded::local());
+                } else if blank(ollama.url.as_deref()).is_some() {
+                    block.ollama_config = Some(Kinded::global());
+                }
+            }
+        }
+    }
+
     let take = |blocks: &mut Vec<(ServiceId, ServiceBlock)>, id: ServiceId| {
-        let index = blocks.iter().position(|(i, _)| *i == id).expect("every id is seeded");
+        let index = blocks
+            .iter()
+            .position(|(i, _)| *i == id)
+            .expect("every id is seeded");
         blocks.remove(index).1
     };
 
@@ -503,8 +653,10 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             github_repo: "https://github.com/arkitektio/daten-server".into(),
             host: "daten".into(),
             image: "jhnnsrs/daten:dev".into(),
-            // Bind-mounted inside the deployment folder, so a `docker compose down -v`
-            // cannot take the database with it.
+            // Bind-mounted inside the deployment folder, so no compose command — ours
+            // or one the user runs in a terminal — can take the database with it, and so
+            // the whole deployment stays one movable folder. Erasing the data is
+            // deliberately a separate, confirmed act: `destroy::purge_data`.
             mount: Some("./db_data".into()),
             postgres_password: generate_alpha_numeric_string(40),
             postgres_user: generate_name(),
@@ -532,6 +684,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             .unwrap_or_else(|| generate_alpha_numeric_string(40)),
         global_description: blank(options.global_description.as_deref()),
         internal_network: generate_name(),
+        local_ollama: None,
         local_redis: RedisBlock {
             enabled: true,
             host: "redis".into(),
@@ -546,6 +699,8 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             exposed_console_port: None,
             host: "minio".into(),
             image: "minio/minio:RELEASE.2025-02-18T16-25-55Z".into(),
+            // The dashboard mirrors this name to recognise a run-once container, where
+            // "exited" is success rather than a failure — see `isInitContainer`.
             init_container_host: "minio_init".into(),
             init_container_image: "jhnnsrs/init:dev".into(),
             internal_port: 9000,
@@ -560,6 +715,23 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         },
         rekuest_server: options.rekuest_server.clone(),
     };
+
+    // Alpaka's provider, once the blocks are in place. Only when Alpaka actually runs:
+    // an Ollama container for a service this hub does not have would be several
+    // gigabytes pulled for nothing.
+    if config.alpaka.enabled {
+        config.local_ollama = options
+            .service_options
+            .get(&ServiceId::Alpaka)
+            .and_then(|asked| asked.ollama.as_ref())
+            .and_then(|ollama| {
+                if ollama.run_locally {
+                    Some(OllamaBlock::local())
+                } else {
+                    blank(ollama.url.as_deref()).map(|url| OllamaBlock::remote(&url))
+                }
+            });
+    }
 
     // Every service keeps the host it was seeded with; `service_mut` exists for the
     // orchestration that folds a mesh key in after the fact.

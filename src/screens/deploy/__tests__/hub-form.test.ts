@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { basename, baseUrl, coordinationServerSchema } from "../hub-form";
+import {
+  basename,
+  baseUrl,
+  coordinationServerSchema,
+  emptyOverride,
+  serviceAnswer,
+  type ServiceOverride,
+} from "../hub-form";
 
 /**
  * What is left of the form module after generation moved to Rust: the address rule the
@@ -54,5 +61,69 @@ describe("naming a folder", () => {
     expect(basename("/home/someone/MyHub/")).toBe("MyHub");
     // A Windows path may well be shown on Linux.
     expect(basename("C:\\Users\\Someone\\MyHub")).toBe("MyHub");
+  });
+});
+
+describe("one service's gear answers", () => {
+  const asked = (over: Partial<ServiceOverride> = {}): ServiceOverride => ({
+    ...emptyOverride,
+    ...over,
+  });
+
+  /**
+   * The core reads a missing service as "take the default", so an untouched one has to
+   * stay out of the profile entirely rather than go in as a row of falses.
+   */
+  it("says nothing about a service nobody touched", () => {
+    expect(serviceAnswer(asked())).toBeUndefined();
+  });
+
+  /**
+   * The regression this guards: the mapping used to keep only services with `fromSource`
+   * set, so every other answer the gear collects was silently dropped on the way out.
+   */
+  it("keeps an answer that is not about source at all", () => {
+    expect(serviceAnswer(asked({ debug: true }))).toEqual({
+      from_source: false,
+      branch: null,
+      debug: true,
+      ollama: null,
+      repositories: null,
+    });
+  });
+
+  it("sends a branch only for a service actually running from source", () => {
+    expect(serviceAnswer(asked({ fromSource: true, branch: " main " })!)?.branch).toBe(
+      "main"
+    );
+    // A branch left behind after source mode was switched off is not an instruction.
+    expect(serviceAnswer(asked({ fromSource: false, branch: "main" }))).toBeUndefined();
+  });
+
+  it("turns the two Ollama answers into what the core expects", () => {
+    expect(serviceAnswer(asked({ ollama: "local" }))?.ollama).toEqual({
+      run_locally: true,
+      url: null,
+    });
+    expect(
+      serviceAnswer(asked({ ollama: "remote", ollamaUrl: " gpu-box.lab:11434 " }))
+        ?.ollama
+    ).toEqual({ run_locally: false, url: "gpu-box.lab:11434" });
+  });
+
+  /**
+   * "Use one that already exists" with nothing typed is not an answer. The wizard's
+   * schema holds the step for this, and the mapping refuses to invent a provider.
+   */
+  it("refuses to invent a provider from an empty address", () => {
+    expect(serviceAnswer(asked({ ollama: "remote", ollamaUrl: "   " }))).toBeUndefined();
+  });
+
+  it("reads the repository box as one entry per line", () => {
+    expect(
+      serviceAnswer(asked({ repositories: " a/one:main \n\n  b/two:dev \n" }))
+        ?.repositories
+    ).toEqual(["a/one:main", "b/two:dev"]);
+    expect(serviceAnswer(asked({ repositories: "  \n \n" }))).toBeUndefined();
   });
 });

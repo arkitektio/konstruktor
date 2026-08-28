@@ -11,6 +11,25 @@
 
 import type { Container, HubStatus, ImageState } from "../../api";
 
+// --- init containers --------------------------------------------------------
+
+/**
+ * The compose services that do a job once and exit.
+ *
+ * `minio_init` creates the buckets and users the services expect and then stops — that
+ * is the whole point of it. Everywhere else on this page an exited container means
+ * something fell over, so without knowing which ones are init containers a healthy hub
+ * reports a dead container, a red tile and a "partly running" stack for the rest of its
+ * life. The name mirrors `MinioBlock::init_container_host` in the core, whose default it
+ * is; a profile that renamed it would simply not be recognised, which costs a colour.
+ */
+const INIT_SERVICES = new Set(["minio_init"]);
+
+/** Whether this container is one of the run-once ones, where exited is the happy end. */
+export const isInitContainer = (container: Container): boolean =>
+  !!container.service &&
+  (INIT_SERVICES.has(container.service) || container.service.endsWith("_init"));
+
 // --- is it running ----------------------------------------------------------
 
 /**
@@ -40,10 +59,15 @@ export type RunSummary = {
  * Counted over **every** container in the compose project, not just the arkitekt
  * services: Postgres, Redis, MinIO and the gateway are what the services stand on, and a
  * summary that ignored them would report a hub as running while its database was down.
+ *
+ * The exception is the init containers, which are left out of the count entirely. They
+ * have already done their job by the time anybody looks, so counting them would pin a
+ * perfectly healthy stack at "partly running" — the one state that reads as a problem.
  */
 export const runSummary = (containers: Container[]): RunSummary => {
-  const total = containers.length;
-  const running = containers.filter((c) => c.state === "running").length;
+  const counted = containers.filter((c) => !isInitContainer(c));
+  const total = counted.length;
+  const running = counted.filter((c) => c.state === "running").length;
 
   if (total === 0) return { state: "never", running: 0, total: 0 };
   if (running === 0) return { state: "stopped", running, total };

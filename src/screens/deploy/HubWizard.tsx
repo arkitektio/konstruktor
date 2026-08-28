@@ -2,11 +2,9 @@ import {
   ArrowLeft,
   ArrowRight,
   Boxes,
-  Cog,
   Container,
   FolderOpen,
   Globe,
-  Network,
   Plug,
   Rocket,
   Server,
@@ -23,11 +21,9 @@ import { DockerStep } from "./steps/DockerStep";
 import { MeshStep } from "./steps/MeshStep";
 import { FolderStep } from "./steps/FolderStep";
 import { CoordinationStep } from "./steps/CoordinationStep";
-import { RekuestStep } from "./steps/RekuestStep";
 import { ServicesStep } from "./steps/ServicesStep";
 import { PortsStep } from "./steps/PortsStep";
 import { HostsStep } from "./steps/HostsStep";
-import { AdvancedStep } from "./steps/AdvancedStep";
 import { SummaryStep } from "./steps/SummaryStep";
 import {
   InstallProgress,
@@ -36,10 +32,21 @@ import {
   reduceCreate,
 } from "./InstallProgress";
 import * as api from "../../api";
-import type { AdvertisedHost, CreateEvent, HubAnswers, ServiceMeta } from "../../api";
+import type {
+  AdvertisedHost,
+  CreateEvent,
+  HubAnswers,
+  ServiceId,
+} from "../../api";
 import { useRegistry } from "../../registry/registry-context";
 import { useSettings } from "../../settings/settings-context";
-import { HubForm, baseUrl, coordinationServerSchema } from "./hub-form";
+import {
+  HubForm,
+  ServiceOverride,
+  baseUrl,
+  coordinationServerSchema,
+  serviceAnswer,
+} from "./hub-form";
 
 /**
  * Creating a hub, end to end.
@@ -50,12 +57,6 @@ import { HubForm, baseUrl, coordinationServerSchema } from "./hub-form";
  * and the hub has to be authorized before anything is written, because the identity it
  * comes back with is what the generated service configs trust.
  */
-
-const hostname = z
-  .string()
-  .trim()
-  .min(1, "Required")
-  .refine((value) => !/\s/.test(value), "A hostname cannot contain spaces");
 
 const port = z.coerce
   .number()
@@ -80,7 +81,16 @@ const HubSummary = () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [values.services, values.rekuestServer, values.httpPort, values.httpsPort, values.ssl]);
+    // `serviceOptions` is in here because a service running from source adds bind mounts
+    // to the compose file, which is one of the files this list previews.
+  }, [
+    values.services,
+    values.rekuestServer,
+    values.httpPort,
+    values.httpsPort,
+    values.ssl,
+    values.serviceOptions,
+  ]);
 
   return (
     <SummaryStep
@@ -93,10 +103,7 @@ const HubSummary = () => {
         { label: "Hub identifier", value: values.identifier ?? "" },
         {
           label: "Rekuest",
-          value:
-            (values.rekuestServer ?? "local").trim() === "local"
-              ? "runs here"
-              : values.rekuestServer,
+          value: rekuestSummary(values.rekuestServer ?? "local"),
         },
         { label: "Services", value: (values.services ?? []).join(", ") || "none" },
         { label: "Ports", value: `${values.httpPort} / ${values.httpsPort}` },
@@ -105,10 +112,16 @@ const HubSummary = () => {
           value: advertisedAt(values.hosts ?? []),
         },
         {
-          label: "Services run from",
-          value: values.devHub
-            ? `a source checkout in mounts/ (${values.devBranch?.trim() || "each repository's default branch"})`
-            : "",
+          label: "From source",
+          value: fromSourceSummary(values.serviceOptions ?? {}),
+        },
+        {
+          label: "Language models",
+          value: ollamaSummary(values.serviceOptions ?? {}, values.services ?? []),
+        },
+        {
+          label: "Debug mode",
+          value: debugSummary(values.serviceOptions ?? {}),
         },
         {
           label: "Mesh",
@@ -123,6 +136,67 @@ const HubSummary = () => {
       files={["hub_config.yaml", "hub_credentials.json", ...files]}
     />
   );
+};
+
+/**
+ * The Rekuest row, which has three answers rather than two: it runs here, it runs at an
+ * address the services trust, or there is none — and "none" is a word the core reads,
+ * not something to print at somebody as if it were a hostname.
+ */
+const rekuestSummary = (server: string): string => {
+  const value = server.trim();
+  if (value === "local" || value === "") return "runs here";
+  if (value === "none") return "none — nothing signs provenance";
+  return value;
+};
+
+/**
+ * Where Alpaka's models will come from, for the review step.
+ *
+ * Worth a row of its own because the answer decides whether the deployment gains a
+ * container, and because saying nothing is a real outcome: Alpaka runs and answers
+ * nothing, which is better seen before the hub is created than after.
+ */
+const ollamaSummary = (
+  options: Partial<Record<ServiceId, ServiceOverride>>,
+  services: ServiceId[]
+): string => {
+  if (!services.includes("alpaka")) return "";
+  const asked = options.alpaka;
+  if (asked?.ollama === "local") return "Ollama, in this deployment";
+  if (asked?.ollama === "remote" && asked.ollamaUrl.trim())
+    return asked.ollamaUrl.trim();
+  return "none yet — Alpaka will have no provider";
+};
+
+/**
+ * The services shipping with Django's debug mode on.
+ *
+ * A row rather than a footnote: debug shows internals to anyone who can reach the
+ * service, and leaving it on by accident is the kind of thing a review step exists for.
+ */
+const debugSummary = (
+  options: Partial<Record<ServiceId, ServiceOverride>>
+): string => {
+  const on = Object.entries(options)
+    .filter(([, asked]) => asked?.debug)
+    .map(([id]) => id);
+  return on.length === 0 ? "" : `on for ${on.join(", ")}`;
+};
+
+/**
+ * Which services will run from a checkout rather than their published image, for the
+ * review step. Empty when none do, which is the ordinary hub and needs no row.
+ */
+const fromSourceSummary = (
+  options: Partial<Record<string, { fromSource: boolean; branch: string }>>
+): string => {
+  const named = Object.entries(options)
+    .filter(([, asked]) => asked?.fromSource)
+    .map(([id, asked]) =>
+      asked?.branch?.trim() ? `${id} (${asked.branch.trim()})` : id
+    );
+  return named.length === 0 ? "" : named.join(", ");
 };
 
 /**
@@ -150,6 +224,10 @@ const toAnswers = (values: HubForm): HubAnswers => ({
   https_port: Number(values.httpsPort),
   ssl: values.ssl,
   domain: values.domain?.trim() || null,
+  // Nobody is asked for these any more: the wizard has no Details step, and the account
+  // that matters is made per service on the dashboard, against a container that is up.
+  // The generated profile still needs a name and a password for the one it seeds, and an
+  // empty password is what tells the core to generate a strong one.
   global_admin: values.globalAdmin.trim(),
   global_admin_password: values.globalAdminPassword || null,
   global_description: values.globalDescription?.trim() || null,
@@ -163,8 +241,17 @@ const toAnswers = (values: HubForm): HubAnswers => ({
   // The wizard writes the deployment and stops there. Starting it is the dashboard's
   // job, so the first `up` happens where its output and the container list already are.
   start: false,
-  dev_hub: values.devHub ?? false,
-  dev_branch: values.devBranch?.trim() || null,
+  // The wizard never asks for a whole dev hub any more: it asks per service, and the
+  // core takes the union of the two.
+  dev_hub: false,
+  dev_branch: null,
+  // Only the services somebody actually changed something on. The filter used to be
+  // `fromSource` alone, which would silently drop every other answer the gear collects.
+  service_options: Object.fromEntries(
+    Object.entries(values.serviceOptions ?? {})
+      .map(([id, asked]) => [id, asked && serviceAnswer(asked)] as const)
+      .filter(([, answer]) => answer !== undefined)
+  ),
 });
 
 export const HubWizard = () => {
@@ -185,8 +272,8 @@ export const HubWizard = () => {
     description: "",
     rekuestServer: "local",
     services: [],
-    httpPort: 80,
-    httpsPort: 443,
+    httpPort: 7080,
+    httpsPort: 7443,
     ssl: false,
     domain: "",
     globalDescription: "",
@@ -196,8 +283,7 @@ export const HubWizard = () => {
     meshMode: "none",
     meshAuthKey: "",
     meshCoordUrl: "",
-    devHub: false,
-    devBranch: "",
+    serviceOptions: {},
   };
 
   const steps: WizardStep[] = useMemo(
@@ -249,17 +335,57 @@ export const HubWizard = () => {
         }),
       },
       {
-        component: RekuestStep,
-        meta: { label: "Rekuest", title: "Rekuest", icon: Network },
-        validationSchema: z.looseObject({ rekuestServer: hostname }),
-      },
-      {
+        // Provenance is no longer a step of its own: it asked where Rekuest runs before
+        // the list had said what Rekuest was. The services step asks it at the moment
+        // Rekuest is taken out of the hub, which is when the answer matters.
         component: ServicesStep,
         meta: { label: "Services", title: "Services", icon: Boxes },
         validationSchema: z.looseObject({
           // An empty selection would produce a stack with nothing but infrastructure
           // in it, which generation would happily accept.
           services: z.array(z.string()).min(1, "Pick at least one service"),
+          // "local" runs it here, "none" is a hub with no provenance authority at all,
+          // anything else is the host of a Rekuest elsewhere. Empty is the state the
+          // question passes through before it is answered, and it does not validate.
+          rekuestServer: z
+            .string()
+            .trim()
+            .refine(
+              (value) => value.length > 0,
+              "Say which Rekuest this hub should trust"
+            )
+            .refine((value) => !/\s/.test(value), "A hostname cannot contain spaces"),
+          // A branch name is git's to validate; only the shapes it can never accept are
+          // rejected here, so a typo is caught before the clone is attempted.
+          serviceOptions: z
+            .record(
+              z.string(),
+              z.looseObject({ fromSource: z.boolean(), branch: z.string() })
+            )
+            .refine(
+              (map) =>
+                // Only what will actually be cloned. A bad branch left behind on a
+                // service that no longer runs from source would hold the step invalid
+                // with no field on screen to fix it in.
+                Object.values(map).every((asked) => {
+                  const branch = asked.branch.trim();
+                  return !asked.fromSource || branch === "" ||
+                    !/[\s~^:?*\[\\]/.test(branch);
+                }),
+              "That is not a valid branch name"
+            )
+            // Picking "use one that already exists" and leaving the box empty would send
+            // no provider at all — the answer is dropped, and Alpaka comes up with
+            // nothing to talk to. Hold the step instead of losing it quietly.
+            .refine(
+              (map) =>
+                Object.values(map).every(
+                  (asked) =>
+                    asked.ollama !== "remote" ||
+                    String(asked.ollamaUrl ?? "").trim() !== ""
+                ),
+              "Give the address of the Ollama to use, or choose to run one here"
+            ),
         }),
       },
       {
@@ -306,27 +432,6 @@ export const HubWizard = () => {
             },
             { error: "That does not look like a server address", path: ["meshCoordUrl"] }
           ),
-      },
-      {
-        component: AdvancedStep,
-        meta: { label: "Advanced", title: "Advanced", icon: Cog },
-        validationSchema: z.looseObject({
-          // A branch name is git's to validate; only the shapes it can never accept are
-          // rejected here, so a typo is caught before eight clones are attempted.
-          devBranch: z
-            .string()
-            .refine(
-              (value) => value.trim() === "" || !/[\s~^:?*\[\\]/.test(value.trim()),
-              "That is not a valid branch name"
-            ),
-          globalAdmin: z.string().trim().min(1, "Required"),
-          globalAdminPassword: z
-            .string()
-            .refine(
-              (value) => value === "" || value.length >= 8,
-              "At least 8 characters, or leave empty to generate one"
-            ),
-        }),
       },
       {
         component: HubSummary,
@@ -405,6 +510,7 @@ export const HubWizard = () => {
           handleNext,
           goBackTo,
           isSubmitting,
+          isValid,
           isNextDisabled,
           isPrevDisabled,
           isLastStep,
@@ -418,18 +524,25 @@ export const HubWizard = () => {
             stepKey={currentStepIndex}
             buttons={
               <>
-                <Button disabled={isNextDisabled} onClick={handleNext}>
-                  {isSubmitting
-                    ? "Creating…"
-                    : isLastStep
-                      ? "Create the hub"
-                      : "Next"}
-                  {isLastStep ? (
-                    <Rocket className="size-3.5" />
-                  ) : (
-                    <ArrowRight className="size-3.5" />
-                  )}
-                </Button>
+                {/*
+                  Absent, not greyed out, until the step is answered. A disabled button
+                  invites clicking at it to find out why; the step says what it still
+                  wants, and the button turns up when it has it.
+                */}
+                {(isValid || isSubmitting) && (
+                  <Button disabled={isNextDisabled} onClick={handleNext}>
+                    {isSubmitting
+                      ? "Creating…"
+                      : isLastStep
+                        ? "Create the hub"
+                        : "Next"}
+                    {isLastStep ? (
+                      <Rocket className="size-3.5" />
+                    ) : (
+                      <ArrowRight className="size-3.5" />
+                    )}
+                  </Button>
+                )}
                 {currentStepIndex === 0 ? (
                   <Button variant="ghost" asChild>
                     <Link to="/">Cancel</Link>

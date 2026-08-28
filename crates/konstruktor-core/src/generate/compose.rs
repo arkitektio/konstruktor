@@ -100,10 +100,12 @@ pub fn build_minio_init(config: &HubConfig, enabled: &[ServiceId]) -> Option<Val
     Some(map(vec![
         (
             "buckets",
-            list(buckets
-                .iter()
-                .map(|name| map(vec![("name", s(name))]))
-                .collect()),
+            list(
+                buckets
+                    .iter()
+                    .map(|name| map(vec![("name", s(name))]))
+                    .collect(),
+            ),
         ),
         (
             "users",
@@ -235,6 +237,31 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         insert(&mut services, &service.host, compose_service(service));
     }
 
+    // --- the model provider, when this hub runs its own -----------------------
+    //
+    // Upstream's generator has no such service: `ollama_config: {kind: local}` names a
+    // provider and stops there. This is the one place the generated stack deliberately
+    // goes beyond what the Python CLI produces, and it only does so when somebody asked
+    // for it — a hub that did not is byte-identical to upstream's output.
+    if let Some(ollama) = config.local_ollama.as_ref().filter(|o| o.enabled) {
+        insert(
+            &mut services,
+            &ollama.host,
+            map(vec![
+                ("image", s(&ollama.image)),
+                // Models are pulled at runtime and are gigabytes each, so the volume is
+                // the point of the service — without it every restart re-downloads them.
+                (
+                    "volumes",
+                    list(vec![s(&format!(
+                        "{}:/root/.ollama",
+                        ollama.volume_name
+                    ))]),
+                ),
+            ]),
+        );
+    }
+
     // --- gateway, and the mesh sidecar when there is one ----------------------
     let mut ports: Vec<Value> = Vec::new();
     if let Some(port) = config.gateway.exposed_http_port {
@@ -338,6 +365,9 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         // The node identity has to survive `docker compose down`, or every restart rejoins
         // the tailnet as a new machine — and the pre-auth key is single-use.
         insert(&mut volumes, &mesh.volume_name, empty_map());
+    }
+    if let Some(ollama) = config.local_ollama.as_ref().filter(|o| o.enabled) {
+        insert(&mut volumes, &ollama.volume_name, empty_map());
     }
 
     map(vec![

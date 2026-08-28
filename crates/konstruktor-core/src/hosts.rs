@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 
 /// Interfaces that only exist for containers and virtual machines.
 const VIRTUAL_PREFIXES: [&str; 13] = [
-    "docker", "br-", "veth", "virbr", "vnet", "vmnet", "vboxnet", "cni", "cbr", "flannel",
-    "cali", "kube", "nerdctl",
+    "docker", "br-", "veth", "virbr", "vnet", "vmnet", "vboxnet", "cni", "cbr", "flannel", "cali",
+    "kube", "nerdctl",
 ];
 
 /// Interfaces belonging to a tailnet. `utun` is deliberately absent: it is generic on
@@ -318,7 +318,9 @@ pub fn describe_host_category(kind: HostCategory) -> &'static str {
         HostCategory::Loopback => "only reachable from this machine",
         HostCategory::Private => "reachable on the local network",
         HostCategory::Mesh => "reachable over the mesh",
-        HostCategory::OtherMesh => "on a tailnet, but not this hub's — only machines on that tailnet",
+        HostCategory::OtherMesh => {
+            "on a tailnet, but not this hub's — only machines on that tailnet"
+        }
         HostCategory::Public => "reachable from outside this network",
         HostCategory::Virtual => "a container bridge — nothing outside this machine can use it",
         HostCategory::LinkLocal => "a link-local address — it never leaves this cable",
@@ -498,12 +500,19 @@ pub fn host_candidates(bindings: &[Binding], mesh: &KnownMesh) -> Vec<HostCandid
         }
 
         add(
-            candidate(&binding.bind, category_for_binding(binding, mesh), &binding.name),
+            candidate(
+                &binding.bind,
+                category_for_binding(binding, mesh),
+                &binding.name,
+            ),
             &mut candidates,
         );
 
         if let Some(kind) = category_for_name(binding, &local_addresses, mesh) {
-            add(candidate(&binding.host, kind, &binding.name), &mut candidates);
+            add(
+                candidate(&binding.host, kind, &binding.name),
+                &mut candidates,
+            );
         }
     }
 
@@ -799,7 +808,12 @@ mod tests {
         let values: Vec<&str> = found.iter().map(|c| c.value.as_str()).collect();
         assert_eq!(
             values,
-            ["140.78.80.150", "10.0.0.4", "lab.internal", "server.example.org"]
+            [
+                "140.78.80.150",
+                "10.0.0.4",
+                "lab.internal",
+                "server.example.org"
+            ]
         );
         assert!(found[0].recommended);
         assert!(!found[2].recommended);
@@ -823,13 +837,21 @@ mod tests {
     #[test]
     fn separates_this_hubs_tailnet_from_everybody_elses() {
         let bindings = [
-            binding("tailscale0", "100.116.108.106", "laptop.hyena-sole.ts.net", true),
+            binding(
+                "tailscale0",
+                "100.116.108.106",
+                "laptop.hyena-sole.ts.net",
+                true,
+            ),
             binding("tailscale1", "100.70.0.9", "mylab.acme-org.ts.net", true),
         ];
 
         // Nothing known: both are somebody else's, which is the honest answer.
         let unknown = unattributed(&bindings);
-        assert_eq!(find(&unknown, "100.116.108.106").kind, HostCategory::OtherMesh);
+        assert_eq!(
+            find(&unknown, "100.116.108.106").kind,
+            HostCategory::OtherMesh
+        );
         assert_eq!(find(&unknown, "100.70.0.9").kind, HostCategory::OtherMesh);
 
         // The coordination server declares its tailnet: one of the two is ours now.
@@ -840,11 +862,20 @@ mod tests {
                 hostname: None,
             },
         );
-        assert_eq!(find(&known, "100.116.108.106").kind, HostCategory::OtherMesh);
+        assert_eq!(
+            find(&known, "100.116.108.106").kind,
+            HostCategory::OtherMesh
+        );
         assert_eq!(find(&known, "100.70.0.9").kind, HostCategory::Mesh);
         // The name is attributed with the address it was found on, not judged again.
-        assert_eq!(find(&known, "mylab.acme-org.ts.net").kind, HostCategory::Mesh);
-        assert_eq!(find(&known, "laptop.hyena-sole.ts.net").kind, HostCategory::OtherMesh);
+        assert_eq!(
+            find(&known, "mylab.acme-org.ts.net").kind,
+            HostCategory::Mesh
+        );
+        assert_eq!(
+            find(&known, "laptop.hyena-sole.ts.net").kind,
+            HostCategory::OtherMesh
+        );
     }
 
     /// No domain from the server, but the hub's own mesh config names its node — enough
@@ -1026,7 +1057,10 @@ mod tests {
         // A tailnet, but not demonstrably this hub's — `--host` says where to reach the
         // hub, not which tailnet it belongs to.
         assert_eq!(classify_host("100.64.1.2"), HostCategory::OtherMesh);
-        assert_eq!(classify_host("hub.tail1234.ts.net"), HostCategory::OtherMesh);
+        assert_eq!(
+            classify_host("hub.tail1234.ts.net"),
+            HostCategory::OtherMesh
+        );
 
         // Told which tailnet is ours, the same host is attributed to it.
         let mesh = KnownMesh {

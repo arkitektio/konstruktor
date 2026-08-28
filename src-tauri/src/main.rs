@@ -76,8 +76,12 @@ fn main() {
             cmd::inspect_folder,
             cmd::list_deployments,
             cmd::forget_deployment,
+            cmd::plan_deletion,
+            cmd::delete_deployment,
+            cmd::purge_deployment_data,
             cmd::hub_status,
             cmd::service_catalog,
+            cmd::create_superuser,
             cmd::reauthorize_hub,
             cmd::compose_command,
         ])

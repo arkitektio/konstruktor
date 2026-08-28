@@ -1,6 +1,5 @@
-import { ArrowLeft, Cog, Monitor, Moon, Palette, Sun } from "lucide-react";
+import { Cog, Monitor, Moon, Palette, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -11,6 +10,7 @@ import {
 } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Slider } from "../components/ui/slider";
+import { AppMenu } from "../components/AppMenu";
 import { Page } from "../layout/Page";
 import { PageHeader, SectionHeading } from "../layout/PageHeader";
 import { StepField } from "../screens/wizard/StepFrame";
@@ -256,18 +256,11 @@ export const Settings = () => {
 
   return (
     <Page
+      menu={<AppMenu back="/" breadcrumb="Settings" />}
       buttons={
-        <>
-          <Button disabled={!dirty || server.trim() === ""} onClick={save}>
-            Save
-          </Button>
-          <Button variant="outline" asChild>
-            <Link to="/">
-              <ArrowLeft className="size-3.5" />
-              Back
-            </Link>
-          </Button>
-        </>
+        <Button disabled={!dirty || server.trim() === ""} onClick={save}>
+          Save
+        </Button>
       }
     >
       <div className="flex flex-col gap-8">

@@ -91,6 +91,86 @@ impl DockerProbe {
     }
 }
 
+/// The arguments for a throwaway container that gives a tree back to its owner.
+///
+/// The Docker daemon runs as root and creates bind-mount targets as root, so the data
+/// directories a hub keeps inside its folder end up owned by root and by whatever uid the
+/// container wrote as. A desktop user cannot then delete them. The daemon is the only
+/// thing on this machine with the authority to undo that, so we borrow it: a container
+/// that does nothing but `chown`, over a mount of the tree in question.
+///
+/// It chowns rather than deletes, on purpose. The removal stays on the host, where every
+/// guard in `destroy` still applies; a container running `rm -rf` as root over a
+/// caller-supplied path is a far worse thing to get wrong.
+///
+/// `None` when the path cannot be expressed as a `--mount` argument — see below. The
+/// caller reports that rather than inventing an escaping scheme.
+///
+/// Why each flag:
+///
+/// * `--mount` rather than `-v`, because `-v host:/target` splits on colons and a
+///   deployment folder is named by the user. `--mount` has its own unquotable character,
+///   the comma, which is what the `None` is for.
+/// * `--entrypoint chown`, because every candidate image has an entrypoint of its own.
+///   Docker resolves it through the container's `PATH`, so the bare name avoids guessing
+///   between `/bin/chown` and `/usr/bin/chown`.
+/// * `-Rh`: `-R` for the tree, `-h` to act on a symlink itself. Both GNU and busybox
+///   `chown -R` default to `-P`, so it will not follow a link out of `/target`.
+/// * `--user 0:0`, because an image is free to declare a non-root `USER`, and the whole
+///   point is to act as root.
+/// * `--network none` and `--read-only`, because nothing here needs either. A bind mount
+///   stays writable under `--read-only`, which covers only the container's own layer.
+/// * `--pull=never`, so a destructive action the user is watching can never turn into a
+///   silent image download over a slow link.
+pub fn chown_args(host_path: &str, image: &str, uid: u32, gid: u32) -> Option<Vec<String>> {
+    // `--mount` takes comma-separated key=value pairs and offers no quoting, so a comma in
+    // the path would be read as the start of another option. A newline is refused for the
+    // same reason: it cannot survive the round trip intact.
+    if host_path.contains(',') || host_path.contains('\n') {
+        return None;
+    }
+
+    Some(
+        [
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--pull=never",
+            "--user",
+            "0:0",
+            "--entrypoint",
+            "chown",
+            "--mount",
+            &format!("type=bind,source={host_path},target=/target"),
+            image,
+            "-Rh",
+            &format!("{uid}:{gid}"),
+            "/target",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+    )
+}
+
+/// Whether an image is already on this machine.
+///
+/// `docker image inspect` rather than reading a `docker run` failure for "Unable to find
+/// image": the exit status is the same answer, and it does not depend on the daemon's
+/// locale or on wording that changes between versions.
+pub fn image_present(image: &str) -> bool {
+    Command::new(docker_command())
+        .args(["image", "inspect", image])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Runs a command that must not touch the Docker daemon, so it stays fast and cannot
 /// hang. `None` means the binary could not be executed at all.
 fn probe_command(args: &[&str]) -> Option<String> {

@@ -78,11 +78,7 @@ pub fn mesh_hostname(identifier: &str) -> String {
         }
     }
 
-    folded
-        .trim_matches('-')
-        .chars()
-        .take(63)
-        .collect()
+    folded.trim_matches('-').chars().take(63).collect()
 }
 
 #[cfg(test)]

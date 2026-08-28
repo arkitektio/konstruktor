@@ -1,8 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use konstruktor_core::catalog::ServiceId;
-use konstruktor_core::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
+use konstruktor_core::config::hub::{
+    build_hub_config, HubConfig, HubConfigOptions, ServiceOptions,
+};
 use serde_norway::Value;
 
 /// The oracle is a profile the real Python CLI wrote.
@@ -97,6 +99,37 @@ fn rekuest_follows_the_provenance_answer_not_the_picker() {
     assert!(remote.mikro.enabled);
 }
 
+/// One service can run from source without the rest of the hub becoming a dev hub, and
+/// `--dev` still means all of them. Both answers land on the same `mount_github`, which
+/// is what the compose bind mounts and the clone loop are driven from.
+#[test]
+fn source_mode_can_be_asked_for_one_service_at_a_time() {
+    let one = build_hub_config(&HubConfigOptions {
+        services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
+        service_options: BTreeMap::from([(
+            ServiceId::Mikro,
+            ServiceOptions {
+                from_source: true,
+                branch: Some("main".into()),
+                ..Default::default()
+            },
+        )]),
+        ..Default::default()
+    });
+    assert!(
+        one.mikro.mount_github,
+        "the service that asked runs from source"
+    );
+    assert!(!one.rekuest.mount_github, "and nothing else does");
+
+    let all = build_hub_config(&HubConfigOptions {
+        services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
+        dev_hub: true,
+        ..Default::default()
+    });
+    assert!(all.rekuest.mount_github && all.mikro.mount_github);
+}
+
 /// Upstream defaults MinIO to the container-absolute `/data`, which docker turns into an
 /// anonymous volume. Keeping both mounts relative makes the deployment one movable folder.
 #[test]
@@ -113,7 +146,10 @@ fn optional_keys_are_absent_rather_than_null() {
     let config = built();
     let yaml = serde_norway::to_string(&config).expect("serializes");
 
-    assert!(!yaml.contains("mesh:"), "a hub with no mesh must carry no mesh key");
+    assert!(
+        !yaml.contains("mesh:"),
+        "a hub with no mesh must carry no mesh key"
+    );
     // Lovekit declares no image, and every service but mikro/elektro declares no zarr.
     assert!(!yaml.contains("image: null"));
     assert!(!yaml.contains("zarr_bucket: null"));

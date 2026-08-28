@@ -29,16 +29,70 @@ pub fn pull() -> Vec<&'static str> {
 pub fn down() -> Vec<&'static str> {
     vec!["compose", "down"]
 }
-/// Removes the data as well — the only destructive path in the app.
+/// Removes named volumes as well as the containers.
+///
+/// Far less destructive than it sounds, and the name is the trap: with the profile this
+/// generates, the database and object storage are **bind mounts inside the deployment
+/// folder** and the stack declares no named volumes at all, so this takes no data with it.
+/// Deleting a hub's data is `destroy::purge_data`, which removes those directories itself.
 pub fn down_volumes() -> Vec<&'static str> {
     vec!["compose", "down", "--volumes"]
 }
+/// Everything this project ever put on the machine: containers, networks, volumes, and
+/// anything an earlier shape of the compose file left behind. Only for deleting a hub
+/// outright — `--remove-orphans` is too eager for a routine `down`, since a service the
+/// user has temporarily commented out counts as an orphan.
+pub fn down_everything() -> Vec<&'static str> {
+    vec!["compose", "down", "--volumes", "--remove-orphans"]
+}
+/// Create a Django superuser inside one running service.
+///
+/// Per service on purpose: each service keeps its own database and its own admin site,
+/// so "an account for the hub" is really one account per service, made in the container
+/// that owns the table. The credentials go in as environment variables rather than on
+/// the command line — `--noinput` is what reads them, and a password in `argv` is
+/// visible to every process on the machine for as long as the command runs.
+///
+/// `-T` because there is no terminal on the other end of this: the desktop app runs it
+/// through a pipe, and compose otherwise tries to allocate a TTY and fails.
+pub fn create_superuser(
+    service: &str,
+    username: &str,
+    password: &str,
+    email: Option<&str>,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec!["compose".into(), "exec".into(), "-T".into()];
+    for (key, value) in [
+        ("DJANGO_SUPERUSER_USERNAME", username.to_string()),
+        ("DJANGO_SUPERUSER_PASSWORD", password.to_string()),
+        (
+            "DJANGO_SUPERUSER_EMAIL",
+            email.unwrap_or_default().to_string(),
+        ),
+    ] {
+        args.push("-e".into());
+        args.push(format!("{key}={value}"));
+    }
+    args.push(service.into());
+    // The images run everything through uv, which owns the virtualenv the service's
+    // dependencies live in — a bare `python manage.py` finds a different interpreter.
+    for part in ["uv", "run", "python", "manage.py", "createsuperuser", "--noinput"] {
+        args.push(part.into());
+    }
+    args
+}
+
 pub fn ps() -> Vec<&'static str> {
     vec!["compose", "ps", "--format", "json"]
 }
 
 pub fn logs(service: Option<&str>, tail: u32) -> Vec<String> {
-    let mut args: Vec<String> = vec!["compose".into(), "logs".into(), "--tail".into(), tail.to_string()];
+    let mut args: Vec<String> = vec![
+        "compose".into(),
+        "logs".into(),
+        "--tail".into(),
+        tail.to_string(),
+    ];
     if let Some(service) = service {
         args.push(service.to_string());
     }
@@ -52,11 +106,7 @@ pub fn logs(service: Option<&str>, tail: u32) -> Vec<String> {
 /// platform, because a Windows path may be inspected on Linux and vice versa.
 pub fn basename(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
-    trimmed
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .to_string()
+    trimmed.rsplit(['/', '\\']).next().unwrap_or("").to_string()
 }
 
 pub fn project_name(path: &str) -> String {
@@ -86,6 +136,21 @@ mod tests {
         assert_eq!(project_name("/home/someone/My Hub 2"), "myhub2");
         assert_eq!(project_name("/home/someone/-leading"), "leading");
         assert_eq!(project_name("/home/someone/lab_hub-2"), "lab_hub-2");
+    }
+
+    #[test]
+    fn a_superuser_is_made_in_the_service_that_owns_the_table() {
+        let args = create_superuser("mikro", "someone", "s3cret", None);
+        assert_eq!(&args[..3], ["compose", "exec", "-T"]);
+        // The password is an env var, never an argument.
+        assert!(args.contains(&"-e".to_string()));
+        assert!(args.contains(&"DJANGO_SUPERUSER_PASSWORD=s3cret".to_string()));
+        assert!(!args.iter().any(|a| a == "s3cret"));
+        // The service name comes before the command, as compose wants it.
+        let service = args.iter().position(|a| a == "mikro").expect("the service");
+        let uv = args.iter().position(|a| a == "uv").expect("the runner");
+        assert!(service < uv);
+        assert_eq!(args.last().unwrap(), "--noinput");
     }
 
     #[test]

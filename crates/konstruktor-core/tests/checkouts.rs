@@ -100,7 +100,9 @@ fn switching_to_a_remote_only_branch_creates_it_tracking_origin() {
     // And back again, which now takes the local-branch path instead.
     git::switch_branch("rekuest", &checkout, "main").expect("switching back succeeds");
     assert_eq!(
-        git::read_checkout("rekuest", "origin", &checkout).branch.as_deref(),
+        git::read_checkout("rekuest", "origin", &checkout)
+            .branch
+            .as_deref(),
         Some("main")
     );
 }
@@ -163,7 +165,9 @@ fn a_branch_that_exists_nowhere_is_refused_by_name() {
         .expect_err("an unknown branch is not created");
     assert!(error.to_string().contains("no-such-branch"), "{error}");
     assert_eq!(
-        git::read_checkout("rekuest", "origin", &checkout).branch.as_deref(),
+        git::read_checkout("rekuest", "origin", &checkout)
+            .branch
+            .as_deref(),
         Some("main")
     );
 }
