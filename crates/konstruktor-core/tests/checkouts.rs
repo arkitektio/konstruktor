@@ -32,6 +32,18 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// The checkout's `run.sh`, with line endings normalised.
+///
+/// The repository's own files are settled by `.gitattributes`, but these repositories are
+/// built in a temp directory at test time, where Git for Windows' `core.autocrlf=true`
+/// still applies and rewrites the working tree on every checkout. Which branch's content
+/// is in the tree is what these assertions are about; how git spells a newline is not.
+fn run_sh(checkout: &Path) -> String {
+    std::fs::read_to_string(checkout.join("run.sh"))
+        .expect("the file")
+        .replace("\r\n", "\n")
+}
+
 /// An "origin" with `main` and `next`, and a clone of it — the shape `create_hub` writes.
 fn a_clone(name: &str) -> (PathBuf, PathBuf) {
     let root = scratch(name);
@@ -92,7 +104,7 @@ fn switching_to_a_remote_only_branch_creates_it_tracking_origin() {
     assert!(!state.detached, "a detached HEAD is not a switch");
     assert_eq!(state.branch.as_deref(), Some("next"));
     assert_eq!(
-        std::fs::read_to_string(checkout.join("run.sh")).expect("the file"),
+        run_sh(&checkout),
         "echo next\n",
         "the working tree holds the other branch's content"
     );
@@ -122,10 +134,7 @@ fn refuses_to_switch_over_uncommitted_work() {
         "the refusal says why: {error}"
     );
     // And the edit is still there.
-    assert_eq!(
-        std::fs::read_to_string(checkout.join("run.sh")).expect("the file"),
-        "echo mine\n"
-    );
+    assert_eq!(run_sh(&checkout), "echo mine\n");
 }
 
 #[test]

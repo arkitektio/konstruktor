@@ -1,0 +1,14 @@
+# The generator tests compare golden files byte-for-byte against what Konstruktor
+# writes, and Konstruktor always writes LF. Git for Windows checks out with CRLF by
+# default (`core.autocrlf=true`), which turned every one of those comparisons red on
+# the Windows CI runner. Nothing in this repository is a Windows-native file, so the
+# whole tree is normalised rather than just the fixtures.
+* text=auto eol=lf
+
+# Left alone regardless of what content detection makes of them.
+*.png binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
