@@ -1,0 +1,51 @@
+authentikate:
+  issuers:
+  - iss: go.arkitekt.live
+    jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
+    kind: jwks_uri
+  provenance:
+    issuers:
+    - iss: rekuest
+      jwks_uri: http://rekuest:80/rekuest/.well-known/jwks.json
+      kind: jwks_uri
+  static_tokens: {}
+django:
+  admin:
+    email: null
+    password: fixture-global-admin-password-not-a-real-secret
+    username: admin
+  csrf_trusted_origins:
+  - http://localhost
+  - https://localhost
+  debug: false
+  force_script_name: rekuest
+  hosts:
+  - '*'
+  secret_key: fixture-secret-key-not-a-real-secret
+postgres:
+  db_name: rekuest
+  engine: django.db.backends.postgresql
+  host: db
+  password: fixture-postgres-password-not-a-real-secret
+  port: 5432
+  username: fixture-postgres-user-not-a-real-secret
+provenance:
+  issuer: rekuest
+  kid: rekuest-prov-1
+  private_key: '-----BEGIN PRIVATE KEY-----
+
+    RklYVFVSRUtFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVlOT1RBUkVBTA==
+
+    -----END PRIVATE KEY-----
+
+    '
+  public_key: '-----BEGIN PUBLIC KEY-----
+
+    RklYVFVSRVBVQkxJQ0tFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVk=
+
+    -----END PUBLIC KEY-----
+
+    '
+redis:
+  host: redis
+  port: 6379

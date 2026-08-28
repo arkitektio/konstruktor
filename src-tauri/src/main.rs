@@ -7,7 +7,7 @@ mod fix_env;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Manager, RunEvent,
 };
 
 fn main() {
@@ -20,6 +20,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(cmd::StartedStacks::default())
         .setup(|app| {
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
@@ -51,17 +52,43 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            cmd::hello_world_test,
-            cmd::nana_test,
+            cmd::list_deployment_containers,
             cmd::restart_container,
-            cmd::test_docker,
-            cmd::docker_version_cmd,
-            cmd::directory_init_cmd,
-            cmd::directory_up_cmd,
-            cmd::directory_stop_cmd,
-            cmd::advertise_endpoint,
+            cmd::probe_docker,
+            cmd::canonicalize_path,
+            cmd::allow_deployment_dir,
+            cmd::prepare_deployment_dir,
+            cmd::discard_empty_dir,
             cmd::list_network_interfaces,
+            cmd::host_candidates,
+            cmd::create_hub,
+            cmd::preview_hub_files,
+            cmd::discover_server,
+            cmd::suggest_folder,
+            cmd::identifier_from_folder,
+            cmd::inspect_folder,
+            cmd::list_deployments,
+            cmd::forget_deployment,
+            cmd::hub_status,
+            cmd::service_catalog,
+            cmd::reauthorize_hub,
+            cmd::compose_command,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // `Exit`, not a window's `CloseRequested`: the tray has a Hide item, and on
+            // macOS closing the window is not quitting — tearing the stack down there
+            // would stop deployments the user is still using.
+            if let RunEvent::Exit = event {
+                let dirs = app.state::<cmd::StartedStacks>().take();
+                if !dirs.is_empty() {
+                    // Blocking on purpose. The process is on its way out, so anything
+                    // handed to the async runtime would never get to run.
+                    // No timeout override — each service's own `stop_grace_period`
+                    // applies, so the database gets to close cleanly.
+                    konstruktor_core::shutdown::stop_all(&dirs, None);
+                }
+            }
+        });
 }

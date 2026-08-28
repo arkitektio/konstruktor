@@ -1,129 +1,108 @@
-import { DialogTrigger } from "./ui/dialog";
-import { useCommand } from "../hooks/useCommand";
-import { Logo } from "../layout/Logo";
-import { useSettings } from "../settings/settings-context";
-import {
-  Menubar,
-  MenubarCheckboxItem,
-  MenubarContent,
-  MenubarItem,
-  MenubarMenu,
-  MenubarRadioGroup,
-  MenubarRadioItem,
-  MenubarSeparator,
-  MenubarShortcut,
-  MenubarSub,
-  MenubarSubContent,
-  MenubarSubTrigger,
-  MenubarTrigger,
-} from "./ui/menubar";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "./ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
+import { Cog } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { useCommunication } from "../communication/communication-context";
-import { useNavigate } from "react-router-dom";
+import { Logo } from "../layout/Logo";
+import { cn } from "../utils";
+import { Button } from "./ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-export const LogoMenu = () => {
+/**
+ * The bar across the top of every screen outside the wizard.
+ *
+ * It used to be a menubar whose menus held one item each; what people actually reached
+ * for was "go home" and "settings", so those are buttons now and the bar reads like the
+ * wizard's header — logo, where you are, a small right-hand side.
+ */
+
+/** What the Docker dot means, when it is not green. */
+const DOCKER_SUMMARY: Record<string, string> = {
+  checking: "Looking for Docker…",
+  ready: "Docker is ready",
+  missing: "Docker is not installed",
+  "no-compose": "Docker is here, but the compose plugin is missing",
+  "no-daemon": "Docker is installed, but not running",
+};
+
+export const DockerDot = () => {
+  const { state, probe } = useCommunication();
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center gap-1.5 px-1.5 cursor-default">
+          <span
+            className={cn(
+              "size-2 rounded-full",
+              state === "ready"
+                ? "bg-primary"
+                : state === "checking"
+                  ? "bg-muted-foreground/40 animate-pulse"
+                  : "bg-amber-500"
+            )}
+          />
+          <span className="text-xs text-muted-foreground">Docker</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>
+        {DOCKER_SUMMARY[state]}
+        {probe?.cli_version ? ` · ${probe.cli_version}` : ""}
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
+export const AppMenu = ({
+  /** What this screen is, shown after the app name. */
+  breadcrumb,
+  /** Screen-specific controls, before the settings button. */
+  actions,
+}: {
+  breadcrumb?: React.ReactNode;
+  actions?: React.ReactNode;
+} = {}) => {
   const navigate = useNavigate();
 
   return (
-    <MenubarMenu>
-      <MenubarTrigger>
-        {" "}
-        <div className="mr-2">
-          <Logo
-            width={"25"}
-            height={"25"}
-            cubeColor={"var(--primary)"}
-            aColor={"var(--foreground)"}
-            strokeColor={"var(--foreground)"}
-          />
-        </div>
-        Konstruktor
-      </MenubarTrigger>
-      <MenubarContent>
-        <MenubarItem onSelect={() => navigate("/")}>
-          Home <MenubarShortcut>⌘T</MenubarShortcut>
-        </MenubarItem>
-      </MenubarContent>
-    </MenubarMenu>
-  );
-};
+    <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/60">
+      <button
+        type="button"
+        onClick={() => navigate("/")}
+        className="flex items-center gap-2 rounded-md px-1.5 py-1 -mx-1.5 hover:bg-accent/50 transition-colors"
+      >
+        <Logo
+          width={20}
+          height={20}
+          cubeColor="var(--primary)"
+          aColor="currentColor"
+          strokeColor="currentColor"
+        />
+        <span className="text-sm font-semibold tracking-tight">Konstruktor</span>
+      </button>
 
-export const SettingsMenu = () => {
-  const { status } = useCommunication();
-  const { settings, setSettings } = useSettings();
-  return (
-    <MenubarMenu>
-      <MenubarTrigger>Settings</MenubarTrigger>
-      <MenubarContent>
-        <Dialog>
-          <DialogTrigger>
-            <MenubarItem onSelect={(e) => e.preventDefault()}>
-              Open Settings <MenubarShortcut>⌘T</MenubarShortcut>
-            </MenubarItem>
-          </DialogTrigger>
-          <DialogContent className="bg-card">
-            <DialogTitle>Settings</DialogTitle>
-            <DialogDescription>
-              These are global settings for this installer. They won't apply to
-              your deployments.
-              <div className="grid grid-cols-2 gap-2 w-[180px] mt-5">
-                <div className="my-auto">Theme</div>
-                <Select
-                  onValueChange={(v) => setSettings({ ...settings, theme: v })}
-                  value={settings.theme}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a Theme" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="dark">Dark</SelectItem>
-                      <SelectItem value="light">Light</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              {status ? (
-                <div className="grid grid-cols-2 gap-2 w-[180px] mt-5">
-                  {status.connected && <><div className="col-span-2">Connected to Docker</div>
-                  <div className="font-light">Version</div>
-                  <div className="font-light">{status?.version}</div>
-                  </>}
-                  {!status.connected && <div className="col-span-2">Not connected to Docker. Is docker running? {status.error}</div>}
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2 w-[180px] mt-5">
-                  <div className="col-span-2">
-                    Not connected to Docker. Is docker running?
-                  </div>
-                </div>
-              )}
-            </DialogDescription>
-          </DialogContent>
-        </Dialog>
-      </MenubarContent>
-    </MenubarMenu>
-  );
-};
+      {breadcrumb && (
+        <>
+          <span className="text-muted-foreground/50 text-sm">/</span>
+          <span className="text-sm text-muted-foreground truncate min-w-0">
+            {breadcrumb}
+          </span>
+        </>
+      )}
 
-export const AppMenu = () => {
-  return (
-    <Menubar className="flex-initial border-0 justify-between">
-      <LogoMenu />
-      <SettingsMenu />
-    </Menubar>
+      <div className="flex-1" />
+
+      <DockerDot />
+      {actions}
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" asChild>
+            <Link to="/settings" aria-label="Settings">
+              <Cog className="size-4" />
+            </Link>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Settings</TooltipContent>
+      </Tooltip>
+    </div>
   );
 };

@@ -1,0 +1,289 @@
+backend: docker
+config:
+  alpaka:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: alpaka
+      kind: local
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/alpaka-server
+    host: alpaka
+    image: jhnnsrs/alpaka:next
+    internal_port: 80
+    media_bucket:
+      bucket_name: alpakamedia
+      kind: local
+    mount_github: false
+    ollama_config:
+      kind: local
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+  coord_server: coord.example.org
+  csrf_trusted_origins:
+  - https://hub.example.org
+  db:
+    enabled: true
+    github_repo: https://github.com/arkitektio/daten-server
+    host: daten
+    image: jhnnsrs/daten:dev
+    mount: null
+    postgres_password: fixture-postgres-password-not-a-real-secret
+    postgres_user: fixture-postgres-user-not-a-real-secret
+    volume_name: db_data
+  default_service_grace_period_seconds: 2
+  device_id: konstruktor-test
+  domain: hub.example.org
+  elektro:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: elektro
+      kind: local
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/elektro-server
+    host: elektro
+    image: jhnnsrs/elektro:next
+    internal_port: 80
+    media_bucket:
+      bucket_name: elektromedia
+      kind: local
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+    zarr_bucket:
+      bucket_name: elektrozarr
+      kind: local
+  fluss:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: fluss
+      kind: local
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/fluss-server-next
+    host: fluss
+    image: jhnnsrs/fluss:next
+    internal_port: 80
+    media_bucket:
+      bucket_name: flussmedia
+      kind: local
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+  gateway:
+    auto_https: true
+    enabled: true
+    exposed_http_port: 80
+    exposed_https_port: 443
+    host: gateway
+    image: caddy:latest
+    internal_port: 80
+    ssl: true
+    ssl_cert: null
+  global_admin: admin
+  global_admin_email: null
+  global_admin_password: fixture-global-admin-password-not-a-real-secret
+  global_description: null
+  internal_network: quiet-brook
+  kabinet:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: kabinet
+      kind: local
+    debug: false
+    enabled: true
+    ensured_repositories:
+    - jhnnsrs/ome:main
+    - jhnnsrs/renderer:main
+    github_repo: https://github.com/arkitektio/kabinet-server
+    host: kabinet
+    image: jhnnsrs/kabinet:next
+    internal_port: 80
+    media_bucket:
+      bucket_name: kabinetmedia
+      kind: local
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+  kraph:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: kraph
+      kind: local
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/kraph-server
+    host: kraph
+    image: jhnnsrs/kraph:dev
+    internal_port: 80
+    media_bucket:
+      bucket_name: kraphmedia
+      kind: local
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+  local_redis:
+    enabled: true
+    host: redis
+    image: redis:latest
+    internal_port: 6379
+  lovekit:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: lovekit
+      kind: local
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/lovekit-server
+    host: lovekit
+    internal_port: 80
+    media_bucket:
+      bucket_name: lovekitmedia
+      kind: local
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+  mikro:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    bigfile_bucket:
+      bucket_name: mikrobigfile
+      kind: local
+    db_config:
+      db: mikro
+      kind: local
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/mikro-server-next
+    host: mikro
+    image: jhnnsrs/mikro:next
+    internal_port: 80
+    media_bucket:
+      bucket_name: mikromedia
+      kind: local
+    mount_github: false
+    parquet_bucket:
+      bucket_name: mikroparquet
+      kind: local
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+    zarr_bucket:
+      bucket_name: mikrozarr
+      kind: local
+  minio:
+    access_key: fixture-access-key-not-a-real-secret
+    console_port: 9001
+    enabled: true
+    exposed_console_port: null
+    host: minio
+    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    init_container_host: minio_init
+    init_container_image: jhnnsrs/init:dev
+    internal_port: 9000
+    mount: null
+    root_password: fixture-root-password-not-a-real-secret
+    root_user: fixture-root-user-not-a-real-secret
+    secret_key: fixture-secret-key-not-a-real-secret
+    volume_name: minio_data
+  rekuest:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      db: rekuest
+      kind: local
+    debug: false
+    enabled: false
+    github_repo: https://github.com/arkitektio/rekuest-server-next
+    host: rekuest
+    image: jhnnsrs/rekuest:next
+    internal_port: 80
+    media_bucket:
+      bucket_name: rekuestmedia
+      kind: local
+    mount_github: false
+    path_config:
+      kind: local
+    provenance_issuer: rekuest
+    provenance_key_pair:
+      key_type: Ed25519
+      private_key: '-----BEGIN PRIVATE KEY-----
+
+        RklYVFVSRUtFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVlOT1RBUkVBTA==
+
+        -----END PRIVATE KEY-----
+
+        '
+      public_key: '-----BEGIN PUBLIC KEY-----
+
+        RklYVFVSRVBVQkxJQ0tFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVk=
+
+        -----END PUBLIC KEY-----
+
+        '
+    provenance_kid: rekuest-prov-1
+    redis_config:
+      kind: local
+    secret_key: fixture-secret-key-not-a-real-secret
+  rekuest_server: rekuest.example.org
+kind: hub
+version: '1.0'

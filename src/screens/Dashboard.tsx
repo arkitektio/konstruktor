@@ -1,86 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
-import React, { useEffect, useState } from "react";
-import { TbReload } from "react-icons/tb";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { useBeacon } from "../beacon/context";
-import { useCommunication } from "../communication/communication-context";
-import { ResponsiveGrid } from "../layout/ResponsiveGrid";
-import { App, useStorage } from "../storage/storage-context";
-import { BeaconInterface } from "../types";
-
+import { fetch } from "@tauri-apps/plugin-http";
 import { open } from "@tauri-apps/plugin-shell";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { TbReload } from "react-icons/tb";
+import {
+  Boxes,
+  ExternalLink,
+  FolderOpen,
+  RefreshCw,
+  ScrollText,
+} from "lucide-react";
 
-export const ServiceHealth = (props: { service: any }) => {
-  return (
-    <ResponsiveGrid>
-      {props?.service?.ok &&
-        Object.keys(props?.service?.ok).map((key) => (
-          <div className="border rounded bg-green-500/10 border-green-500/50 p-3">
-            <div className="font-light">{key}</div>
-            {JSON.stringify((props?.service?.ok as any)[key])}
-          </div>
-        ))}
-      {props?.service?.error &&
-        Object.keys(props?.service?.error).map((key) => (
-          <div className="border rounded bg-destructive/10 border-destructive/50 p-3">
-            <div className="font-light">{key}</div>
-            {JSON.stringify((props?.service?.error as any)[key])}
-          </div>
-        ))}
-    </ResponsiveGrid>
-  );
-};
-
-export type InitDirectoryValues = {
-  dirpath: string;
-};
-
-export type Container = {
-  id: string;
-  names: string[];
-  status: string;
-  labels: { [key: string]: string };
-  state: string;
-};
-
-export type ContainerQuery = {
-  containers: Container[];
-};
-
-export type Service = {
-  name: string;
-  containers: Container[];
-};
-
-const getServiceColor = (service: Service) => {
-  if (service.containers.length === 0) {
-    return "bg-muted border-muted-foreground/30";
-  }
-  if (service.containers.every((c) => c.state == "running")) {
-    return "bg-green-500/15 border-green-500/50";
-  }
-  if (service.containers.some((c) => c.state == "running")) {
-    return "bg-amber-500/15 border-amber-500/50";
-  }
-
-  return "bg-destructive/10 border-destructive/50";
-};
-
-const getContainerColor = (container: Container) => {
-  if (container.state == "running") {
-    return "border-green-500/50";
-  }
-  if (container.state == "exited") {
-    return "border-destructive/50";
-  }
-};
-
-
-import { DialogTrigger } from "../components/ui/dialog";
-import { DoubleArrowUpIcon } from "@radix-ui/react-icons";
-import { BaseDirectory, DirEntry, readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { CommandButton, DangerousButton, DangerousCommandButton } from "../CommandButton";
-import { LogoMenu, SettingsMenu } from "../components/AppMenu";
+import { AppMenu } from "../components/AppMenu";
+import { Alert } from "../components/ui/alert";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -89,691 +25,454 @@ import {
   CardHeader,
   CardTitle,
 } from "../components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogTitle,
-} from "../components/ui/dialog";
-import {
-  Menubar,
-  MenubarContent,
-  MenubarItem,
-  MenubarMenu,
-  MenubarShortcut,
-  MenubarTrigger,
-} from "../components/ui/menubar";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "../components/ui/tooltip";
-import { useCommand, useLazyCommand } from "../hooks/useCommand";
 import { Page } from "../layout/Page";
-import { useSettings } from "../settings/settings-context";
-import { parse, stringify } from "yaml";
-import { Alert } from "../components/ui/alert";
-import * as yup from "yup";
-import { ScrollArea } from "../components/ui/scroll-area";
+import { PageHeader, SectionHeading } from "../layout/PageHeader";
+import { ResponsiveGrid } from "../layout/ResponsiveGrid";
+import { cn } from "../utils";
 
-export const KonstruktSchema = yup.object().shape({
-  pulled: yup.date().required("Required"),
-});
+import * as api from "../api";
+import { useRegistry } from "../registry/registry-context";
+import type { DeploymentRecord, HubStatus, ServiceView } from "../api";
 
-export type KonstruktInfo = yup.InferType<typeof KonstruktSchema>;
+/**
+ * The management view of a deployment.
+ *
+ * Everything shown here is derived from the profile YAML in the folder, and from the
+ * compose containers running out of the deployment folder. The stack itself carries no
+ * Konstruktor-specific labels — it is an ordinary compose project, and can be driven
+ * from a terminal in that folder just as well.
+ */
 
+export type Container = {
+  id: string;
+  names: string[];
+  status: string;
+  labels: { [key: string]: string };
+  state: string;
+  service?: string;
+};
 
-export const checkHealth = async (
-  healthz: string,
-): Promise<boolean> => {
-  try {
-    //console.log(`Checking ${name} on ${host}:${port}`)
-    const res = await fetch(`${healthz}/?format=json`, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      method: 'GET',
-    })
+export type ContainerQuery = {
+  containers: Container[];
+};
 
-    if (res.ok)
-      return true;
-    else {
-      return false;
-    }
-  } catch (e) {
-    return false;
-  }
-}
+const containerColor = (container: Container) => {
+  if (container.state === "running") return "border-green-500/50";
+  if (container.state === "exited") return "border-destructive/50";
+  return "border-muted-foreground/30";
+};
 
-export const HealthIndicator = (props: { healthz: string | undefined, s: any }) => {
+const serviceColor = (containers: Container[]) => {
+  if (containers.length === 0) return "bg-muted border-muted-foreground/30";
+  if (containers.every((c) => c.state === "running"))
+    return "bg-green-500/15 border-green-500/50";
+  if (containers.some((c) => c.state === "running"))
+    return "bg-amber-500/15 border-amber-500/50";
+  return "bg-destructive/10 border-destructive/50";
+};
 
-  const [healthy, setHealthy] = useState<boolean>(props.healthz == undefined ? true : false);
-
-
-  useEffect(() => {
-    if (!props.healthz) {
-      return;
-    }
-
-    let interval = setInterval(() => {
-      if (!props.healthz) {
-        return;
-      }
-      checkHealth(props.healthz).then((res) => setHealthy(res));
-    }
-
-    , 3000);
-
-    return () => clearInterval(interval);
-  }, [props.healthz]);
-
-  
-
-  return props.healthz ? <div
-  className={`h-3 w-3 rounded-full border ${healthy ? "bg-green-500 border-green-500/60" : "bg-destructive/20 border-destructive"} inline-block`}
-></div> : <div
-  className={`h-3 w-3 rounded-full border ${getServiceColor(
-    props.s
-  )} inline-block`}
-></div>
-
-}
-
-
-
-export const Dashboard: React.FC<{ app: App }> = ({ app }) => {
-  const { call, status } = useCommunication();
-  const { deleteApp } = useStorage();
-  const navigate = useNavigate();
-  const [advertise, setAdvertise] = useState<boolean>(false);
-  const [services, setServices] = useState<Service[]>([]);
-  const { advertisedSignals, toggleSignal } = useBeacon();
-  const [retrigger, setRetrigger] = useState<boolean>(false);
-  const { settings } = useSettings();
-  const [initialized, setInitialized] = useState<boolean>(false);
-  const [konstruktInfo, setKonstruktInfo] = useState<KonstruktInfo | null>(null);
-  const [countDown, setCountDown] = useState<number>(4);
-  const [dialogOpen, setDialogOpen] = useState<boolean>(false);
-  const [dialogStatus, setDialogStatus] = useState<string>("");
-
-  const openFolder = async () => {
-    await open(app.path);
-    console.log("opened");
-  };
-
-  const { run, logs, finished } = useLazyCommand({
-    logLength: 50,
-  });
-
-  const writeNewInfo = async (konstruktInfo: KonstruktInfo) => {
-    const written = await writeTextFile(
-      `apps/${app.name}/konstruktor.yaml`,
-      stringify(konstruktInfo),
-      {
-        baseDir: BaseDirectory.AppData,
-      }
-    );
-    console.log(written);
-    setRetrigger(!retrigger);
-  };
-    
-
-
-  const pull = async () => {
-      setDialogOpen(true);
-      setDialogStatus("Pulling Images...");
-      await run({
-        program: "docker",
-        args: ["compose", "pull"],
-        options: {
-          cwd: app.path,
-      }})
-
-      await writeNewInfo({...konstruktInfo, pulled: new Date()});
-      setDialogStatus("Finished pulling images");
-      setDialogOpen(false);
-
-
-
-  };
-
-
-
-  const {
-    run: up,
-    logs: uplog,
-    error: uperror,
-    finished: upfinished,
-  } = useCommand({
-    program: "docker",
-    args: ["compose", "up", "-d"],
-    options: {
-      cwd: app.path,
-    },
-  });
-
-  
-
-  const { run: down } = useCommand({
-    program: "docker",
-    args: ["compose", "down"],
-    options: {
-      cwd: app.path,
-    },
-  });
-
-  let deployment = app.name.toLowerCase();
-  const [bindings, setAvailableBindings] = useState<BeaconInterface[]>([]);
-
-  const [restartingContainers, setRestartingContainers] = useState<string[]>(
-    []
-  );
+/**
+ * Polls a service's `/ht` endpoint through the gateway.
+ *
+ * Through the HTTP plugin rather than the webview's `fetch`: the services send no CORS
+ * headers for the webview's origin, so a browser request would fail on every healthy
+ * service. The plugin's allow-list lives in `capabilities/migrated.json`.
+ */
+const useHealth = (url: string | undefined) => {
+  const [healthy, setHealthy] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
-    loadServiceState();
-    let interval = setInterval(() => {
-      loadServiceState();
-    }, 2000);
+    if (!url) return;
+    let cancelled = false;
 
-    return () => clearInterval(interval);
-  }, []);
-
-
-  const processKonstruktorYAML = async () => {
-    
-    try {
-      let setup_string = await readTextFile(`apps/${app.name}/konstruktor.yaml`, {
-        baseDir: BaseDirectory.AppData,
-      });
-
-      let setup = parse(setup_string);
-      
+    const check = async () => {
       try {
-      const validatedInfo = await KonstruktSchema.validate(setup);
-      setKonstruktInfo(validatedInfo);
+        const response = await fetch(`${url}/?format=json`, { method: "GET" });
+        if (!cancelled) setHealthy(response.ok);
+      } catch {
+        if (!cancelled) setHealthy(false);
       }
-      catch (e) {
-        console.error(e);
+    };
+
+    check();
+    const timer = setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [url]);
+
+  return healthy;
+};
+
+const HealthDot = ({ url }: { url: string | undefined }) => {
+  const healthy = useHealth(url);
+  return (
+    <div
+      title={
+        healthy === undefined
+          ? "Not reachable yet"
+          : healthy
+            ? "Healthy"
+            : "Not responding"
       }
+      className={cn(
+        "h-2 w-2 rounded-full",
+        healthy === undefined
+          ? "bg-muted-foreground/40"
+          : healthy
+            ? "bg-green-500"
+            : "bg-destructive"
+      )}
+    />
+  );
+};
+
+const AdminCard = ({ status }: { status: HubStatus }) => {
+  const [revealed, setRevealed] = useState(false);
+
+  return (
+    <Card className="max-w-xl">
+      <CardHeader>
+        <CardTitle>Admin account</CardTitle>
+        <CardDescription>
+          The superuser for each service's own admin panel. It was generated when the
+          deployment was created and is stored in the configuration file.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <div className="grid grid-cols-3 text-sm gap-2">
+          <div className="text-muted-foreground">Username</div>
+          <div className="col-span-2">{status.admin_user}</div>
+          <div className="text-muted-foreground">Password</div>
+          <div className="col-span-2 break-all font-mono text-xs">
+            {revealed ? status.admin_password : "•".repeat(24)}
+          </div>
+        </div>
+        <div className="flex flex-row gap-2">
+          <Button variant="outline" onClick={() => setRevealed(!revealed)}>
+            {revealed ? "Hide" : "Reveal"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => writeText(status.admin_password)}
+          >
+            Copy password
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+const ServiceCard = ({
+  service,
+  containers,
+  deployment,
+  onRestart,
+}: {
+  service: ServiceView;
+  containers: Container[];
+  deployment: DeploymentRecord;
+  onRestart: (id: string) => void;
+}) => (
+  <Card className={cn("border p-3", serviceColor(containers))}>
+    <div className="flex flex-row justify-between items-start">
+      <div>
+        <div className="flex flex-row items-center gap-2">
+          <HealthDot url={`${service.url}/health/`} />
+          <div className="font-bold">{service.name}</div>
+        </div>
+      </div>
+      <Badge variant="outline">{service.host}</Badge>
+    </div>
+
+    <div className="flex flex-col gap-1 mt-3">
+      {containers.map((container) => (
+        <div
+          key={container.id}
+          className={cn(
+            "border rounded p-2 flex flex-row justify-between items-center gap-2",
+            containerColor(container)
+          )}
+        >
+          <div className="text-xs truncate">
+            {container.names?.[0]?.replace(/^\//, "") ?? container.id}
+          </div>
+          <div className="flex flex-row items-center gap-2">
+            <div className="text-xs text-muted-foreground">{container.status}</div>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Restart this container"
+              onClick={() => onRestart(container.id)}
+            >
+              <TbReload />
+            </Button>
+          </div>
+        </div>
+      ))}
+      {containers.length === 0 && (
+        <div className="text-xs text-muted-foreground">Not running</div>
+      )}
+    </div>
+
+    <div className="flex flex-row gap-2 mt-3">
+      {service.url && (
+        <Button variant="outline" size="sm" onClick={() => open(service.url)}>
+          Open
+        </Button>
+      )}
+      <Button variant="outline" size="sm" asChild>
+        <Link to={`/logs/${deployment.id}/service/${service.host}`}>Logs</Link>
+      </Button>
+    </div>
+  </Card>
+);
+
+export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
+  const navigate = useNavigate();
+  const { forget, refresh } = useRegistry();
+
+  const [status, setStatus] = useState<HubStatus | undefined>();
+  const [profileError, setProfileError] = useState<string | undefined>();
+  const [containers, setContainers] = useState<Container[]>([]);
+
+  const loadProfile = useCallback(async () => {
+    try {
+      setStatus(await api.hubStatus(deployment.path));
+      setProfileError(undefined);
     } catch (e) {
-      console.error(e);
+      setProfileError(e instanceof Error ? e.message : String(e));
     }
-  }
-
-
-
-  const processEntries = (entries: DirEntry[]) => {
-    for (const entry of entries) {
-      if (entry.name == "docker-compose.yaml") {
-        setInitialized(true);
-      }
-      if (entry.name == "konstruktor.yaml") {
-        processKonstruktorYAML();
-      }
-    }
-  };
-
-  const checkFiles = async () => {
-    const entries = await readDir(`apps/${app.name}/`, {
-      baseDir: BaseDirectory.AppData,
-    });
-    processEntries(entries);
-  };
+  }, [deployment.path, deployment.kind]);
 
   useEffect(() => {
-    checkFiles();
-  }, [retrigger]);
+    loadProfile();
+  }, [loadProfile]);
 
-  useEffect(() => {
-    console.log("AdverstisedHostsForm");
-    invoke("list_network_interfaces", { v4: true })
-      .then((res) => {
-        let x = (res as BeaconInterface[]).reduce(
-          (prev, curr) =>
-            prev.find((b) => b.host == curr.host) ? prev : [...prev, curr],
-          [] as BeaconInterface[]
-        );
-
-        setAvailableBindings(x);
-      })
-      .catch((err) => console.error(err));
-  }, []);
-
-  const loadServiceState = () => {
-    invoke<ContainerQuery>("nana_test", { deployment })
-      .then((res) => {
-        let services = res.containers.reduce((prev, curr) => {
-          let service = curr.labels[`arkitekt.${deployment}.service`];
-          if (service) {
-            let x = prev.find((b) => b.name == service);
-            if (x) {
-              x.containers.push(curr);
-            } else {
-              prev.push({ name: service, containers: [curr] });
-            }
-          }
-          return prev;
-        }, [] as Service[]);
-
-        console.log(res);
-        setServices(services);
-      })
-      .catch((err) => console.log(err));
-  };
-
-  const restartContainer = (id: string) => {
-    setRestartingContainers((prev) => [...prev, id]);
-    invoke("restart_container", {
-      containerId: id,
-    })
-      .then((res) =>
-        setRestartingContainers((prev) => [...prev.filter((x) => x != id)])
-      )
-      .catch((err) => {
-        setRestartingContainers((prev) => [...prev.filter((x) => x != id)]);
-        alert(err);
+  const loadContainers = useCallback(async () => {
+    try {
+      const result = await invoke<ContainerQuery>("list_deployment_containers", {
+        path: deployment.path,
       });
+      setContainers(result.containers);
+    } catch (e) {
+      // The docker socket is not always reachable (a remote daemon, or no permission);
+      // the compose commands still work, so this is not worth shouting about.
+      console.error("Could not list containers", e);
+      setContainers([]);
+    }
+  }, [deployment.path]);
+
+  useEffect(() => {
+    loadContainers();
+    const timer = setInterval(loadContainers, 3000);
+    return () => clearInterval(timer);
+  }, [loadContainers]);
+
+  const services = status?.services ?? [];
+
+  const byService = useMemo(() => {
+    const grouped = new Map<string, Container[]>();
+    for (const container of containers) {
+      const key = container.service ?? "";
+      grouped.set(key, [...(grouped.get(key) ?? []), container]);
+    }
+    return grouped;
+  }, [containers]);
+
+  const url = status?.gateway_url;
+  const kind = { label: "Hub" };
+
+  const restart = async (id: string) => {
+    await api.restartContainer(id);
+    await loadContainers();
   };
 
-  const lok_port = 11000;
-
-
-
-
-
-  const toggleAdvertised = (inf: BeaconInterface) => {
-    let url = `${inf.host}:${lok_port}`;
-    toggleSignal({ url: url, bind: inf.bind, broadcast: inf.broadcast });
-  };
-
-  const is_advertised = (inf: BeaconInterface) => {
-    let url = `${inf.host}:${lok_port}`;
-    return !!advertisedSignals.find((x) => x.url == url);
-  };
-
-  const test_docker_version = () => {
-    call("docker_version_cmd", {
-      docker_addr: "ssss",
-    }).then((res) => console.log(res));
-  };
 
   return (
     <Page
+      menu={
+        <AppMenu
+          breadcrumb={deployment.name}
+          actions={
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => open(deployment.path)}
+              >
+                <FolderOpen className="size-3.5" />
+                Folder
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => loadProfile()}>
+                <RefreshCw className="size-3.5" />
+                Reload
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate(`/logs/${deployment.id}`)}
+              >
+                <ScrollText className="size-3.5" />
+                Logs
+              </Button>
+            </>
+          }
+        />
+      }
       buttons={
-        <div className="flex flex-justify-between flex-row gap-2 w-full">
-          <div className="flex initial flex-row gap-2">
-          <Button asChild>
+        <>
+          <CommandButton
+            title="Start"
+            runningTitle="Starting…"
+            path={deployment.path}
+            action="up"
+            callback={loadContainers}
+          />
+          <DangerousCommandButton
+            title="Stop"
+            runningTitle="Stopping…"
+            confirmTitle="Stop this deployment?"
+            confirmDescription="Every service will be shut down. Your data stays where it is."
+            path={deployment.path}
+            action="stop"
+            callback={loadContainers}
+          />
+          <CommandButton
+            title="Update images"
+            runningTitle="Pulling…"
+            path={deployment.path}
+            action="pull"
+          />
+          {deployment.kind === "hub" && (
+            <Button variant="outline" asChild>
+              <Link to={`/connect/${deployment.id}`}>Authorize</Link>
+            </Button>
+          )}
+          <Button variant="outline" asChild>
             <Link to="/">Home</Link>
           </Button>
-          <Button asChild>
-            <Link to={`/logs/${app.name}`}>Logs</Link>
-          </Button>
-          </div>
-          <div className="flex-grow"></div>
-          <div className="flex flex-row gap-2">
-          {konstruktInfo?.pulled ? <CommandButton
-            params={{
-              program: "docker",
-              args: ["compose", "up", "-d"],
-              options: {
-                cwd: app.path,
-              },
-            }}
-            title="Start"
-            runningTitle="Starting..."
-          /> :
-          <Button
-            onClick={() => {
-                pull();
-              }
-            }
-            className="w-20"
-          >
-            Pull
-          </Button>
-
-
-           }
-          <DangerousCommandButton
-            params={{
-              program: "docker",
-              args: ["compose", "stop"],
-              options: {
-                cwd: app.path,
-              },
-            }}
-            title="Stop"
-            runningTitle="Stopping..."
-            confirmTitle="Are you sure you want to stop?"
-            confirmDescription="This will stop all containers, everyone will be disconnected, while data should be kept, this might 
-            cause unexpected results, if apps are still running."
-          />
-          </div>
-        </div>
-      }
-      menu={
-        <Menubar className="flex-initial border-0 justify-between">
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <DialogContent className="bg-card">
-                <DialogTitle>{dialogStatus}</DialogTitle>
-                {logs.length > 0 && (
-                  <ScrollArea className="w-full h-[50vh] bg-muted p-3 rounded-md overflow-scroll font-mono text-xs">
-                    {logs.map((p, i) => (
-                      <div className="w-full grid grid-cols-12 ">
-                        <div className="col-span-1">{i}</div>
-                        <div className="col-span-11"> {p}</div>
-                      </div>
-                    ))}
-                  </ScrollArea>
-                )}
-              </DialogContent>
-            </Dialog>
-          <LogoMenu />
-          <div className="flex flex-row">
-            <MenubarMenu>
-              <MenubarTrigger>Danger</MenubarTrigger>
-              <MenubarContent>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <MenubarItem onSelect={(e) => e.preventDefault()}>
-                      Update
-                    </MenubarItem>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogTitle>Update</DialogTitle>
-                    <DialogDescription>
-                      Updating is a slighly dangerous operation. It will pull
-                      the latest images from the registry which will replace
-                      your current images on the next start.
-                    </DialogDescription>
-                    <DialogFooter>
-                      <DangerousCommandButton
-                        params={{
-                          program: "docker",
-                          args: ["compose", "pull"],
-                          options: {
-                            cwd: app.path,
-                          },
-                        }}
-                        callback={() => alert("Updated")}
-                        title="Update"
-                        runningTitle="Updating..."
-                        confirmTitle="Are you sure you want to update?"
-                        confirmDescription="Updating will not interrupt your services, but will replace the images with the latest ones from the registry, on the next start"
-                      />
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <MenubarItem onSelect={(e) => e.preventDefault()}>
-                      Delete
-                    </MenubarItem>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogTitle>Delete</DialogTitle>
-                    <DialogDescription>
-                      When deleting this app all of your data will be lost!
-                    </DialogDescription>
-                    <DialogFooter>
-                      <DangerousCommandButton
-                        params={{
-                          program: "docker",
-                          args: ["compose", "down"],
-                          options: {
-                            cwd: app.path,
-                          },
-                        }}
-                        callback={() =>
-                          deleteApp(app.name).then(() => navigate("/")).catch(alert)
-                        }
-                        title="Tear down and Delete"
-                        confirmTitle="Are you really sure you want to delete this app?"
-                        confirmDescription="This is an irreversible action"
-                      />
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <MenubarItem onSelect={(e) => e.preventDefault()}>
-                      Purge
-                    </MenubarItem>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogTitle>Purge</DialogTitle>
-                    <DialogDescription>
-                      When purging this app all of your data will be lost!
-                      (This circumvents running the docker-compose down command,)
-                    </DialogDescription>
-                    <DialogFooter>
-                      <DangerousButton
-                        callback={() =>
-                          deleteApp(app.name).then(() => navigate("/")).catch(alert)
-                        }
-                        title="Purge down and Delete"
-                        confirmTitle="Are you really sure you want to purge this app?"
-                        confirmDescription="This will irreversibly delete all of your data in the directory and remove the app from the list."
-                      />
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <MenubarItem onSelect={(e) => e.preventDefault()}>
-                      Reset
-                    </MenubarItem>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogTitle>Reset</DialogTitle>
-                    <DialogDescription>
-                      Resetting will delete all of your data, and then rebuild
-                      the app, in a way that is similar to a fresh install.
-                    </DialogDescription>
-                    <DialogFooter>
-                      <DangerousCommandButton
-                        params={{
-                          program: "docker",
-                          args: ["compose", "down"],
-                          options: {
-                            cwd: app.path,
-                          },
-                        }}
-                        title="Reset"
-                        confirmTitle="Are you really sure you want to reset this app?"
-                        confirmDescription="This is an irreversible action"
-                      />
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <MenubarItem onSelect={(e) => setRetrigger(!retrigger)}>
-                      Recheck App
-                </MenubarItem>
-              </MenubarContent>
-            </MenubarMenu>
-            <SettingsMenu />
-          </div>
-        </Menubar>
+        </>
       }
     >
-      {!konstruktInfo ? (
-        <div className="flex-grow flex flex-col h-full p-2 overflow-y-scroll">
-          <div className="font-light text-5xl mt-2">{app.name} </div>
-          <div className="font-light text-3xl mt-2">is not yet initialized </div>
-          <div className="mt-5 max-w-xl">
-            We didn't find a konstruktor.yaml file for this app. This could be because you have not yet initialized it.
-            Just click the button below to initialize it.
-          </div>
-          <div className="mt-5 flex flex-col text-1xl max-w-xl gap-2 mt-3 font-bold">
-            Lets initialize it!
-          </div>
-          <Button
-            onClick={() => {
-                pull();
-              }
+      <div className="flex flex-col gap-6">
+        <div>
+          <PageHeader
+            icon={Boxes}
+            title={deployment.name}
+            badge={
+              <Badge variant="outline" className="font-normal">
+                {kind.label}
+              </Badge>
             }
-            className="w-40 p-7 text-2xl mt-2"
-          >
-            Initialize
-          </Button>
+            subtitle={
+              <span className="truncate block" title={deployment.path}>
+                {deployment.path}
+              </span>
+            }
+          />
+          {url && (
+            <div className="mt-4 flex flex-row items-center gap-3">
+              <Button variant="outline" size="sm" onClick={() => open(url)}>
+                <ExternalLink className="size-3.5" />
+                Open {url}
+              </Button>
+              {status?.profile.config.coord_server && (
+                <span className="text-xs text-muted-foreground">
+                  trusting {status.profile.config.coord_server}
+                </span>
+              )}
+            </div>
+          )}
         </div>
-      ) : (
-        <>
-          <CardHeader className="cursor-pointer"  onClick={() => openFolder()}>
-            <CardTitle >
-              {app.name}
-            </CardTitle>
-            <CardDescription> located in {app.path}</CardDescription>
-          </CardHeader>
 
-          <CardContent>
-            <div className="text-md mt-2">Status of Deployment</div>
-            <div className="text-sm text-muted-foreground">
-              These are the active services
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 xl:grid-cols-6 gap-2 mt-2">
-              {services.map((s, index) => (
-                <Card
-                  key={index}
-                  className={`group`}
-                >
-                  <CardHeader className="flex flex-row justify-between  p-3">
-                    <CardTitle>
-                    <Link
-                      to={`/logs/${app.name}/service/${s.name}`}
-                      className=""
-                    >
-                      {s.name}
-                    </Link>
-                    
-                    </CardTitle>
-                    
+        {profileError && (
+          <Alert variant="destructive" className="max-w-2xl">
+            Could not read this deployment's configuration: {profileError}
+          </Alert>
+        )}
 
-                    <HealthIndicator healthz={s.containers?.at(0)?.labels["arkitekt.healthz"]} s={s}/>
-                  </CardHeader>
-                  <CardContent className="flex flex-col gap-2 p-3">
-                  {s.containers?.at(0)?.labels["arkitekt.description"] && <div className="text-xs">{s.containers?.at(0)?.labels["arkitekt.description"]}</div>}
-                  
+        {status && <AdminCard status={status} />}
 
-
-                    {s.containers.map((c, index) => {
-                      return (
-                        <div
-                          className={`group border border-border p-3 rounded-md ${getContainerColor(
-                            c
-                          )}`}
-                        >
-
-                          <div className="flex flex-row justify-between">
-                            <div>
-                              <div className="font-bold">
-                                Instance {index + 1}
-                              </div>
-                              <div className="text-xs">{c.status}</div>
-                              
-                            </div>
-                            <button
-                              className=" disabled:opacity-50"
-                              onClick={() => restartContainer(c.id)}
-                              disabled={restartingContainers.includes(c.id)}
-                              title="Restart this container"
-                            >
-                              {restartingContainers.includes(c.id) ? (
-                                "Restarting"
-                              ) : (
-                                <TbReload className="group-hover:visible invisible" />
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div className="flex flex-row gap-1">
-                    {s.containers?.at(0)?.labels["arkitekt.link"] && <Button onClick={() => open(s.containers?.at(0)?.labels["arkitekt.link"] || "")} className="text-xs flex-1">Open Service</Button>}
-                    {s.containers?.at(0)?.labels["arkitekt.healthz"] && <Button onClick={() => open(s.containers?.at(0)?.labels["arkitekt.healthz"] || "")} className="text-xs flex-1">Open Healthz</Button>}
-                    </div>
-
-                  </CardContent>
-                </Card>
+        {services.length > 0 && (
+          <div>
+            <SectionHeading>Services</SectionHeading>
+            <ResponsiveGrid>
+              {services.map((service) => (
+                <ServiceCard
+                  key={service.id}
+                  service={service}
+                  containers={byService.get(service.host) ?? []}
+                  deployment={deployment}
+                  onRestart={restart}
+                />
               ))}
-              {services.length == 0 && (
-                <Alert className="col-span-6 mt-3">
-                  <div className="text-md">No services found</div>
-                  <div className="text-sm text-muted-foreground">
-                    It appears that you have never started this app before. Press start
-                    to start it.
-                    </div>
-                    </Alert>
-                    )}
-            </div>
-            {services.length != 0 && <><div className="text-md mt-5">Advertise</div>
-            <div className="text-sm text-muted-foreground">
-              Activating items here will make this deployment visble to apps in
-              the respecting network.
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-4 gap-2 mt-3">
-              {bindings
-                .filter((c) => c.broadcast)
-                .map((c, index) => (
-                  <Tooltip>
-                    <TooltipTrigger>
-                      <Card
-                        key={index}
-                        className={`group cursor-pointer ${
-                          is_advertised(c) ? "opacity-100" : "opacity-50"
-                        } ${is_advertised(c) && advertise ? "" : ""}`}
-                        onClick={() => toggleAdvertised(c)}
-                      >
-                        <CardHeader className="flex flex-row justify-between p-2 truncate elipsis">
-                          <CardTitle className="text-md">{c.host}</CardTitle>
-                        </CardHeader>
-                        <CardContent className="p-2 truncate">
-                          {is_advertised(c) ? (
-                            <div className="flex flex-row text-xs">
-                              <div className="my-auto">
-                                <DoubleArrowUpIcon />
-                              </div>
-                              <div className="my-auto ml-1">{c.broadcast}</div>
-                            </div>
-                          ) : (
-                            <div className="flex flex-row text-xs text-xs group-hover:visible invisible">
-                              <div className="my-auto">
-                                <DoubleArrowUpIcon />
-                              </div>
-                              <div className="my-auto ml-1">{c.broadcast}</div>
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <div className="text-xs flex flex-col">
-                        {c.host}
-                        <div className="font-bold">
-                          {is_advertised(c)
-                            ? "This is advertising"
-                            : "This is not advertised"}
-                        </div>
-                      </div>
-                    </TooltipContent>
-                  </Tooltip>
-                ))}
-            </div>
-            </>}
-          </CardContent>
-        </>
-      )}
+            </ResponsiveGrid>
+          </div>
+        )}
+
+        <div>
+          <SectionHeading>Danger zone</SectionHeading>
+          <div className="flex flex-row flex-wrap gap-2">
+            <DangerousCommandButton
+              title="Remove containers"
+              confirmTitle="Remove the containers?"
+              confirmDescription="Stops and removes the containers and networks. The database and object storage survive."
+              path={deployment.path}
+              action="down"
+              callback={loadContainers}
+            />
+            <DangerousCommandButton
+              title="Delete all data"
+              confirmTitle="Delete the data?"
+              confirmDescription="Removes the containers AND the volumes: the database and everything stored in this deployment is gone for good."
+              path={deployment.path}
+              action="down-volumes"
+              callback={loadContainers}
+            />
+            <DangerousButton
+              title="Forget deployment"
+              confirmTitle="Forget this deployment?"
+              confirmDescription="Konstruktor stops listing it. The folder, its configuration and its data are left untouched on disk."
+              callback={async () => {
+                await forget(deployment.id);
+                await refresh();
+                navigate("/");
+              }}
+            />
+          </div>
+        </div>
+      </div>
     </Page>
   );
 };
 
-export const DashboardScreen: React.FC<{}> = (props) => {
+export const DashboardScreen = () => {
   const { id } = useParams<{ id: string }>();
-  const { apps } = useStorage();
+  const { byId, loading } = useRegistry();
 
-  let app = apps.find((app) => app.name === id);
+  const deployment = id ? byId(id) : undefined;
 
-  return app ? <Dashboard app={app} /> : <>Could not find this app</>;
+  if (loading) return null;
+
+  return deployment ? (
+    <Dashboard deployment={deployment} />
+  ) : (
+    <Page
+      buttons={
+        <Button asChild>
+          <Link to="/">Home</Link>
+        </Button>
+      }
+    >
+      <div className="my-7">
+        <div className="font-light text-4xl">Unknown deployment</div>
+        <div className="text-muted-foreground mt-2">
+          Konstruktor does not know a deployment with this id any more.
+        </div>
+      </div>
+    </Page>
+  );
 };

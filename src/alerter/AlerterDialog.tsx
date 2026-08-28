@@ -1,4 +1,4 @@
-import { DialogTitle } from "@radix-ui/react-dialog";
+import { DialogTitle } from "@/components/ui/dialog";
 import {
   Dialog,
   DialogContent,

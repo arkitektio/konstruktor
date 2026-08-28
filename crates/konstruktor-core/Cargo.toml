@@ -1,0 +1,27 @@
+[package]
+name = "konstruktor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generates Arkitekt hub deployments: the profile, the compose project, and the service configs."
+
+[dependencies]
+base64.workspace = true
+bollard.workspace = true
+dirs.workspace = true
+dns-lookup.workspace = true
+network-interface.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "rt", "macros"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -1,7 +1,7 @@
-import { CaretSortIcon, CheckIcon } from "@radix-ui/react-icons";
+import { ChevronsUpDownIcon, CheckIcon } from "lucide-react";
 
 import { useEffect, useState } from "react";
-import { useField } from "formik";
+import { useController } from "react-hook-form";
 import { Badge } from "../../../components/ui/badge";
 import {
   Popover,
@@ -63,9 +63,7 @@ export const MultiOptionField = ({
   placeholder = "Please Select",
   description,
 }: ListSearchFieldProps) => {
-  const [field, meta, helpers] = useField<string[]>(name);
-
-  const [error, setError] = useState<string | null>(null);
+  const { field, fieldState } = useController<Record<string, string[]>>({ name });
 
   const [searchOptions, setSearchOptions] = useState<Option[]>(options);
 
@@ -94,13 +92,13 @@ export const MultiOptionField = ({
               value={field.value}
               placeholder={placeholder}
               setValue={(value) => {
-                helpers.setValue(value, true);
+                field.onChange(value);
               }}
             />
           ) : (
-            <>{error ? error : placeholder}</>
+            <>{fieldState.error?.message ?? placeholder}</>
           )}
-          <CaretSortIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          <ChevronsUpDownIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[400px] p-0">
@@ -119,18 +117,14 @@ export const MultiOptionField = ({
                   value={option.value}
                   key={option.value}
                   onSelect={() => {
-                    console.log(option.value);
                     if (field.value == undefined) {
                       field.onChange([option.value]);
+                    } else if (field.value.includes(option.value)) {
+                      field.onChange(
+                        field.value.filter((v: string) => v !== option.value)
+                      );
                     } else {
-                      if (field.value.includes(option.value)) {
-                        helpers.setValue(
-                          field.value.filter((v: string) => v !== option.value),
-                          true
-                        );
-                      } else {
-                        helpers.setValue([...field.value, option.value], true);
-                      }
+                      field.onChange([...field.value, option.value]);
                     }
                   }}
                 >

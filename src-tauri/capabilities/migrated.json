@@ -9,6 +9,9 @@
     "core:default",
     "fs:allow-read-file",
     "fs:allow-write-file",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "fs:allow-stat",
     "fs:allow-read-dir",
     "fs:allow-copy-file",
     "fs:allow-mkdir",
@@ -42,13 +45,13 @@
         {
           "args": true,
           "cmd": "docker",
-          "name": "docker",
+          "name": "/usr/bin/docker",
           "sidecar": false
         },
         {
           "args": true,
-          "cmd": "id",
-          "name": "id",
+          "cmd": "docker",
+          "name": "docker",
           "sidecar": false
         }
       ]
@@ -74,6 +77,16 @@
     "shell:default",
     "os:default",
     "clipboard-manager:default",
-    "http:default"
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "http://*:*"
+        },
+        {
+          "url": "https://*:*"
+        }
+      ]
+    }
   ]
 }

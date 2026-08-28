@@ -3,32 +3,46 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
-// https://vitejs.dev/config/
+const host = process.env.TAURI_DEV_HOST;
+
+// https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   // prevent vite from obscuring rust errors
   clearScreen: false,
-  // tauri expects a fixed port, fail if that port is not available
   server: {
+    // tauri expects a fixed port, fail if that port is not available
     port: 1420,
     strictPort: true,
+    host: host || false,
+    hmr: host
+      ? {
+          protocol: "ws",
+          host,
+          port: 1421,
+        }
+      : undefined,
+    watch: {
+      // tell vite to ignore watching `src-tauri`
+      ignored: ["**/src-tauri/**"],
+    },
   },
-  // to make use of `TAURI_DEBUG` and other env variables
-  // https://tauri.studio/v1/api/config#buildconfig.beforedevcommand
-  envPrefix: ["VITE_", "TAURI_"],
+  // env variables starting with the item of `envPrefix` will be exposed in tauri's source code through `import.meta.env`.
+  envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
-    // Tauri supports es2021
-    target: process.env.TAURI_PLATFORM == "windows" ? "chrome105" : "safari13",
+    // Tauri uses Chromium on Windows and WebKit on macOS and Linux. The WebKit floor is
+    // Safari 14 rather than 13 because provenance key generation needs BigInt.
+    target: process.env.TAURI_ENV_PLATFORM == "windows" ? "chrome105" : "safari14",
     // don't minify for debug builds
-    minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
+    minify: !process.env.TAURI_ENV_DEBUG,
     // produce sourcemaps for debug builds
-    sourcemap: !!process.env.TAURI_DEBUG,
+    sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
 });

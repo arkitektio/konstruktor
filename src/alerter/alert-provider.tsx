@@ -1,6 +1,5 @@
 import { forage } from "@tauri-apps/tauri-forage";
 import React, { useCallback, useEffect, useState } from "react";
-import { InstalledApp } from "../screens/wizard/types";
 import { AlerterContext, AlertingError } from "./alerter-context";
 import { ErrorBoundary } from "react-error-boundary";
 

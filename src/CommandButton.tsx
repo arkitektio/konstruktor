@@ -1,39 +1,56 @@
-import { ChildProcess } from "@tauri-apps/plugin-shell";
-import { CommandParams, useCommand } from "./hooks/useCommand";
-import { callbackify } from "util";
 import { useState } from "react";
+import * as api from "./api";
+import type { ComposeAction } from "./api";
 import { Button } from "./components/ui/button";
 import { useAlerter } from "./alerter/alerter-context";
 import { Popover, PopoverContent } from "./components/ui/popover";
-import { PopoverClose, PopoverTrigger } from "@radix-ui/react-popover";
+import { PopoverClose, PopoverTrigger } from "@/components/ui/popover";
 
-export const CommandButton = (props: {
-  params: CommandParams;
+export type ComposeButtonProps = {
+  /** The deployment folder to run in. */
+  path: string;
+  action: ComposeAction;
   title: string;
-  callback?: (x: ChildProcess<string>) => void;
+  callback?: () => void;
   runningTitle?: string;
-}) => {
-  const { run, logs, error, finished, running } = useCommand(props.params);
+};
+
+/**
+ * Runs one `docker compose` action through the core and reports what happened.
+ *
+ * The output is buffered rather than streamed: every one of these runs to completion,
+ * and nothing here displays output while a command is still going.
+ */
+const useComposeAction = (props: ComposeButtonProps) => {
   const { alert } = useAlerter();
+  const [running, setRunning] = useState(false);
+
+  const run = async () => {
+    setRunning(true);
+    try {
+      await api.composeCommand(props.path, props.action);
+      props.callback?.();
+    } catch (error) {
+      alert({
+        error: `Error while running ${props.title}`,
+        message: typeof error === "string" ? error : String(error),
+        subtitle: "docker compose refused the command.",
+      });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return { run, running };
+};
+
+export const CommandButton = (props: ComposeButtonProps) => {
+  const { run, running } = useComposeAction(props);
 
   return (
     <>
       <Button
-        onClick={() => {
-          console.log("run");
-          run().then((x) => {
-            console.log(x);
-            if (x.code == 0) {
-              props.callback && props.callback(x);
-            } else {
-              alert({
-                error: `Error while running ${props.title}`,
-                message: x.stderr,
-                subtitle: x.stdout,
-              });
-            }
-          });
-        }}
+        onClick={run}
         disabled={running}
         className={running ? "animate-pulse" : undefined}
       >
@@ -43,17 +60,14 @@ export const CommandButton = (props: {
   );
 };
 
-export const DangerousCommandButton = (props: {
-  params: CommandParams;
-  title: string;
-  callback?: (x: ChildProcess<string>) => void;
-  confirmTitle?: string;
-  confirmDescription?: string;
-  runningTitle?: string;
-  to?: number;
-}) => {
-  const { run, logs, error, finished, running } = useCommand(props.params);
-  const { alert } = useAlerter();
+export const DangerousCommandButton = (
+  props: ComposeButtonProps & {
+    confirmTitle?: string;
+    confirmDescription?: string;
+    to?: number;
+  }
+) => {
+  const { run, running } = useComposeAction(props);
   const [open, setOpen] = useState(false);
   const to = props.to || 10;
   return (
@@ -73,21 +87,8 @@ export const DangerousCommandButton = (props: {
             <Button
               className="w-full"
               onClick={() => {
-                console.log("run");
-                run().then((x) => {
-                  console.log(x);
-                  if (x.code == 0) {
-                    setOpen(false);
-                    props.callback && props.callback(x);
-                  } else {
-                    setOpen(false);
-                    alert({
-                      error: `Error while running ${props.title}`,
-                      message: x.stderr,
-                      subtitle: x.stdout,
-                    });
-                  }
-                });
+                setOpen(false);
+                void run();
               }}
             >
               Yes

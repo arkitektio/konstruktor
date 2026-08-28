@@ -1,7 +1,7 @@
 {
   "build": {
-    "beforeDevCommand": "yarn dev",
-    "beforeBuildCommand": "yarn build",
+    "beforeDevCommand": "pnpm run dev",
+    "beforeBuildCommand": "pnpm run build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },
@@ -40,7 +40,7 @@
     }
   },
   "productName": "konstruktor",
-  "mainBinaryName": "konstruktor",
+  "mainBinaryName": "konstruktor-desktop",
   "version": "0.0.1",
   "identifier": "io.github.jhnnsrs.konstruktor",
   "plugins": {},

@@ -1,67 +1,70 @@
-import React, { useEffect, useState } from "react";
+import * as api from "../api";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   CommunicationContext,
-  DockerConnectionStrategy,
-  DockerInterfaceStatus,
-  DockerStatus,
+  DockerProbe,
+  dockerState,
 } from "./communication-context";
-import { invoke } from "@tauri-apps/api/core";
+
 export type ICommunicationProviderProps = {
   children: React.ReactNode;
 };
 
+/** What we assume when the command itself could not be reached at all. */
+const unreachable = (error: unknown): DockerProbe => ({
+  cli: false,
+  cli_version: null,
+  compose: false,
+  compose_version: null,
+  daemon: false,
+  api_version: null,
+  memory: null,
+  error: error instanceof Error ? error.message : String(error),
+});
+
 const CommunicationProvider: React.FC<ICommunicationProviderProps> = ({
   children,
 }) => {
-  function call(channel: string, options?: any) {
-    return invoke(channel, {
-      event: JSON.stringify(options || {}),
-    }).then((res: unknown) => JSON.parse(res as string));
-  }
-
-  const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null);
-  const [dockerInterfaceStatus, setDockerInterfaceStatus] =
-    useState<DockerInterfaceStatus | null>(null);
+  const [probe, setProbe] = useState<DockerProbe | null>(null);
+  const [checking, setChecking] = useState(true);
+  const mounted = useRef(true);
 
   useEffect(() => {
-    invoke("test_docker", {event: JSON.stringify({
-      strategy: DockerConnectionStrategy.LOCAL,
-    })}).then((res) => {
-      let result = JSON.parse(res as string);
-    
-
-
-      let new_status = {connected: true, memory: parseInt(result.memory), version: result.version, error: ""}
-      console.error("The new status", new_status)
-      setDockerStatus(new_status);
-
-    })
-    
-    
-    
-    .catch((e) => {
-      console.error("Docker interface error", e);
-      setDockerStatus({
-        connected: false,
-        version: "unknown",
-        error: e,
-        memory: 0,
-      });
-    });
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
+  const recheck = useCallback(async () => {
+    setChecking(true);
+    let result: DockerProbe;
+    try {
+      result = await api.probeDocker();
+    } catch (error) {
+      result = unreachable(error);
+    }
+    if (mounted.current) {
+      setProbe(result);
+      setChecking(false);
+    }
+    return result;
+  }, []);
+
+  // The very first probe runs as the app starts, so by the time anybody opens the
+  // wizard the answer is usually already there. The wizard re-runs it anyway — a user
+  // who leaves to install Docker comes back to a stale one.
   useEffect(() => {
-    call("docker_version_cmd", {
-      strategy: DockerConnectionStrategy.LOCAL,
-    }).then((res) => setDockerInterfaceStatus(res));
-  }, []);
+    recheck();
+  }, [recheck]);
 
   return (
     <CommunicationContext.Provider
       value={{
-        call: call,
-        status: dockerStatus,
-        interfaceStatus: dockerInterfaceStatus,
+        probe,
+        state: dockerState(probe),
+        checking,
+        recheck,
       }}
     >
       {children}

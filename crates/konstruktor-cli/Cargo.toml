@@ -1,0 +1,22 @@
+[package]
+name = "konstruktor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Create and manage Arkitekt hub deployments from the command line."
+
+# The binary is `konstruktor`; the crate is `konstruktor-cli` so it does not collide with
+# the Tauri app's own `konstruktor` binary in the same workspace.
+[[bin]]
+name = "konstruktor"
+path = "src/main.rs"
+
+[dependencies]
+konstruktor-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+inquire.workspace = true
+serde_json.workspace = true
+tokio-util.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }

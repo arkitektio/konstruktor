@@ -1,0 +1,145 @@
+networks:
+  quiet-brook:
+    driver: bridge
+    name: quiet-brook
+services:
+  alpaka:
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+    image: jhnnsrs/alpaka:next
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/alpaka.yaml:/workspace/config.yaml
+  db:
+    environment:
+      POSTGRES_MULTIPLE_DATABASES: kabinet,mikro,fluss,elektro,alpaka,kraph
+      POSTGRES_PASSWORD: fixture-postgres-password-not-a-real-secret
+      POSTGRES_USER: fixture-postgres-user-not-a-real-secret
+    image: jhnnsrs/daten:dev
+    volumes:
+    - db_data:/var/lib/postgresql/data
+  elektro:
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+    image: jhnnsrs/elektro:next
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/elektro.yaml:/workspace/config.yaml
+  fluss:
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+    image: jhnnsrs/fluss:next
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/fluss.yaml:/workspace/config.yaml
+  gateway:
+    image: caddy:latest
+    networks:
+    - quiet-brook
+    - default
+    ports:
+    - 80:80
+    - 443:443
+    volumes:
+    - ./configs/Caddyfile:/etc/caddy/Caddyfile
+  kabinet:
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+    image: jhnnsrs/kabinet:next
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/kabinet.yaml:/workspace/config.yaml
+  kraph:
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+    image: jhnnsrs/kraph:dev
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/kraph.yaml:/workspace/config.yaml
+  mikro:
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+    image: jhnnsrs/mikro:next
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/mikro.yaml:/workspace/config.yaml
+  minio:
+    command: server /data
+    environment:
+      MINIO_ROOT_PASSWORD: fixture-root-password-not-a-real-secret
+      MINIO_ROOT_USER: fixture-root-user-not-a-real-secret
+    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    stop_grace_period: 2s
+    volumes:
+    - minio_data:/data
+  minio_init:
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_HOST: http://minio:9000
+      MINIO_ROOT_PASSWORD: fixture-root-password-not-a-real-secret
+      MINIO_ROOT_USER: fixture-root-user-not-a-real-secret
+    image: jhnnsrs/init:dev
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/minio_init.yaml:/workspace/config.yaml
+  redis:
+    image: redis:latest
+volumes:
+  db_data: {}
+  minio_data: {}

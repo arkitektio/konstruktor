@@ -21,7 +21,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
       .getItem({ key: "settings" })()
       .then((value) => {
         if (value) {
-          setActiveSettings(JSON.parse(value));
+          // Merge over the defaults: settings written by an older version are missing
+          // keys this one reads, and an undefined value would surface in the UI.
+          setActiveSettings({ ...defaultSettings, ...JSON.parse(value) });
         }
       });
   }, [reset]);

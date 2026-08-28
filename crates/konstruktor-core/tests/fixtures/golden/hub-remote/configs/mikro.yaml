@@ -1,0 +1,48 @@
+authentikate:
+  issuers:
+  - iss: coord.example.org
+    jwks_uri: https://coord.example.org/.well-known/jwks.json
+    kind: jwks_uri
+  provenance:
+    issuers:
+    - iss: rekuest.example.org
+      jwks_uri: https://rekuest.example.org/.well-known/jwks.json
+      kind: jwks_uri
+  static_tokens: {}
+datalayer:
+  access_key: fixture-access-key-not-a-real-secret
+  bigfile:
+    bucket: mikrobigfile
+  host: minio
+  media:
+    bucket: mikromedia
+  parquet:
+    bucket: mikroparquet
+  port: 9000
+  protocol: http
+  region: us-east-1
+  secret_key: fixture-secret-key-not-a-real-secret
+  zarr:
+    bucket: mikrozarr
+django:
+  admin:
+    email: null
+    password: fixture-global-admin-password-not-a-real-secret
+    username: admin
+  csrf_trusted_origins:
+  - https://hub.example.org
+  debug: false
+  force_script_name: mikro
+  hosts:
+  - '*'
+  secret_key: fixture-secret-key-not-a-real-secret
+postgres:
+  db_name: mikro
+  engine: django.db.backends.postgresql
+  host: db
+  password: fixture-postgres-password-not-a-real-secret
+  port: 5432
+  username: fixture-postgres-user-not-a-real-secret
+redis:
+  host: redis
+  port: 6379

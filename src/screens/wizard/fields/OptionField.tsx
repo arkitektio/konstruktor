@@ -1,4 +1,4 @@
-import { useField } from "formik";
+import { useController } from "react-hook-form";
 import {
   Select,
   SelectContent,
@@ -15,9 +15,9 @@ export const OptionField = (props: {
     label: string;
   }[];
 }) => {
-  const [field, meta, helpers] = useField(props.name);
+  const { field } = useController({ name: props.name });
   return (
-    <Select onValueChange={(v) => helpers.setValue(v)} value={field.value}>
+    <Select onValueChange={(v) => field.onChange(v)} value={field.value}>
       <SelectTrigger>
         <SelectValue placeholder="Select.." />
       </SelectTrigger>

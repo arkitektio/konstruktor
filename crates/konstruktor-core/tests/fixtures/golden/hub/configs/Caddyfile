@@ -1,0 +1,72 @@
+http:// {
+	@rekuest path /rekuest*
+	handle @rekuest { 
+		reverse_proxy rekuest:80
+	}
+
+	@kabinet path /kabinet*
+	handle @kabinet { 
+		reverse_proxy kabinet:80
+	}
+
+	@mikro path /mikro*
+	handle @mikro { 
+		reverse_proxy mikro:80
+	}
+
+	@fluss path /fluss*
+	handle @fluss { 
+		reverse_proxy fluss:80
+	}
+
+	@kraph path /kraph*
+	handle @kraph { 
+		reverse_proxy kraph:80
+	}
+
+	@rekuestmedia path /rekuestmedia*
+	handle @rekuestmedia { 
+		reverse_proxy minio:9000
+	}
+
+	@kabinetmedia path /kabinetmedia*
+	handle @kabinetmedia { 
+		reverse_proxy minio:9000
+	}
+
+	@mikromedia path /mikromedia*
+	handle @mikromedia { 
+		reverse_proxy minio:9000
+	}
+
+	@mikrozarr path /mikrozarr*
+	handle @mikrozarr { 
+		reverse_proxy minio:9000
+	}
+
+	@mikroparquet path /mikroparquet*
+	handle @mikroparquet { 
+		reverse_proxy minio:9000
+	}
+
+	@mikrobigfile path /mikrobigfile*
+	handle @mikrobigfile { 
+		reverse_proxy minio:9000
+	}
+
+	@flussmedia path /flussmedia*
+	handle @flussmedia { 
+		reverse_proxy minio:9000
+	}
+
+	@kraphmedia path /kraphmedia*
+	handle @kraphmedia { 
+		reverse_proxy minio:9000
+	}
+
+	@minio path /minio/*
+	handle @minio {
+		reverse_proxy minio:9000
+	}
+
+}

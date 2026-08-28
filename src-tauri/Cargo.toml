@@ -1,28 +1,30 @@
 [package]
 name = "konstruktor"
-version = "0.0.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Konstruktor — create and manage Arkitekt hub deployments."
+authors = ["Johannes Roos"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "konstruktor-desktop"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+konstruktor-core.workspace = true
+serde_json.workspace = true
+serde.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
-bollard = "0.14.0"
-network-interface = "0.1.6"
-dns-lookup = "1.0.8"
-thiserror = "1"
-strip-ansi-escapes = "0.1"
-async-dns = "0.1.0"
-tokio = "1.27.0"
+thiserror.workspace = true
+strip-ansi-escapes = "0.2"
+tokio.workspace = true
+tokio-util.workspace = true
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"

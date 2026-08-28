@@ -1,24 +1,18 @@
 import "./globals.css";
-import { BrowserRouter, Route, Routes, useLocation } from "react-router-dom";
-import { BeaconProvider } from "./beacon/provider";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { CommunicationProvider } from "./communication/communication-provider";
 import { BindingsProvider } from "./interface/provider";
 import { DashboardScreen } from "./screens/Dashboard";
 import { Home } from "./screens/Home";
 import { LogScreen } from "./screens/LogScreen";
 import { Settings } from "./screens/Settings";
-import { Setup } from "./screens/wizard/Setup";
 import { SettingsProvider } from "./settings/settings-provider";
-import { StorageProvider } from "./storage/storage-provider";
-import { AppMenu } from "./components/AppMenu";
-import { AnimatePresence } from "framer-motion";
+import { RegistryProvider } from "./registry/registry-provider";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { AlerterProvider } from "./alerter/alert-provider";
-import { AlerterContext } from "./alerter/alerter-context";
 import { AlerterDialog } from "./alerter/AlerterDialog";
-import { ChannelSetup, ChannelSetupPage } from "./screens/wizard/ChannelSetup";
-import { RepoProvider } from "./repo/repo-provider";
-import { RepoSearcher } from "./repo/RepoSearcher";
+import { HubWizard } from "./screens/deploy/HubWizard";
+import { ConnectScreen } from "./screens/deploy/ConnectScreen";
 
 function App() {
   const location = useLocation();
@@ -26,39 +20,29 @@ function App() {
   return (
     <CommunicationProvider>
       <BindingsProvider>
-        <RepoProvider>
-          <RepoSearcher url="https://raw.githubusercontent.com/jhnnsrs/konstruktor/master/repo/channels.json" />
-          <AlerterProvider>
-            <AlerterDialog />
-            <BeaconProvider>
-              <TooltipProvider>
-                <SettingsProvider>
-                  <StorageProvider>
-                    <Routes location={location} key={location.pathname}>
-                      <Route path="/" element={<Home />} />
-                      <Route path="/settings" element={<Settings />} />
-                      <Route path="/setup" element={<Setup />} />
-                      <Route
-                        path="/channelsetup/:name/:channel"
-                        element={<ChannelSetupPage />}
-                      />
-                      <Route
-                        path="/dashboard/:id"
-                        element={<DashboardScreen />}
-                      />
-                      <Route path="/logs/:id" element={<LogScreen />} />
-                      <Route
-                        path="/logs/:id/service/:service"
-                        element={<LogScreen />}
-                      />
-                      <Route path="*" element={<Home />} />
-                    </Routes>
-                  </StorageProvider>
-                </SettingsProvider>
-              </TooltipProvider>
-            </BeaconProvider>
-          </AlerterProvider>
-        </RepoProvider>
+        <AlerterProvider>
+          <AlerterDialog />
+          <TooltipProvider>
+            <SettingsProvider>
+              <RegistryProvider>
+                <Routes location={location} key={location.pathname}>
+                  <Route path="/" element={<Home />} />
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="/new" element={<HubWizard />} />
+                  <Route path="/new/hub" element={<HubWizard />} />
+                  <Route path="/dashboard/:id" element={<DashboardScreen />} />
+                  <Route path="/connect/:id" element={<ConnectScreen />} />
+                  <Route path="/logs/:id" element={<LogScreen />} />
+                  <Route
+                    path="/logs/:id/service/:service"
+                    element={<LogScreen />}
+                  />
+                  <Route path="*" element={<Home />} />
+                </Routes>
+              </RegistryProvider>
+            </SettingsProvider>
+          </TooltipProvider>
+        </AlerterProvider>
       </BindingsProvider>
     </CommunicationProvider>
   );

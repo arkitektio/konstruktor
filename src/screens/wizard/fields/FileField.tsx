@@ -1,15 +1,15 @@
-import { useField } from "formik";
+import { useController } from "react-hook-form";
 import { open } from "@tauri-apps/plugin-dialog";
 
-export const FileField = ({ ...props }: any) => {
-  const [field, meta, helpers] = useField(props);
+export const FileField = ({ name }: { name: string }) => {
+  const { field, fieldState } = useController({ name });
 
   const chooseFile = async () => {
     const res = await open({
       directory: true,
       title: "Choose an App directory",
     });
-    helpers.setValue(res);
+    field.onChange(res);
   };
 
   return (
@@ -23,8 +23,8 @@ export const FileField = ({ ...props }: any) => {
           Choose File{" "}
         </button>
       </label>
-      {meta.touched && meta.error ? (
-        <div className="error">{meta.error}</div>
+      {fieldState.error ? (
+        <div className="error">{fieldState.error.message}</div>
       ) : null}
     </>
   );

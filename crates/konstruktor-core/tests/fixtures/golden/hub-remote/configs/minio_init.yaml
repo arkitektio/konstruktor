@@ -1,0 +1,17 @@
+buckets:
+- name: kabinetmedia
+- name: mikromedia
+- name: mikrozarr
+- name: mikroparquet
+- name: mikrobigfile
+- name: flussmedia
+- name: elektromedia
+- name: elektrozarr
+- name: alpakamedia
+- name: kraphmedia
+users:
+- access_key: fixture-access-key-not-a-real-secret
+  name: Default User
+  policies:
+  - readwrite
+  secret_key: fixture-secret-key-not-a-real-secret
