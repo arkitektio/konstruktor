@@ -1,9 +1,11 @@
 authentikate:
+  audience: '*'
   issuers:
   - iss: go.arkitekt.live
     jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
     kind: jwks_uri
   provenance:
+    audience: '*'
     issuers:
     - iss: rekuest
       jwks_uri: http://rekuest:80/rekuest/.well-known/jwks.json

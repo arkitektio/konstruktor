@@ -23,6 +23,9 @@ pub(crate) fn list(values: Vec<Value>) -> Value {
     Value::Sequence(values)
 }
 
+/// The `aud` authentikate will accept: anything. See [`build_authentikate`].
+const ANY_AUDIENCE: &str = "*";
+
 fn jwks_issuer(iss: &str, jwks_uri: &str) -> Value {
     map(vec![
         ("iss", s(iss)),
@@ -52,6 +55,15 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         .unwrap_or_else(|| format!("https://{}/.well-known/jwks.json", config.coord_server));
 
     let mut pairs = vec![
+        // Every audience, for now. Authentikate began requiring `aud` to be declared —
+        // a config without it does not start — and nothing in the grant tells us which
+        // audience a token issued for this hub will carry. `*` accepts what the services
+        // already accepted before the field existed, so it is the honest translation of
+        // "not checked" rather than a guess that would silently reject every token.
+        //
+        // To be replaced by the service instance the configure request returns, once it
+        // returns one.
+        ("audience", s(ANY_AUDIENCE)),
         ("issuers", list(vec![jwks_issuer(&iss, &jwks)])),
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
@@ -77,7 +89,13 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
     };
 
     if let Some(issuer) = provenance {
-        pairs.push(("provenance", map(vec![("issuers", list(vec![issuer]))])));
+        pairs.push((
+            "provenance",
+            map(vec![
+                ("audience", s(ANY_AUDIENCE)),
+                ("issuers", list(vec![issuer])),
+            ]),
+        ));
     }
 
     map(pairs)

@@ -12,6 +12,10 @@ use serde_norway::Value;
 /// `arkitekt_next.server.diff.write_hub_files` over `fixtures/<name>.yaml`. Regenerate
 /// both together whenever upstream's generator changes.
 ///
+/// One deliberate divergence, edited into the golden files by hand: `authentikate.audience`
+/// and `authentikate.provenance.audience`. Current authentikate refuses to start without
+/// them, and upstream's generator does not write them yet — see `build_authentikate`.
+///
 /// YAML is compared as *parsed structures*: PyYAML, the `yaml` npm package and
 /// `serde_norway` all render the same data differently (sequence indentation, quote
 /// style, block scalars for PEMs), and none of that is meaningful. The Caddyfile is not
