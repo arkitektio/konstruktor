@@ -428,7 +428,7 @@ pub fn describe_docker(probe: &docker::DockerProbe) -> String {
 }
 
 /// An RFC 3339 timestamp without pulling in a date library for one call site.
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

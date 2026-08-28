@@ -223,11 +223,25 @@ pub fn register(
     identifier: Option<String>,
     now: String,
 ) -> DeploymentRecord {
+    register_kind(registry, "hub", name, path, coord_server, identifier, now)
+}
+
+/// `register`, for a deployment that is not a hub — a plugin engine, today.
+#[allow(clippy::too_many_arguments)]
+pub fn register_kind(
+    registry: &mut RegistryFile,
+    kind: &str,
+    name: &str,
+    path: &str,
+    coord_server: Option<String>,
+    identifier: Option<String>,
+    now: String,
+) -> DeploymentRecord {
     let record = DeploymentRecord {
         id: new_id(),
         name: name.to_string(),
         path: path.to_string(),
-        kind: "hub".to_string(),
+        kind: kind.to_string(),
         project: project_name(path),
         created_at: now.clone(),
         last_generated_at: Some(now),

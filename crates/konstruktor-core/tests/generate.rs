@@ -108,12 +108,15 @@ mod authorized {
     use super::*;
 
     const ISSUER: &str = "https://go.arkitekt.live";
-    const JWKS: &str = "https://go.arkitekt.live/lok/.well-known/jwks.json";
+    /// What a grant hands back — Lok's own mount point.
+    const GRANTED_JWKS: &str = "https://go.arkitekt.live/lok/.well-known/jwks.json";
+    /// Where the keys are actually served: the base route, not behind `/lok/`.
+    const JWKS: &str = "https://go.arkitekt.live/.well-known/jwks.json";
 
     fn issued() -> IssuedIdentity {
         IssuedIdentity {
             issuer: Some(ISSUER.into()),
-            jwks_url: Some(JWKS.into()),
+            jwks_url: Some(GRANTED_JWKS.into()),
         }
     }
 
@@ -132,6 +135,7 @@ mod authorized {
             let issuers = authentikate["issuers"].as_sequence().expect("a list");
             assert_eq!(issuers.len(), 1, "{name}");
             assert_eq!(issuers[0]["iss"].as_str(), Some(ISSUER), "{name}");
+            // The issuer is used verbatim; the key set is moved to the base route.
             assert_eq!(issuers[0]["jwks_uri"].as_str(), Some(JWKS), "{name}");
         }
     }
@@ -453,7 +457,11 @@ mod beyond_upstream {
 
     fn with(options: BTreeMap<ServiceId, ServiceOptions>) -> HubConfig {
         build_hub_config(&HubConfigOptions {
-            services: Some(vec![ServiceId::Rekuest, ServiceId::Alpaka, ServiceId::Kabinet]),
+            services: Some(vec![
+                ServiceId::Rekuest,
+                ServiceId::Alpaka,
+                ServiceId::Kabinet,
+            ]),
             service_options: options,
             ..Default::default()
         })
@@ -504,7 +512,10 @@ mod beyond_upstream {
 
         let files = files(&config);
         let compose = yaml(&files, "docker-compose.yaml");
-        assert_eq!(compose["services"]["ollama"]["image"], "ollama/ollama:latest");
+        assert_eq!(
+            compose["services"]["ollama"]["image"],
+            "ollama/ollama:latest"
+        );
         // Without the volume every restart re-downloads gigabytes of models.
         assert_eq!(
             compose["services"]["ollama"]["volumes"][0],
@@ -634,7 +645,10 @@ mod beyond_upstream {
         )]));
 
         let files = files(&config);
-        assert_eq!(yaml(&files, "configs/kabinet.yaml")["django"]["debug"], true);
+        assert_eq!(
+            yaml(&files, "configs/kabinet.yaml")["django"]["debug"],
+            true
+        );
         assert_eq!(
             yaml(&files, "configs/rekuest.yaml")["django"]["debug"],
             false,

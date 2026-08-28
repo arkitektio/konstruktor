@@ -20,6 +20,7 @@ import { AdminCard } from "./dashboard/AdminCard";
 import { ChannelCard } from "./dashboard/ChannelCard";
 import { CheckoutsCard, useCheckouts } from "./dashboard/CheckoutsCard";
 import { DeploymentMenu } from "./dashboard/DeploymentMenu";
+import { EngineDashboard } from "./EngineDashboard";
 import { InfrastructureRow } from "./dashboard/InfrastructureRow";
 import { LifecycleRail } from "./dashboard/LifecycleRail";
 import { ServiceCard } from "./dashboard/ServiceCard";
@@ -64,14 +65,29 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
   /** A branch moved since the stack was last brought up, so the code on disk is ahead. */
   const [switched, setSwitched] = useState(false);
 
+  /**
+   * A hub profile, for the deployments that have one.
+   *
+   * A plugin engine has no `hub_config.yaml` — it is one deployer container with the
+   * Docker socket — so asking for one and then complaining that it is missing would put
+   * a red alert on every engine dashboard. Everything that reads `status` is guarded on
+   * it already; this just stops the question being asked.
+   */
+  const isHub = deployment.kind !== "engine";
+
   const loadProfile = useCallback(async () => {
+    if (!isHub) {
+      setStatus(undefined);
+      setProfileError(undefined);
+      return;
+    }
     try {
       setStatus(await api.hubStatus(deployment.path));
       setProfileError(undefined);
     } catch (e) {
       setProfileError(e instanceof Error ? e.message : String(e));
     }
-  }, [deployment.path]);
+  }, [deployment.path, isHub]);
 
   useEffect(() => {
     loadProfile();
@@ -353,6 +369,12 @@ export const DashboardScreen = () => {
   const deployment = id ? byId(id) : undefined;
 
   if (loading) return null;
+
+  // Two dashboards, because the two deployments have nothing in common past the folder:
+  // an engine has no profile, no services, no channels and no admin account.
+  if (deployment?.kind === "engine") {
+    return <EngineDashboard deployment={deployment} />;
+  }
 
   return deployment ? (
     <Dashboard deployment={deployment} />

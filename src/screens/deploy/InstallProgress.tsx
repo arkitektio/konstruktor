@@ -75,9 +75,9 @@ export const reduceCreate = (previous: CreateState, event: CreateEvent): CreateS
           : previous.logs,
 });
 
-const heading = (state: CreateState): string => {
+const heading = (state: CreateState, kind: string): string => {
   if (state.error) return "That did not work";
-  if (state.done) return "Your hub is written";
+  if (state.done) return `Your ${kind} is written`;
 
   switch (state.event?.event) {
     case "checking-docker":
@@ -97,7 +97,7 @@ const heading = (state: CreateState): string => {
     case "log":
       return "Starting the stack…";
     default:
-      return "Creating your hub";
+      return `Creating your ${kind}`;
   }
 };
 
@@ -105,10 +105,13 @@ export const InstallProgress = ({
   open,
   state,
   onClose,
+  /** What is being created, for the headings. Both wizards share this dialog. */
+  kind = "hub",
 }: {
   open: boolean;
   state: CreateState;
   onClose: () => void;
+  kind?: string;
 }) => {
   const finished = state.done || state.error !== null;
   const { staged, waiting } = state;
@@ -124,7 +127,7 @@ export const InstallProgress = ({
           ) : (
             <Loader2 className="size-4 animate-spin text-muted-foreground" />
           )}
-          {heading(state)}
+          {heading(state, kind)}
         </DialogTitle>
 
         <DialogDescription>
@@ -141,7 +144,8 @@ export const InstallProgress = ({
         {staged && !state.done && !state.error && (
           <div className="rounded-lg border border-primary/60 bg-primary/5 p-4 flex flex-col gap-3">
             <div className="text-sm">
-              Somebody with an account on your coordination server has to accept this hub.
+              Somebody with an account on your coordination server has to accept this{" "}
+              {kind}.
             </div>
             <div className="flex items-center gap-3">
               <code className="text-lg font-semibold tracking-widest">

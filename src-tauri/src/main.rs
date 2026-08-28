@@ -82,6 +82,7 @@ fn main() {
             cmd::hub_status,
             cmd::service_catalog,
             cmd::create_superuser,
+            cmd::create_engine,
             cmd::reauthorize_hub,
             cmd::compose_command,
         ])

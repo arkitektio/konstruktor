@@ -202,6 +202,20 @@ export type OllamaChoice = {
 };
 
 /**
+ * Everything a plugin engine needs. An engine is one container — the deployer, with the
+ * Docker socket — so it is asked far less than a hub: no services, no ports, no
+ * addresses to advertise, no mesh.
+ */
+export type EngineAnswers = {
+  dir: string;
+  name: string;
+  coord_server: string;
+  identifier: string;
+  description?: string | null;
+  start: boolean;
+};
+
+/**
  * Progress from a running `create_hub`. Tagged by `event`, so a switch is exhaustive.
  * The device code arrives as `staged` — which is why creating a hub can be one call
  * rather than a wizard step whose result can go stale.

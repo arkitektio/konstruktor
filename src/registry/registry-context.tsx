@@ -14,7 +14,8 @@ export type RegistryContextType = {
   /** Ask the user for a folder, and grant the app access to it. */
   pickFolder: (title?: string) => Promise<string | undefined>;
   /** The folder offered before the user picks one: `~/MyHub`, or the next free one. */
-  suggestFolder: () => Promise<string | undefined>;
+  /** `base` names the folder — "MyHub", "MyEngine". */
+  suggestFolder: (base?: string) => Promise<string | undefined>;
   /** Whether a deployment can live in a folder, and why not when it cannot. */
   inspectFolder: (path: string) => Promise<FolderReport>;
   forget: (id: string) => Promise<void>;

@@ -34,16 +34,35 @@ fn jwks_issuer(iss: &str, jwks_uri: &str) -> Value {
     ])
 }
 
+/// The coordination server's verification keys, at the base route.
+///
+/// The keys are served from the server's own root — `https://<server>/.well-known/
+/// jwks.json` — not from behind the `/lok/` prefix Lok is mounted under. A grant that
+/// still hands back the `/lok/` URL is therefore pointing at a 404, and a service that
+/// cannot fetch the key set rejects every token it is given, so the authority is taken
+/// from the granted URL and the path is replaced rather than trusted.
+fn jwks_at_base(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (scheme, rest),
+        // Not a URL we can take apart — a bare host, most likely. Left alone but for the
+        // scheme, since guessing at its shape would be worse than passing it through.
+        None => return format!("https://{}/{JWKS_PATH}", url.trim_matches('/')),
+    };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    format!("{scheme}://{authority}/{JWKS_PATH}")
+}
+
+const JWKS_PATH: &str = ".well-known/jwks.json";
+
 /// Inbound token verification.
 ///
 /// A hub never runs Lok, so the issuer is always the remote coordination server;
 /// provenance points at the local Rekuest when it runs here, and at the configured remote
 /// one otherwise.
 ///
-/// Without an authorization to go on, both fields are derived from `coord_server` exactly
-/// as upstream derives them — which is wrong for at least go.arkitekt.live, whose issuer
-/// is `https://<host>` and whose JWKS sits under `/lok/`. That is why the values from the
-/// grant are threaded through here rather than trusted to match.
+/// The issuer string comes from the grant and is used verbatim — authentikate selects a
+/// trust anchor by exact string equality, and `https://<host>` is not `<host>`. The JWKS
+/// URL is the one place the grant is not taken at its word: see [`jwks_at_base`].
 pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value {
     let iss = issued
         .issuer
@@ -51,8 +70,9 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         .unwrap_or_else(|| config.coord_server.clone());
     let jwks = issued
         .jwks_url
-        .clone()
-        .unwrap_or_else(|| format!("https://{}/.well-known/jwks.json", config.coord_server));
+        .as_deref()
+        .map(jwks_at_base)
+        .unwrap_or_else(|| format!("https://{}/{JWKS_PATH}", config.coord_server));
 
     let mut pairs = vec![
         // Every audience, for now. Authentikate began requiring `aud` to be declared —
@@ -74,15 +94,17 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
     let provenance = if rekuest.enabled {
         Some(jwks_issuer(
             rekuest.provenance_issuer.as_deref().unwrap_or_default(),
+            // Rekuest's own key set, inside the network, behind its script name — that
+            // prefix is the service's own URL space, not Lok's.
             &format!(
-                "http://{}:{}/{}/.well-known/jwks.json",
+                "http://{}:{}/{}/{JWKS_PATH}",
                 rekuest.host, rekuest.internal_port, rekuest.host
             ),
         ))
     } else if !matches!(remote, "local" | "none" | "") {
         Some(jwks_issuer(
             remote,
-            &format!("https://{remote}/.well-known/jwks.json"),
+            &format!("https://{remote}/{JWKS_PATH}"),
         ))
     } else {
         None
@@ -264,4 +286,34 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
 /// puts it too) and left out of the generated config.
 fn is_the_seeded_default(repositories: &[String]) -> bool {
     repositories == ["jhnnsrs/ome:main", "jhnnsrs/renderer:main"]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point: a grant that still names Lok's mount point must not be written
+    /// into a config, because nothing is served there.
+    #[test]
+    fn the_key_set_is_taken_from_the_base_route() {
+        assert_eq!(
+            jwks_at_base("https://go.arkitekt.live/lok/.well-known/jwks.json"),
+            "https://go.arkitekt.live/.well-known/jwks.json"
+        );
+        // Already right, and left exactly as it is.
+        assert_eq!(
+            jwks_at_base("https://go.arkitekt.live/.well-known/jwks.json"),
+            "https://go.arkitekt.live/.well-known/jwks.json"
+        );
+        // A port survives; it is part of the authority.
+        assert_eq!(
+            jwks_at_base("http://localhost:8000/lok/.well-known/jwks.json"),
+            "http://localhost:8000/.well-known/jwks.json"
+        );
+        // Not a URL at all — the host is kept and https assumed.
+        assert_eq!(
+            jwks_at_base("coord.example.org"),
+            "https://coord.example.org/.well-known/jwks.json"
+        );
+    }
 }

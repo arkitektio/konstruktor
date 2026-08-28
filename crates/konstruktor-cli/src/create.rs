@@ -300,7 +300,7 @@ pub async fn run(args: CreateArgs) -> Result<()> {
     Ok(())
 }
 
-fn report(event: CreateEvent, open_browser: bool) {
+pub(crate) fn report(event: CreateEvent, open_browser: bool) {
     match event {
         CreateEvent::CheckingDocker => ui::step("Checking Docker…"),
         CreateEvent::Building => ui::step("Building the profile…"),

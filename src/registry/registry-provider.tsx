@@ -45,8 +45,8 @@ export const RegistryProvider: React.FC<{ children: React.ReactNode }> = ({
     return path;
   }, []);
 
-  const suggestFolder = useCallback(async () => {
-    const suggested = await api.suggestFolder();
+  const suggestFolder = useCallback(async (base?: string) => {
+    const suggested = await api.suggestFolder(base);
     if (!suggested) return undefined;
     // Created here rather than at submit time, so the folder step can verify it.
     const prepared = await api.prepareDeploymentDir(suggested).catch(() => undefined);

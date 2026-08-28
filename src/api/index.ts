@@ -13,6 +13,7 @@ import type {
   GitProbe,
   FolderReport,
   HostDiscovery,
+  EngineAnswers,
   HubAnswers,
   HubStatus,
   ImageState,
@@ -159,7 +160,9 @@ export const createSuperuser = (
 
 export const serviceCatalog = () => invoke<ServiceMeta[]>("service_catalog");
 
-export const suggestFolder = () => invoke<string | null>("suggest_folder");
+/** A free folder in the home directory, named after what is being created. */
+export const suggestFolder = (base?: string) =>
+  invoke<string | null>("suggest_folder", { base: base ?? null });
 
 export const inspectFolder = (path: string) =>
   invoke<FolderReport>("inspect_folder", { path });
@@ -188,6 +191,20 @@ export const createHub = (
   const channel = new Channel<CreateEvent>();
   channel.onmessage = onEvent;
   return invoke<string>("create_hub", { answers, onEvent: channel });
+};
+
+/**
+ * Create a plugin engine: one `jhnnsrs/deployer:next` container with the Docker socket,
+ * in its own folder. Streams the same events a hub does — minus the device code, which
+ * the app authorization flow will add.
+ */
+export const createEngine = (
+  answers: EngineAnswers,
+  onEvent: (event: CreateEvent) => void
+) => {
+  const channel = new Channel<CreateEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("create_engine", { answers, onEvent: channel });
 };
 
 // --- the registry, shared with the command line -----------------------------

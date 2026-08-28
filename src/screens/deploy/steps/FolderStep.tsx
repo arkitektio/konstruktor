@@ -53,11 +53,12 @@ export const FolderStep = ({ kind }: { kind: { label: string } }) => {
     if (suggested.current || (path && path.length > 0)) return;
     suggested.current = true;
     setSuggesting(true);
-    suggestFolder().then((picked) => {
+    // "MyHub" for a hub, "MyEngine" for an engine — the step is shared by both wizards.
+    suggestFolder(`My${kind.label}`).then((picked) => {
       setSuggesting(false);
       if (picked) adoptFolder(picked);
     });
-  }, [path, suggestFolder, adoptFolder]);
+  }, [path, suggestFolder, adoptFolder, kind.label]);
 
   useEffect(() => {
     let cancelled = false;

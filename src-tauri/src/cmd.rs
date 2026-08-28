@@ -246,6 +246,33 @@ pub async fn create_hub(
     Ok(path)
 }
 
+/// Create a plugin engine: one deployer container with the Docker socket, in its own
+/// folder and its own compose project.
+///
+/// Streams the same `CreateEvent`s a hub does — device code included, since an engine is
+/// authorized the same way, through the app flow rather than the hub one — so the
+/// progress dialog is shared.
+#[command]
+pub async fn create_engine(
+    started: tauri::State<'_, StartedStacks>,
+    answers: konstruktor_core::engine::EngineAnswers,
+    on_event: Channel<CreateEvent>,
+) -> Result<String, String> {
+    let start = answers.start;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let created = konstruktor_core::engine::create_engine(&answers, &cancel, &move |event| {
+        let _ = on_event.send(event);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let path = created.path.to_string_lossy().to_string();
+    if start {
+        started.started(&path);
+    }
+    Ok(path)
+}
+
 /// The files a set of answers would produce, for the summary step's "no surprises" list.
 ///
 /// Generated from a throwaway config: this is a preview, and the profile that actually
@@ -291,8 +318,16 @@ pub async fn mesh_domain(server: String) -> Result<Option<String>, String> {
 }
 
 #[command]
-pub fn suggest_folder() -> Option<String> {
-    create::suggest_folder("MyHub").map(|p| p.to_string_lossy().to_string())
+pub fn suggest_folder(base: Option<String>) -> Option<String> {
+    // The name the folder is offered under follows what is being created — `MyEngine`
+    // for a plugin engine — so nobody is handed a folder called MyHub for something
+    // that is not one.
+    let base = base
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .unwrap_or("MyHub");
+    create::suggest_folder(base).map(|p| p.to_string_lossy().to_string())
 }
 
 #[command]

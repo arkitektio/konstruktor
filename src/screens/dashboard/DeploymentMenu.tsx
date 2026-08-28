@@ -217,7 +217,8 @@ export const DeploymentMenu = ({
           </DropdownMenuItem>
           <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("delete")}>
             <Trash2 />
-            Delete hub
+            {/* "Delete hub" is wrong on an engine, and this menu is now on both. */}
+            Delete {deployment.kind}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -285,7 +286,7 @@ export const DeploymentMenu = ({
           }}
           title={`Delete ${deployment.name}?`}
           expected={deployment.name}
-          confirmTitle="Delete this hub"
+          confirmTitle={`Delete this ${deployment.kind}`}
           runningTitle="Deleting…"
           description={
             <>

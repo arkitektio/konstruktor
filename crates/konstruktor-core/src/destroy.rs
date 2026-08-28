@@ -160,8 +160,12 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
     check_shape(&dir, dirs::home_dir().as_deref())?;
 
     // The one check that says "this is ours". A registry entry pointing somewhere that no
-    // longer holds a profile is a stale entry, not a licence to delete that folder.
-    if !profile::holds_a_hub(&dir) {
+    // longer holds a deployment is a stale entry, not a licence to delete that folder.
+    //
+    // A hub is recognised by its profile. A plugin engine has none — it is one deployer
+    // container — so the compose file Konstruktor wrote is what stands in: a folder with
+    // neither is not something this ever created.
+    if !profile::holds_a_hub(&dir) && !dir.join("docker-compose.yaml").is_file() {
         return Err(DeleteError::NotADeployment(dir.display().to_string()));
     }
 
@@ -453,6 +457,25 @@ mod tests {
         );
         assert!(plan.was_authorized);
         assert!(dir.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A plugin engine has no profile — one deployer container, no `hub_config.yaml` —
+    /// and deleting one has to work all the same.
+    #[test]
+    fn plans_an_engine_folder_by_its_compose_file() {
+        let dir = scratch("engine");
+        std::fs::write(dir.join("docker-compose.yaml"), "services: {}").unwrap();
+
+        let mut record = record_at(&dir);
+        record.kind = "engine".into();
+        record.name = "MyEngine".into();
+
+        let (_, plan) = plan(&record).expect("an engine folder plans");
+        assert_eq!(plan.name, "MyEngine");
+        assert!(plan.checkouts.is_empty());
+        assert!(dir.exists(), "planning must never remove anything");
 
         std::fs::remove_dir_all(&dir).ok();
     }

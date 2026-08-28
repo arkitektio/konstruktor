@@ -1,3 +1,4 @@
+pub mod app;
 pub mod authorize;
 pub mod manifest;
 pub mod reachability;

@@ -253,10 +253,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
                 // the point of the service — without it every restart re-downloads them.
                 (
                     "volumes",
-                    list(vec![s(&format!(
-                        "{}:/root/.ollama",
-                        ollama.volume_name
-                    ))]),
+                    list(vec![s(&format!("{}:/root/.ollama", ollama.volume_name))]),
                 ),
             ]),
         );

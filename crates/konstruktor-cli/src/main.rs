@@ -1,4 +1,5 @@
 mod create;
+mod engine;
 mod manage;
 mod ui;
 
@@ -28,6 +29,9 @@ enum Command {
     /// Create a hub: generate it, authorize it, write it, start it.
     #[command(subcommand)]
     Hub(HubCommand),
+    /// A plugin engine: one deployer container that runs an organization's plugins.
+    #[command(subcommand)]
+    Engine(EngineCommand),
     /// Report what this hub is and what is running.
     Status(manage::Target),
     /// The deployments this machine knows about.
@@ -56,6 +60,12 @@ enum Command {
 enum HubCommand {
     /// Create a hub.
     Create(Box<create::CreateArgs>),
+}
+
+#[derive(Subcommand)]
+enum EngineCommand {
+    /// Create a plugin engine.
+    Create(Box<engine::EngineCreateArgs>),
 }
 
 /// Exit codes, so a script can tell the failures apart.
@@ -102,6 +112,7 @@ fn classify(error: &anyhow::Error) -> i32 {
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
+        Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
         Command::Checkout(args) => manage::checkout(&args),
         Command::Doctor => manage::doctor().await,
         Command::List => manage::list(),

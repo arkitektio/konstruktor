@@ -6,6 +6,7 @@ pub mod create;
 pub mod credentials;
 pub mod destroy;
 pub mod docker;
+pub mod engine;
 pub mod generate;
 pub mod git;
 pub mod hosts;

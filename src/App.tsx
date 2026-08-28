@@ -10,6 +10,8 @@ import { RegistryProvider } from "./registry/registry-provider";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { AlerterProvider } from "./alerter/alert-provider";
 import { AlerterDialog } from "./alerter/AlerterDialog";
+import { EngineWizard } from "./screens/deploy/EngineWizard";
+import { NewDeployment } from "./screens/deploy/NewDeployment";
 import { HubWizard } from "./screens/deploy/HubWizard";
 import { ConnectScreen } from "./screens/deploy/ConnectScreen";
 
@@ -26,8 +28,9 @@ function App() {
                 <Routes location={location} key={location.pathname}>
                   <Route path="/" element={<Home />} />
                   <Route path="/settings" element={<Settings />} />
-                  <Route path="/new" element={<HubWizard />} />
+                  <Route path="/new" element={<NewDeployment />} />
                   <Route path="/new/hub" element={<HubWizard />} />
+                  <Route path="/new/engine" element={<EngineWizard />} />
                   <Route path="/dashboard/:id" element={<DashboardScreen />} />
                   <Route path="/connect/:id" element={<ConnectScreen />} />
                   <Route path="/logs/:id" element={<LogScreen />} />

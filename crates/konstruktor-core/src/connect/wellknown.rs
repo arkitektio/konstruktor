@@ -19,6 +19,9 @@ pub struct WellKnownFakts {
     /// Where a hub manifest is POSTed to stage a device code.
     pub hub_authorization_endpoint: Option<String>,
     pub hub_configure: Option<String>,
+    /// Where an *app* stages a device code — RFC 8628's name for it. A plugin engine is
+    /// an app, not a hub, so this is the endpoint it uses.
+    pub device_authorization_endpoint: Option<String>,
     /// Anything else the server declares, kept so a newer server round-trips intact.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -27,6 +30,13 @@ pub struct WellKnownFakts {
 /// Keys a coordination server might declare its tailnet under.
 ///
 /// More than one because nothing is settled yet — see [`WellKnownFakts::mesh_domain`].
+/// The other names a server might declare its app device endpoint under.
+const APP_DEVICE_ENDPOINT_KEYS: [&str; 3] = [
+    "app_authorization_endpoint",
+    "device_endpoint",
+    "claim_endpoint",
+];
+
 const MESH_DOMAIN_KEYS: [&str; 4] = [
     "mesh_domain",
     "tailnet_domain",
@@ -47,6 +57,41 @@ impl WellKnownFakts {
     /// spellings rather than pinning one. Absent, every tailnet address is treated as
     /// somebody else's, which is the safe way round: an unattributed address is offered
     /// and labelled, never advertised to the organization as though it were on the mesh.
+    /// Where an app stages a device code.
+    ///
+    /// Spelled several ways in the wild — RFC 8628 says `device_authorization_endpoint`,
+    /// fakts has used names of its own — so the typed field is tried first and the rest
+    /// read out of whatever else the server declared. Nothing is assembled from the host:
+    /// the paths have moved before, which is why this document exists at all.
+    /// Every endpoint-ish key the server declared, for the error that says none of them
+    /// was an app device endpoint — which is the fastest way to find out what it is
+    /// really called.
+    pub fn declared_keys(&self) -> String {
+        let mut keys: Vec<&str> = self.extra.keys().map(String::as_str).collect();
+        if self.token_endpoint.is_some() {
+            keys.push("token_endpoint");
+        }
+        if self.hub_authorization_endpoint.is_some() {
+            keys.push("hub_authorization_endpoint");
+        }
+        keys.sort_unstable();
+        if keys.is_empty() {
+            "nothing".to_string()
+        } else {
+            keys.join(", ")
+        }
+    }
+
+    pub fn app_device_endpoint(&self) -> Option<String> {
+        if let Some(endpoint) = self.device_authorization_endpoint.as_ref() {
+            return Some(endpoint.clone());
+        }
+        APP_DEVICE_ENDPOINT_KEYS
+            .into_iter()
+            .find_map(|key| self.extra.get(key).and_then(|value| value.as_str()))
+            .map(str::to_string)
+    }
+
     pub fn mesh_domain(&self) -> Option<String> {
         MESH_DOMAIN_KEYS
             .into_iter()
@@ -71,6 +116,11 @@ pub enum CoordinationServerError {
          server or not one at all."
     )]
     NoHubAuthorization { server: String },
+    #[error(
+        "{server} declares no device endpoint for apps, so a plugin engine cannot ask \
+         to be let in. Its well-known document lists: {declared}"
+    )]
+    NoAppAuthorization { server: String, declared: String },
     #[error("{url} did not answer with a well-known document: {source}")]
     Malformed {
         url: String,
@@ -123,12 +173,10 @@ pub async fn discover(server: &str) -> Result<WellKnownFakts, CoordinationServer
                 source,
             })?;
 
-    if well_known.hub_authorization_endpoint.is_none() {
-        return Err(CoordinationServerError::NoHubAuthorization {
-            server: base_url(server),
-        });
-    }
-
+    // Deliberately not refused here for a missing `hub_authorization_endpoint`:
+    // discovery is also what the picker uses to say what answered, and what an engine
+    // uses to find the *app* endpoint. `authorize::start` is where a hub finds out its
+    // server cannot authorize hubs, which is the only place that answer matters.
     Ok(well_known)
 }
 

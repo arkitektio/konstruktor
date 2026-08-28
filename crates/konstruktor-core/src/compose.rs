@@ -76,7 +76,14 @@ pub fn create_superuser(
     args.push(service.into());
     // The images run everything through uv, which owns the virtualenv the service's
     // dependencies live in — a bare `python manage.py` finds a different interpreter.
-    for part in ["uv", "run", "python", "manage.py", "createsuperuser", "--noinput"] {
+    for part in [
+        "uv",
+        "run",
+        "python",
+        "manage.py",
+        "createsuperuser",
+        "--noinput",
+    ] {
         args.push(part.into());
     }
     args

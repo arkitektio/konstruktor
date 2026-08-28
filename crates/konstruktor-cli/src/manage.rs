@@ -509,7 +509,10 @@ pub fn superuser(args: SuperuserArgs) -> Result<()> {
         &args.service,
         username.trim(),
         &password,
-        args.email.as_deref().map(str::trim).filter(|e| !e.is_empty()),
+        args.email
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty()),
     );
 
     ui::say("");
