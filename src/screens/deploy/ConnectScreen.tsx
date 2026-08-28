@@ -1,4 +1,4 @@
-import { ShieldCheck } from "lucide-react";
+import { RadioTower, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
@@ -12,8 +12,15 @@ import { Input } from "../../components/ui/input";
 import { Page } from "../../layout/Page";
 import { PageHeader, SectionHeading } from "../../layout/PageHeader";
 import { useRegistry } from "../../registry/registry-context";
-import { HostPicker } from "./HostPicker";
-import { InstallProgress, CreateState, emptyCreateState } from "./InstallProgress";
+import { useSettings } from "../../settings/settings-context";
+import { HostPicker, ReachChoice, Reachability } from "./HostPicker";
+import { defaultPreset, reachFor, selectionFor, toggleHost, widestPreset } from "./reach";
+import {
+  InstallProgress,
+  CreateState,
+  emptyCreateState,
+  reduceCreate,
+} from "./InstallProgress";
 import { StepField } from "../wizard/StepFrame";
 
 /**
@@ -23,11 +30,16 @@ import { StepField } from "../wizard/StepFrame";
  * It is the same device-code flow the wizard runs, over the profile already on disk. On
  * success the service configs are regenerated, because the JWKS URL the coordination
  * server hands back is what they verify inbound tokens against.
+ *
+ * Unlike the wizard, this screen runs against a hub that may well be up, so it is the one
+ * place a reachability probe can come back green — and the only place an alias can
+ * honestly be marked public.
  */
 export const ConnectScreen: React.FC<{}> = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { byId, loading } = useRegistry();
+  const { byId, loading: registryLoading, refresh } = useRegistry();
+  const { settings } = useSettings();
 
   const deployment = id ? byId(id) : undefined;
 
@@ -35,59 +47,141 @@ export const ConnectScreen: React.FC<{}> = () => {
   const [identifier, setIdentifier] = useState("");
   const [selected, setSelected] = useState<AdvertisedHost[]>([]);
   const [candidates, setCandidates] = useState<api.HostCandidate[]>([]);
+  const [presets, setPresets] = useState<api.ReachPreset[]>([]);
+  const [reach, setReach] = useState<ReachChoice>("custom");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reachability, setReachability] = useState<Record<string, Reachability>>({});
+  const [probing, setProbing] = useState(false);
+  /** This hub predates konstruktor recording what it advertised. */
+  const [forgotten, setForgotten] = useState(false);
   const [authorizing, setAuthorizing] = useState<CreateState>(emptyCreateState);
 
   const server = status?.profile.config.coord_server ?? "";
+  const ssl = status?.profile.config.gateway.ssl ?? false;
+  // From the core, which is where the manifest works it out — a probe has to aim at the
+  // socket the coordination server will actually hand out, not a second guess at it.
+  const port = status?.advertised_port ?? (ssl ? 443 : 80);
 
+  /**
+   * Status and candidates together, because seeding depends on both.
+   *
+   * Fetched as one so the selection is decided once. Separately, the two resolve in
+   * either order and whichever lands second overwrites what the first had seeded.
+   */
   useEffect(() => {
     if (!deployment) return;
-    api
+    let cancelled = false;
+
+    // The hub's own mesh config names its node on the tailnet, and the coordination
+    // server may name the tailnet itself. Either is enough to tell this hub's tailnet
+    // from the others this machine is on; with neither they are all "other tailscales".
+    const discovery = api
       .hubStatus(deployment.path)
-      .then((s) => {
-        setStatus(s);
-        setIdentifier(s.identifier ?? deployment.identifier ?? deployment.name);
+      .then(async (status) => {
+        const server = status.profile.config.coord_server;
+        const domain = server ? await api.meshDomain(server).catch(() => null) : null;
+        return [
+          status,
+          await api.hostCandidates({ domain, hostname: status.mesh_hostname }),
+        ] as const;
+      });
+
+    discovery
+      .then(([status, discovery]) => {
+        if (cancelled) return;
+        setStatus(status);
+        setIdentifier(status.identifier ?? deployment.identifier ?? deployment.name);
+        setCandidates(discovery.candidates);
+        setPresets(discovery.presets);
+
+        // What the hub already advertises comes first. This screen exists to *add* the
+        // tailnet address, which no scan of this machine will ever turn up — starting
+        // from a fresh scan would silently drop it every time.
+        const previous = status.advertised_hosts ?? [];
+        if (previous.length > 0) {
+          setSelected(previous);
+          setReach(reachFor(discovery.presets, previous));
+          return;
+        }
+
+        // An already-authorized hub with nothing recorded was authorized before
+        // konstruktor kept track. Its old selection is unknowable, and the code that made
+        // it ticked every real address — public ones included — so opening on the narrow
+        // default would drop a public alias the moment somebody pressed Authorize.
+        const unrecorded = status.authorized;
+        const preset = unrecorded
+          ? widestPreset(discovery.presets)
+          : defaultPreset(discovery.presets);
+        if (preset) {
+          setSelected(selectionFor(discovery.candidates, preset));
+          setReach(preset.id);
+        }
+        setForgotten(unrecorded);
       })
-      .catch(() => undefined);
+      .catch((e) => !cancelled && setError(typeof e === "string" ? e : String(e)))
+      .finally(() => !cancelled && setLoading(false));
+
+    return () => {
+      cancelled = true;
+    };
   }, [deployment]);
 
   useEffect(() => {
+    const endpoint = settings.egressEndpoint?.trim();
+    if (!endpoint || candidates.length === 0) return;
+
+    let cancelled = false;
     api
-      .hostCandidates()
-      .then((found) => {
-        setCandidates(found);
-        // Pre-tick what the machine recommends; a name is offered but never assumed.
-        setSelected(
-          found
-            .filter((c) => c.recommended)
-            .map((c) => ({ host: c.value, kind: c.kind }))
-        );
+      .egressIdentity(endpoint)
+      .then((address) => {
+        if (cancelled) return;
+        setReachability((current) => ({
+          ...current,
+          [address]: { ...current[address], egress: true },
+        }));
       })
       .catch(() => undefined);
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.egressEndpoint, candidates.length]);
 
   const toggle = (value: string) => {
-    const candidate = candidates.find((c) => c.value === value);
-    if (!candidate) return;
-    setSelected((current) =>
-      current.some((h) => h.host === value)
-        ? current.filter((h) => h.host !== value)
-        : [...current, { host: value, kind: candidate.kind }]
-    );
+    setSelected((current) => toggleHost(current, candidates, value));
+    setReach("custom");
   };
+
+  /**
+   * Asks the configured prober to connect back to each selected address.
+   *
+   * Only what is selected: probing is a request to a third party per address, and the
+   * ones nobody intends to advertise are nobody's business.
+   */
+  const checkReachability = useCallback(async () => {
+    const prober = settings.proberEndpoint?.trim();
+    if (!prober) return;
+
+    setProbing(true);
+    try {
+      for (const host of selected) {
+        const result = await api.probeReachability(prober, host.host, port, ssl);
+        setReachability((current) => ({
+          ...current,
+          [host.host]: { ...current[host.host], probe: result },
+        }));
+      }
+    } finally {
+      setProbing(false);
+    }
+  }, [selected, settings.proberEndpoint, port, ssl]);
 
   const connect = useCallback(async () => {
     if (!deployment) return;
     setAuthorizing({ ...emptyCreateState, running: true });
 
     const onEvent = (event: CreateEvent) =>
-      setAuthorizing((previous) => ({
-        ...previous,
-        event,
-        logs:
-          event.event === "writing"
-            ? [...previous.logs, `wrote ${event.file}`]
-            : previous.logs,
-      }));
+      setAuthorizing((previous) => reduceCreate(previous, event));
 
     try {
       await api.reauthorizeHub(
@@ -96,12 +190,22 @@ export const ConnectScreen: React.FC<{}> = () => {
           coordServer: server,
           identifier: identifier.trim(),
           hosts: selected,
+          // Only a confirmed probe. Marking an alias public invites the coordination
+          // server to health check it, and one it cannot reach would look permanently
+          // broken — so matching this machine's egress address is not enough.
+          reachableHosts: selected
+            .map((host) => host.host)
+            .filter((host) => reachability[host]?.probe?.result === "reachable"),
           // A hub already on the mesh keeps its key; asking again would mint a second.
           requestAuthKey: status?.mesh_hostname == null,
         },
         onEvent
       );
       setAuthorizing((previous) => ({ ...previous, running: false, done: true }));
+      // Re-authorizing rewrites the record — the identifier above is editable, and the
+      // generation timestamp the dashboard's rail reads has just moved. Without this the
+      // cached copy keeps describing the hub as it was until the app is remounted.
+      await refresh();
     } catch (error) {
       setAuthorizing((previous) => ({
         ...previous,
@@ -109,9 +213,9 @@ export const ConnectScreen: React.FC<{}> = () => {
         error: typeof error === "string" ? error : String(error),
       }));
     }
-  }, [deployment, server, identifier, selected, status]);
+  }, [deployment, server, identifier, selected, status, reachability, refresh]);
 
-  if (loading) return null;
+  if (registryLoading) return null;
 
   if (!deployment) {
     return (
@@ -171,6 +275,15 @@ export const ConnectScreen: React.FC<{}> = () => {
             </p>
           </div>
 
+          {forgotten && !authorizing.done && (
+            <Alert className="max-w-2xl">
+              This hub was authorized before konstruktor started keeping a record of the
+              addresses it handed over, so what it currently advertises is not known here.
+              Everything reachable has been ticked — check it before authorizing, because
+              what you send now replaces what the coordination server has.
+            </Alert>
+          )}
+
           {authorizing.done && (
             <Alert className="max-w-2xl border-primary/50">
               This hub is authorized and its service configuration has been rewritten.
@@ -192,12 +305,35 @@ export const ConnectScreen: React.FC<{}> = () => {
           </div>
 
           <div>
-            <SectionHeading>Addresses</SectionHeading>
+            <div className="flex flex-row items-center justify-between max-w-2xl mb-3">
+              <SectionHeading>Addresses</SectionHeading>
+              {settings.proberEndpoint?.trim() && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={probing || selected.length === 0}
+                  onClick={checkReachability}
+                >
+                  <RadioTower className="size-3.5" />
+                  {probing ? "Checking…" : "Check from outside"}
+                </Button>
+              )}
+            </div>
             <HostPicker
               candidates={candidates}
-              selected={new Set(selected.map((h) => h.host))}
+              presets={presets}
+              selected={selected}
+              reach={reach}
+              onReachChange={(preset) => {
+                setSelected(selectionFor(candidates, preset));
+                setReach(preset.id);
+              }}
               onToggle={toggle}
-              loading={candidates.length === 0}
+              reachability={reachability}
+              // The stack may well be up here, so a probe can actually succeed.
+              canProbe={Boolean(settings.proberEndpoint?.trim())}
+              loading={loading}
+              error={error}
             />
           </div>
 

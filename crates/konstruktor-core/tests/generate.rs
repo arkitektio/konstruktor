@@ -258,3 +258,173 @@ mod mesh {
             .is_none());
     }
 }
+
+/// The dashboard joins the images a profile declares to the containers Docker reports, on
+/// the compose service name. That join is silent when it is wrong — an image nothing
+/// matches simply reads as "not running" forever — so the two sides are pinned here.
+mod stack_images {
+    use super::*;
+    use konstruktor_core::config::mesh::{build_mesh_block, MeshOptions};
+
+    fn compose_service_names(config: &HubConfig) -> Vec<String> {
+        let files = generate_hub_files(config, &IssuedIdentity::default());
+        let compose: Value =
+            serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML");
+        compose["services"]
+            .as_mapping()
+            .expect("a services mapping")
+            .keys()
+            .map(|k| k.as_str().expect("a string key").to_string())
+            .collect()
+    }
+
+    /// Every key `stack_images` reports has to be a service the compose file actually
+    /// writes. `db` is the one that catches drift: the block's host is `daten`, and
+    /// reporting that would match no container at all.
+    #[test]
+    fn every_reported_image_names_a_real_compose_service() {
+        for fixture in ["hub_config.yaml", "hub_config_remote.yaml"] {
+            let config = config_of(fixture);
+            let written = compose_service_names(&config);
+            for (service, image) in config.stack_images() {
+                assert!(
+                    written.contains(&service),
+                    "{fixture}: stack_images reports {service} ({image}), \
+                     but the compose file writes {written:?}"
+                );
+            }
+        }
+    }
+
+    /// The mesh sidecar is a container like any other, and it carries its own image.
+    #[test]
+    fn the_mesh_sidecar_is_reported_when_there_is_one() {
+        let mut config = config_of("hub_config.yaml");
+        assert!(!config
+            .stack_images()
+            .iter()
+            .any(|(service, _)| service == "tailscale"));
+
+        config.mesh = Some(build_mesh_block(&MeshOptions {
+            hostname: "lab-hub".into(),
+            auth_key: "tskey-auth-secret".into(),
+            coord_url: None,
+        }));
+
+        let written = compose_service_names(&config);
+        for (service, image) in config.stack_images() {
+            assert!(
+                written.contains(&service),
+                "stack_images reports {service} ({image}), \
+                 but the compose file writes {written:?}"
+            );
+        }
+        assert!(config
+            .stack_images()
+            .iter()
+            .any(|(service, _)| service == "tailscale"));
+    }
+
+    /// Nothing in the stack runs without an image, so every service compose writes has to
+    /// be accounted for — otherwise a whole container silently drops out of the update
+    /// check.
+    #[test]
+    fn no_compose_service_is_left_unaccounted_for() {
+        let config = config_of("hub_config.yaml");
+        let reported: Vec<String> = config
+            .stack_images()
+            .into_iter()
+            .map(|(service, _)| service)
+            .collect();
+
+        for service in compose_service_names(&config) {
+            assert!(
+                reported.contains(&service),
+                "the compose file writes {service}, but stack_images does not report it"
+            );
+        }
+    }
+}
+
+/// The dev hub, which also postdates the goldens.
+///
+/// `mount_github` was ported from upstream's config model and read by nothing until the
+/// dev hub existed; these pin the only place it has an effect, from the option a front
+/// end sets through to the compose file.
+mod dev_hub {
+    use super::*;
+    use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
+    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+
+    fn built(dev_hub: bool) -> HubConfig {
+        build_hub_config(&HubConfigOptions {
+            coord_server: "go.arkitekt.live".into(),
+            services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
+            dev_hub,
+            ..Default::default()
+        })
+    }
+
+    fn compose(config: &HubConfig) -> Value {
+        let files = generate_hub_files(config, &IssuedIdentity::default());
+        serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML")
+    }
+
+    fn volumes_of(compose: &Value, service: &str) -> Vec<String> {
+        compose["services"][service]["volumes"]
+            .as_sequence()
+            .expect("every service declares volumes")
+            .iter()
+            .map(|v| v.as_str().expect("a volume is a string").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_ordinary_hub_mounts_only_the_config() {
+        let plain = built(false);
+        assert!(plain.enabled_services().iter().all(|id| !plain.service(*id).mount_github));
+        assert_eq!(
+            volumes_of(&compose(&plain), "rekuest"),
+            vec!["./configs/rekuest.yaml:/workspace/config.yaml"]
+        );
+    }
+
+    #[test]
+    fn a_dev_hub_mounts_the_checkout_under_the_config() {
+        let config = built(true);
+        let dev = compose(&config);
+
+        // The source first and the config second: the config lives *inside* the workspace
+        // the checkout provides, and reading them the other way round invites the wrong
+        // conclusion about which one survives.
+        assert_eq!(
+            volumes_of(&dev, "rekuest"),
+            vec![
+                "./mounts/rekuest:/workspace",
+                "./configs/rekuest.yaml:/workspace/config.yaml",
+            ]
+        );
+        assert_eq!(
+            volumes_of(&dev, "mikro"),
+            vec![
+                "./mounts/mikro:/workspace",
+                "./configs/mikro.yaml:/workspace/config.yaml",
+            ]
+        );
+
+        // Only the services run from source; infrastructure is untouched.
+        assert!(volumes_of(&dev, "db").iter().all(|v| !v.contains("/mounts/")));
+    }
+
+    #[test]
+    fn every_service_names_a_repository_to_check_out() {
+        let config = built(true);
+        for id in SERVICE_IDS {
+            let repo = &config.service(id).github_repo;
+            assert!(
+                repo.starts_with("https://github.com/"),
+                "{id:?} has no repository to clone: {repo}"
+            );
+        }
+    }
+}

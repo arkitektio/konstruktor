@@ -2,14 +2,18 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
   AdvertisedHost,
+  Checkout,
   ComposeAction,
   CreateEvent,
   DeploymentRecord,
   DockerProbe,
+  GitProbe,
   FolderReport,
-  HostCandidate,
+  HostDiscovery,
   HubAnswers,
   HubStatus,
+  ImageState,
+  ProbeResult,
   ServiceMeta,
   WellKnownFakts,
 } from "./types";
@@ -42,10 +46,90 @@ export const dockerState = (probe: DockerProbe | null) => {
   return "ready" as const;
 };
 
+/**
+ * Whether git is on this machine. Deliberately its own probe rather than a field on the
+ * Docker one: the remedies differ, and so does the consequence — no Docker means no
+ * deployment at all, while no git only means no dev hub.
+ */
+export const probeGit = () => invoke<GitProbe>("probe_git");
+
+// --- a dev hub's source checkouts -------------------------------------------
+
+/**
+ * The checkouts this deployment keeps under `mounts/`.
+ *
+ * An empty list is the answer for every ordinary hub, which is why nothing else has to
+ * ask whether a deployment is a dev hub: there is either something to switch branches in
+ * or there is not.
+ */
+export const deploymentCheckouts = (path: string) =>
+  invoke<Checkout[]>("deployment_checkouts", { path });
+
+/** The branches one checkout could move to. Fetches first, so it is current. */
+export const checkoutBranches = (path: string, service: string) =>
+  invoke<string[]>("checkout_branches", { path, service });
+
+/**
+ * Move one checkout onto another branch, and read back what it became.
+ *
+ * Refused over uncommitted work rather than forced — the point of a dev hub is that the
+ * checkout holds work somebody is doing. The container goes on running whatever it
+ * loaded until the stack is recreated.
+ */
+export const switchCheckoutBranch = (
+  path: string,
+  service: string,
+  branch: string
+) => invoke<Checkout>("switch_checkout_branch", { path, service, branch });
+
 // --- the machine ------------------------------------------------------------
 
-/** The addresses worth advertising, already classified and ordered. */
-export const hostCandidates = () => invoke<HostCandidate[]>("host_candidates");
+/**
+ * The addresses worth advertising, classified and ordered, with the reach presets
+ * already resolved against them.
+ */
+export const hostCandidates = (mesh?: {
+  /** The tailnet this hub is on, when the coordination server declares one. */
+  domain?: string | null;
+  /** The name this hub takes on that tailnet, out of its own mesh config. */
+  hostname?: string | null;
+}) =>
+  invoke<HostDiscovery>("host_candidates", {
+    meshDomain: mesh?.domain ?? null,
+    meshHostname: mesh?.hostname ?? null,
+  });
+
+/**
+ * The tailnet a coordination server runs, if it declares one.
+ *
+ * Without it, a tailnet address on this machine cannot be told apart from one on the
+ * personal tailnet most laptops are already on, so the address step calls every such
+ * address "another tailscale" rather than offering it as the hub's mesh.
+ */
+export const meshDomain = (server: string) =>
+  invoke<string | null>("mesh_domain", { server });
+
+/**
+ * What address the internet sees this machine as.
+ *
+ * Only ever called with an endpoint the user configured: this is the one request
+ * konstruktor makes to a host they did not name, and it tells that host their IP.
+ */
+export const egressIdentity = (endpoint: string) =>
+  invoke<string>("egress_identity", { endpoint });
+
+/**
+ * Asks a configured prober to connect back to one advertised address.
+ *
+ * A different question from {@link egressIdentity}, and the only one that may mark an
+ * alias public. With no prober configured the answer is `not-checked`, never a failure.
+ */
+export const probeReachability = (
+  prober: string,
+  host: string,
+  port: number,
+  ssl: boolean
+) => invoke<ProbeResult>("probe_reachability", { prober, host, port, ssl });
 
 // --- creating a hub ---------------------------------------------------------
 
@@ -106,6 +190,8 @@ export const reauthorizeHub = (
     identifier: string;
     description?: string | null;
     hosts: AdvertisedHost[];
+    /** Of `hosts`, the ones a probe reached. Only these may be marked public. */
+    reachableHosts: string[];
     requestAuthKey: boolean;
   },
   onEvent: (event: CreateEvent) => void
@@ -118,6 +204,7 @@ export const reauthorizeHub = (
     identifier: options.identifier,
     description: options.description ?? null,
     hosts: options.hosts,
+    reachableHosts: options.reachableHosts,
     requestAuthKey: options.requestAuthKey,
     onEvent: channel,
   });
@@ -163,10 +250,25 @@ export const listDeploymentContainers = (path: string) =>
 export const restartContainer = (containerId: string) =>
   invoke<void>("restart_container", { containerId });
 
+/**
+ * What the local daemon holds for every image this deployment's stack declares.
+ *
+ * Paired with the containers' `image_id`, this separates "never pulled" from "pulled and
+ * running" from "pulled but still waiting for a restart". It says nothing about the
+ * registry: whether something newer exists upstream is a question nothing here asks.
+ */
+export const deploymentImages = (path: string) =>
+  invoke<ImageState[]>("deployment_images", { path });
+
 export type Container = {
   id: string | null;
   names: string[] | null;
   image: string | null;
+  /**
+   * The image id the container was created from. It stops matching the tag's current id
+   * as soon as a newer image is pulled over that tag.
+   */
+  image_id: string | null;
   status: string | null;
   state: string | null;
   service: string | null;

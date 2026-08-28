@@ -202,6 +202,12 @@ impl FolderVerdict {
 }
 
 /// Adds or replaces the record for a path.
+///
+/// `now` dates `last_generated_at` as well as `created_at`: registering happens straight
+/// after the generated files are written, so the two really are the same instant. Leaving
+/// it unset — as this did — left the dashboard's "Configured" stage permanently
+/// unanswered and made its staleness check dead code, since `None` can never be older
+/// than an authorization.
 pub fn register(
     registry: &mut RegistryFile,
     name: &str,
@@ -216,8 +222,8 @@ pub fn register(
         path: path.to_string(),
         kind: "hub".to_string(),
         project: project_name(path),
-        created_at: now,
-        last_generated_at: None,
+        created_at: now.clone(),
+        last_generated_at: Some(now),
         coord_server,
         identifier,
     };
@@ -227,6 +233,42 @@ pub fn register(
         .retain(|d| normalize_path(&d.path) != wanted);
     registry.deployments.push(record.clone());
     record
+}
+
+/// Records that a deployment's files were regenerated, folding in whatever the
+/// authorization changed. Returns whether a record was found.
+///
+/// Deliberately not [`register`]: that mints a fresh id and replaces the record, which
+/// would invalidate the `/dashboard/<id>` route the user is standing on. Re-authorizing
+/// changes what a deployment *is*, not which deployment it is.
+///
+/// Without this, re-authorizing moves `authorized_at` forward while `last_generated_at`
+/// stays where creation left it, and the dashboard reports configs as written before the
+/// authorization on a folder whose configs were just rewritten.
+pub fn record_regeneration(
+    registry: &mut RegistryFile,
+    path: &str,
+    coord_server: Option<String>,
+    identifier: Option<String>,
+    now: String,
+) -> bool {
+    let wanted = normalize_path(path);
+    let Some(record) = registry
+        .deployments
+        .iter_mut()
+        .find(|d| normalize_path(&d.path) == wanted)
+    else {
+        return false;
+    };
+
+    record.last_generated_at = Some(now);
+    if coord_server.is_some() {
+        record.coord_server = coord_server;
+    }
+    if identifier.is_some() {
+        record.identifier = identifier;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -275,6 +317,47 @@ mod tests {
         register(&mut registry, "Renamed", "/home/someone/MyHub", None, None, "now".into());
         assert_eq!(registry.deployments.len(), 1);
         assert_eq!(registry.deployments[0].name, "Renamed");
+    }
+
+    /// The dashboard answers "is this configured" from `last_generated_at`, and can only
+    /// ever have registered a deployment whose files were just written.
+    #[test]
+    fn registering_dates_the_generation_as_well_as_the_creation() {
+        let registry = registry_with(&[("hub", "/tmp/hub")]);
+        let record = find_by_path(&registry, "/tmp/hub").expect("registered");
+        assert_eq!(record.last_generated_at.as_deref(), Some("now"));
+        assert_eq!(record.created_at, "now");
+    }
+
+    /// Re-authorizing rewrites the configs, so the record has to move with them — and has
+    /// to keep its id, which the dashboard route the user is on is keyed by.
+    #[test]
+    fn recording_a_regeneration_updates_in_place() {
+        let mut registry = registry_with(&[("hub", "/tmp/hub")]);
+        let before = find_by_path(&registry, "/tmp/hub").expect("registered").id.clone();
+
+        assert!(record_regeneration(
+            &mut registry,
+            // A trailing separator is the same folder.
+            "/tmp/hub/",
+            Some("go.arkitekt.live".into()),
+            Some("renamed".into()),
+            "later".into(),
+        ));
+
+        assert_eq!(registry.deployments.len(), 1);
+        let record = find_by_path(&registry, "/tmp/hub").expect("still there");
+        assert_eq!(record.id, before);
+        assert_eq!(record.last_generated_at.as_deref(), Some("later"));
+        assert_eq!(record.coord_server.as_deref(), Some("go.arkitekt.live"));
+        assert_eq!(record.identifier.as_deref(), Some("renamed"));
+    }
+
+    #[test]
+    fn recording_a_regeneration_for_an_unknown_folder_adds_nothing() {
+        let mut registry = registry_with(&[("hub", "/tmp/hub")]);
+        assert!(!record_regeneration(&mut registry, "/tmp/other", None, None, "later".into()));
+        assert_eq!(registry.deployments.len(), 1);
     }
 
     #[test]

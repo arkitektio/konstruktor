@@ -44,6 +44,8 @@ enum Command {
     Ps(manage::Target),
     /// A deployment's logs.
     Logs(manage::LogsArgs),
+    /// A dev hub's source checkouts: list their branches, or switch to one.
+    Checkout(manage::CheckoutArgs),
     /// Check whether Docker is ready.
     Doctor,
 }
@@ -98,6 +100,7 @@ fn classify(error: &anyhow::Error) -> i32 {
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
+        Command::Checkout(args) => manage::checkout(&args),
         Command::Doctor => manage::doctor().await,
         Command::List => manage::list(),
         Command::Status(target) => manage::status(&target).await,
@@ -115,6 +118,19 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 /// Shared by `hub create` and, later, `authorize`.
+/// How far a hub should reach, as `--reach` spells it.
+pub fn parse_reach(value: &str) -> Result<konstruktor_core::hosts::ReachPresetId, String> {
+    use konstruktor_core::hosts::ReachPresetId;
+    match value {
+        "local-only" => Ok(ReachPresetId::LocalOnly),
+        "this-network" => Ok(ReachPresetId::ThisNetwork),
+        "public" => Ok(ReachPresetId::Public),
+        other => Err(format!(
+            "unknown reach `{other}` — expected local-only, this-network or public"
+        )),
+    }
+}
+
 pub fn parse_mesh_mode(value: &str) -> Result<MeshMode, String> {
     match value {
         "none" => Ok(MeshMode::None),

@@ -1,7 +1,7 @@
 use serde_norway::{Mapping, Value};
 
 use crate::catalog::ServiceId;
-use crate::config::hub::{HubConfig, ServiceBlock};
+use crate::config::hub::{HubConfig, ServiceBlock, DB_COMPOSE_SERVICE};
 use crate::config::mesh::MESH_STATE_DIR;
 use crate::generate::service::{list, map, s};
 
@@ -25,7 +25,32 @@ fn buckets_of(id: ServiceId, service: &ServiceBlock) -> Vec<String> {
         .collect()
 }
 
+/// Where a dev hub's checkouts live, relative to the deployment folder.
+///
+/// One folder per service, named after the service — `./mounts/rekuest` — so the folder
+/// tells you which repository you are in without reading a remote.
+pub const MOUNTS_DIR: &str = "mounts";
+
+/// The checkout folder for one service, as compose writes it.
+pub fn mount_path(service: &ServiceBlock) -> String {
+    format!("./{MOUNTS_DIR}/{}", service.host)
+}
+
 fn compose_service(service: &ServiceBlock) -> Value {
+    // The config file is mounted *inside* the workspace, so on a dev hub the source mount
+    // is the parent of the config mount. Docker resolves nested binds outermost-first
+    // regardless of the order they are declared, so the config still lands on top of the
+    // checkout rather than being hidden by it — but the two are written in that order
+    // anyway, because reading them the other way round invites the wrong conclusion.
+    let mut volumes = Vec::new();
+    if service.mount_github {
+        volumes.push(s(&format!("{}:/workspace", mount_path(service))));
+    }
+    volumes.push(s(&format!(
+        "./configs/{}.yaml:/workspace/config.yaml",
+        service.host
+    )));
+
     map(vec![
         (
             "image",
@@ -45,13 +70,7 @@ fn compose_service(service: &ServiceBlock) -> Value {
         ),
         ("depends_on", list(vec![s("redis"), s("db"), s("minio")])),
         ("stop_grace_period", s("2s")),
-        (
-            "volumes",
-            list(vec![s(&format!(
-                "./configs/{}.yaml:/workspace/config.yaml",
-                service.host
-            ))]),
-        ),
+        ("volumes", list(volumes)),
         (
             "deploy",
             map(vec![(
@@ -110,7 +129,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     if !databases.is_empty() {
         insert(
             &mut services,
-            "db",
+            DB_COMPOSE_SERVICE,
             map(vec![
                 ("image", s(&config.db.image)),
                 (

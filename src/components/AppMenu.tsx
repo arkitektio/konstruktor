@@ -37,7 +37,7 @@ export const DockerDot = () => {
                 ? "bg-primary"
                 : state === "checking"
                   ? "bg-muted-foreground/40 animate-pulse"
-                  : "bg-amber-500"
+                  : "bg-warning"
             )}
           />
           <span className="text-xs text-muted-foreground">Docker</span>
@@ -72,7 +72,6 @@ export const AppMenu = ({
         <Logo
           width={20}
           height={20}
-          cubeColor="var(--primary)"
           aColor="currentColor"
           strokeColor="currentColor"
         />

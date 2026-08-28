@@ -29,9 +29,14 @@ import { PortsStep } from "./steps/PortsStep";
 import { HostsStep } from "./steps/HostsStep";
 import { AdvancedStep } from "./steps/AdvancedStep";
 import { SummaryStep } from "./steps/SummaryStep";
-import { InstallProgress, CreateState, emptyCreateState } from "./InstallProgress";
+import {
+  InstallProgress,
+  CreateState,
+  emptyCreateState,
+  reduceCreate,
+} from "./InstallProgress";
 import * as api from "../../api";
-import type { CreateEvent, HubAnswers, ServiceMeta } from "../../api";
+import type { AdvertisedHost, CreateEvent, HubAnswers, ServiceMeta } from "../../api";
 import { useRegistry } from "../../registry/registry-context";
 import { useSettings } from "../../settings/settings-context";
 import { HubForm, baseUrl, coordinationServerSchema } from "./hub-form";
@@ -97,7 +102,13 @@ const HubSummary = () => {
         { label: "Ports", value: `${values.httpPort} / ${values.httpsPort}` },
         {
           label: "Advertised at",
-          value: (values.hosts ?? []).map((h) => h.host).join(", "),
+          value: advertisedAt(values.hosts ?? []),
+        },
+        {
+          label: "Services run from",
+          value: values.devHub
+            ? `a source checkout in mounts/ (${values.devBranch?.trim() || "each repository's default branch"})`
+            : "",
         },
         {
           label: "Mesh",
@@ -112,6 +123,18 @@ const HubSummary = () => {
       files={["hub_config.yaml", "hub_credentials.json", ...files]}
     />
   );
+};
+
+/**
+ * The addresses, for the review step.
+ *
+ * "Local only" is a legitimate answer now that loopback is offered, and a bare
+ * `127.0.0.1` in a summary row reads like something went wrong rather than like a choice.
+ */
+const advertisedAt = (hosts: AdvertisedHost[]): string => {
+  if (hosts.length === 0) return "nothing";
+  if (hosts.every((host) => host.kind === "loopback")) return "only this machine";
+  return hosts.map((host) => host.host).join(", ");
 };
 
 /** The form, as the core wants it: flat, snake_case, and already trimmed. */
@@ -131,10 +154,17 @@ const toAnswers = (values: HubForm): HubAnswers => ({
   global_admin_password: values.globalAdminPassword || null,
   global_description: values.globalDescription?.trim() || null,
   hosts: values.hosts ?? [],
+  // Nothing is listening while the wizard runs, so no probe can have confirmed
+  // anything. Aliases go out unmarked and the dashboard can check later.
+  reachable_hosts: [],
   mesh_mode: values.meshMode,
   mesh_auth_key: values.meshAuthKey || null,
   mesh_coord_url: values.meshCoordUrl || null,
-  start: true,
+  // The wizard writes the deployment and stops there. Starting it is the dashboard's
+  // job, so the first `up` happens where its output and the container list already are.
+  start: false,
+  dev_hub: values.devHub ?? false,
+  dev_branch: values.devBranch?.trim() || null,
 });
 
 export const HubWizard = () => {
@@ -166,6 +196,8 @@ export const HubWizard = () => {
     meshMode: "none",
     meshAuthKey: "",
     meshCoordUrl: "",
+    devHub: false,
+    devBranch: "",
   };
 
   const steps: WizardStep[] = useMemo(
@@ -246,7 +278,7 @@ export const HubWizard = () => {
         validationSchema: z.looseObject({
           hosts: z
             .array(z.looseObject({ host: z.string() }))
-            .min(1, "Pick at least one address, or nobody can reach this hub"),
+            .min(1, "Pick at least one address — without one, nothing can find this hub"),
         }),
       },
       {
@@ -279,6 +311,14 @@ export const HubWizard = () => {
         component: AdvancedStep,
         meta: { label: "Advanced", title: "Advanced", icon: Cog },
         validationSchema: z.looseObject({
+          // A branch name is git's to validate; only the shapes it can never accept are
+          // rejected here, so a typo is caught before eight clones are attempted.
+          devBranch: z
+            .string()
+            .refine(
+              (value) => value.trim() === "" || !/[\s~^:?*\[\\]/.test(value.trim()),
+              "That is not a valid branch name"
+            ),
           globalAdmin: z.string().trim().min(1, "Required"),
           globalAdminPassword: z
             .string()
@@ -297,24 +337,16 @@ export const HubWizard = () => {
   );
 
   /**
-   * One call does the lot: build the profile, authorize it, write the folder, start the
-   * stack. Progress — including the device code somebody has to accept — comes back
-   * through a channel and is rendered by {@link InstallProgress}.
+   * One call builds the profile, authorizes it and writes the folder — it does not start
+   * the stack. Progress, including the device code somebody has to accept, comes back
+   * through a channel and is rendered by {@link InstallProgress}; when it is done we go
+   * to the hub's dashboard, where Start is.
    */
   const handleSubmit = async (values: HubForm) => {
     setCreating({ ...emptyCreateState, running: true });
 
     const onEvent = (event: CreateEvent) =>
-      setCreating((previous) => ({
-        ...previous,
-        event,
-        logs:
-          event.event === "log"
-            ? [...previous.logs, event.line]
-            : event.event === "writing"
-              ? [...previous.logs, `wrote ${event.file}`]
-              : previous.logs,
-      }));
+      setCreating((previous) => reduceCreate(previous, event));
 
     try {
       await api.createHub(toAnswers(values), onEvent);

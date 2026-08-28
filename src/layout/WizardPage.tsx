@@ -50,7 +50,6 @@ export const WizardPage = ({
         <Logo
           width={28}
           height={28}
-          cubeColor="var(--primary)"
           aColor="currentColor"
           strokeColor="currentColor"
         />
@@ -72,7 +71,7 @@ export const WizardPage = ({
         />
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-row">
+      <div className="relative z-10 flex-1 min-h-0 flex flex-row">
         <WizardRail rail={rail} onJump={onJump} />
 
         <ScrollArea viewportRef={viewport} className="flex-1 min-w-0">

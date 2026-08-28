@@ -19,7 +19,13 @@ fn docker_command() -> String {
 pub struct Container {
     pub id: Option<String>,
     pub names: Option<Vec<String>>,
+    /// The image reference the container was created from, as written in the compose
+    /// file — a tag, e.g. `jhnnsrs/rekuest:next`.
     pub image: Option<String>,
+    /// The resolved id of that image *at the moment the container was created*. It stops
+    /// matching the tag's current id as soon as a newer image is pulled over the tag,
+    /// which is how the dashboard knows an update is waiting to be applied.
+    pub image_id: Option<String>,
     pub labels: Option<HashMap<String, String>>,
     pub status: Option<String>,
     pub state: Option<String>,
@@ -197,11 +203,54 @@ pub async fn list_deployment_containers(path: &str) -> Result<Vec<Container>, St
             id: c.id,
             names: c.names,
             image: c.image,
+            image_id: c.image_id,
             status: c.status,
             labels: c.labels,
             state: c.state.map(|state| state.to_string()),
         })
         .collect())
+}
+
+/// What the local Docker daemon currently holds for one image reference.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ImageState {
+    /// The reference as the compose file spells it, e.g. `jhnnsrs/rekuest:next`.
+    pub image: String,
+    /// The compose service this image belongs to, so the UI can line it up with the
+    /// containers it already lists.
+    pub service: String,
+    /// Whether the daemon has it at all. `false` means nothing has pulled it yet.
+    pub present: bool,
+    /// The id the tag resolves to *now*. Compared against a running container's
+    /// `image_id` to tell "a newer image is pulled but not running yet".
+    pub image_id: Option<String>,
+    /// When that image was built, as the daemon reports it.
+    pub created: Option<String>,
+}
+
+/// Resolves every image the stack declares against the local daemon.
+///
+/// Nothing here pulls or contacts a registry: this answers "what is on this machine",
+/// which is all that is needed to spot an update that was downloaded but never applied.
+/// Whether something *newer* exists upstream is a different question, and a registry
+/// query this deliberately does not make.
+pub async fn image_states(images: &[(String, String)]) -> Result<Vec<ImageState>, String> {
+    let docker = Docker::connect_with_local_defaults().map_err(|e| e.to_string())?;
+    let docker = docker.with_timeout(Duration::from_secs(10));
+
+    let mut states = Vec::with_capacity(images.len());
+    for (service, image) in images {
+        // A missing image is the ordinary case before the first pull, not an error.
+        let inspected = docker.inspect_image(image).await.ok();
+        states.push(ImageState {
+            image: image.clone(),
+            service: service.clone(),
+            present: inspected.is_some(),
+            image_id: inspected.as_ref().and_then(|i| i.id.clone()),
+            created: inspected.as_ref().and_then(|i| i.created.clone()),
+        });
+    }
+    Ok(states)
 }
 
 pub async fn restart_container(container_id: &str) -> Result<(), String> {

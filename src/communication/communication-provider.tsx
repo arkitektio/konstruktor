@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   CommunicationContext,
   DockerProbe,
+  GitProbe,
   dockerState,
 } from "./communication-context";
 
@@ -26,6 +27,7 @@ const CommunicationProvider: React.FC<ICommunicationProviderProps> = ({
   children,
 }) => {
   const [probe, setProbe] = useState<DockerProbe | null>(null);
+  const [git, setGit] = useState<GitProbe | null>(null);
   const [checking, setChecking] = useState(true);
   const mounted = useRef(true);
 
@@ -44,6 +46,16 @@ const CommunicationProvider: React.FC<ICommunicationProviderProps> = ({
     } catch (error) {
       result = unreachable(error);
     }
+    // Git rides along with the Docker recheck rather than having a button of its own:
+    // the reason somebody presses "Check again" is that they just installed something,
+    // and there is no sense in making them find a second button for the other tool.
+    try {
+      const found = await api.probeGit();
+      if (mounted.current) setGit(found);
+    } catch {
+      if (mounted.current) setGit({ cli: false, cli_version: null });
+    }
+
     if (mounted.current) {
       setProbe(result);
       setChecking(false);
@@ -65,6 +77,7 @@ const CommunicationProvider: React.FC<ICommunicationProviderProps> = ({
         state: dockerState(probe),
         checking,
         recheck,
+        git,
       }}
     >
       {children}

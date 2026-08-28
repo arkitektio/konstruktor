@@ -25,6 +25,14 @@ pub struct HubCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
     pub envelope: HubEnvelope,
+    /// The addresses this hub last claimed to be reachable at.
+    ///
+    /// Kept so re-authorizing can start from what the hub already advertises instead of
+    /// from whatever this machine happens to have today — which is the whole point of
+    /// that screen, since the tailnet address it exists to add is one discovery cannot
+    /// find. Defaulted, so a hub authorized before this existed still loads.
+    #[serde(default)]
+    pub advertised_hosts: Vec<crate::connect::manifest::AdvertisedHost>,
 }
 
 impl HubCredentials {

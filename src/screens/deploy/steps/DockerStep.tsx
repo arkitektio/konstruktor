@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect } from "react";
 import { useFormContext } from "react-hook-form";
-import type { DockerProbe, DockerState } from "../../../api";
+import type { DockerProbe, DockerState, GitProbe } from "../../../api";
 import { useCommunication } from "../../../communication/communication-context";
 import { ErrorDisplay } from "../../../components/Error";
 import { Alert } from "../../../components/ui/alert";
@@ -64,7 +64,7 @@ const VERDICTS: Record<Exclude<DockerState, "checking">, Verdict> = {
     tone: "ok",
     icon: CircleCheck,
     title: "Docker is ready",
-    body: "The CLI, the compose plugin and the daemon all answered. Konstruktor can write this deployment and start it for you.",
+    body: "The CLI, the compose plugin and the daemon all answered. Konstruktor can write this deployment, and you can start it from the dashboard afterwards.",
   },
   missing: {
     tone: "bad",
@@ -94,22 +94,29 @@ const VERDICTS: Record<Exclude<DockerState, "checking">, Verdict> = {
 
 const TONE = {
   ok: "border-primary/60 bg-primary/5",
-  warn: "border-amber-500/60 bg-amber-500/5",
+  warn: "border-warning/60 bg-warning/10",
   bad: "border-destructive/60 bg-destructive/5",
 } as const;
 
 const ICON_TONE = {
   ok: "text-primary",
-  warn: "text-amber-500",
+  warn: "text-warning",
   bad: "text-destructive",
 } as const;
 
-/** The individual findings, so "it says no" is never the whole answer. */
-const Findings = ({ probe }: { probe: DockerProbe }) => (
+/**
+ * The individual findings, so "it says no" is never the whole answer.
+ *
+ * Git sits here with the rest but is not one of the three: it is reported, never
+ * required. A missing git leaves the deployment entirely possible and only takes the
+ * dev-hub option away — which is why it does not touch the verdict above it.
+ */
+const Findings = ({ probe, git }: { probe: DockerProbe; git: GitProbe | null }) => (
   <div className="flex flex-wrap gap-1.5 mt-3">
     <Finding ok={probe.cli} label="docker" detail={probe.cli_version} />
     <Finding ok={probe.compose} label="compose" detail={probe.compose_version} />
     <Finding ok={probe.daemon} label="daemon" detail={probe.api_version && `API ${probe.api_version}`} />
+    <Finding ok={git?.cli ?? false} label="git" detail={git?.cli_version} optional />
   </div>
 );
 
@@ -117,10 +124,13 @@ const Finding = ({
   ok,
   label,
   detail,
+  optional,
 }: {
   ok: boolean;
   label: string;
   detail?: string | null;
+  /** Reported but not required — absent is a fact, not a failure. */
+  optional?: boolean;
 }) => (
   <Badge
     variant="outline"
@@ -129,11 +139,12 @@ const Finding = ({
     <span
       className={cn(
         "size-1.5 rounded-full",
-        ok ? "bg-primary" : "bg-muted-foreground/40"
+        ok ? "bg-primary" : optional ? "bg-muted-foreground/25" : "bg-muted-foreground/40"
       )}
     />
     {label}
     {ok && detail ? <span className="text-muted-foreground">{detail}</span> : null}
+    {!ok && optional ? <span className="text-muted-foreground">optional</span> : null}
   </Badge>
 );
 
@@ -145,7 +156,7 @@ const Finding = ({
  * cached answer from before that would be wrong.
  */
 export const DockerStep = () => {
-  const { probe, state, checking, recheck } = useCommunication();
+  const { probe, state, checking, recheck, git } = useCommunication();
   const { setValue } = useFormContext();
 
   useEffect(() => {
@@ -187,7 +198,7 @@ export const DockerStep = () => {
                 "Checking whether the Docker command line, the compose plugin and the daemon are all here."}
             </p>
 
-            {probe && <Findings probe={probe} />}
+            {probe && <Findings probe={probe} git={git} />}
 
             <div className="flex flex-wrap items-center gap-2 mt-4">
               {verdict?.action && (
@@ -214,6 +225,15 @@ export const DockerStep = () => {
 
       {state === "no-daemon" && probe?.error && (
         <Alert className="mt-3 text-xs text-muted-foreground">{probe.error}</Alert>
+      )}
+
+      {/* Said once, here, so nobody is surprised by a disabled control further on. */}
+      {git && !git.cli && (
+        <Alert className="mt-3 text-xs text-muted-foreground">
+          git was not found. That is fine for an ordinary hub, which runs published
+          images — it only means the dev hub option under Advanced, which runs the
+          services from a source checkout, is not available.
+        </Alert>
       )}
 
       <ErrorDisplay name="dockerOk" className="mt-3" />

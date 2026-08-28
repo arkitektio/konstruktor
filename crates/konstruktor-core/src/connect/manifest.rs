@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::{ServiceId, HUB_SERVICE_ORDER};
 use crate::config::hub::HubConfig;
-use crate::hosts::HostKind;
+use crate::hosts::HostCategory;
 
 /// The hub manifest, as `deployments/next/mounts/lok` expects it.
 ///
@@ -191,15 +191,38 @@ pub enum AliasScope {
 /// `StagingAlias.scope` defaults to `local` server-side, which is too narrow for anything
 /// this machine advertises: a LAN address claiming to be local would never be tried from
 /// another machine.
-pub fn alias_scope(host: &str, kind: HostKind) -> AliasScope {
+///
+/// This is the one place where the ten categories `hosts` distinguishes collapse onto the
+/// four values the coordination server accepts. Keep it total, and keep it here: a
+/// category that collapses earlier — a tailnet address indistinguishable from a public
+/// one, which is what used to happen — is how the wrong scope reaches the wire.
+pub fn alias_scope(host: &str, kind: HostCategory) -> AliasScope {
+    // The literals first, whatever the category says: a hand-written `localhost` is local
+    // even if nobody classified it.
     if matches!(host, "localhost" | "127.0.0.1" | "::1") {
-        AliasScope::Local
-    } else if host.ends_with(".ts.net") {
-        AliasScope::Ionscale
-    } else if kind == HostKind::Public {
-        AliasScope::Public
-    } else {
-        AliasScope::Network
+        return AliasScope::Local;
+    }
+    // A tailnet name under a self-hosted ionscale does not end in `.ts.net`, so the
+    // category is the reliable signal and this is only a backstop.
+    if host.ends_with(".ts.net") {
+        return AliasScope::Ionscale;
+    }
+
+    match kind {
+        HostCategory::Loopback => AliasScope::Local,
+        HostCategory::Mesh => AliasScope::Ionscale,
+        // Not this hub's tailnet, so `ionscale` would be a lie — the coordination
+        // server's peers are not on it. Only the machines sharing that tailnet can use
+        // this, which is closer to a network address than anything else on offer.
+        HostCategory::OtherMesh => AliasScope::Network,
+        HostCategory::Public | HostCategory::VerifiedFqdn => AliasScope::Public,
+        HostCategory::Private
+        | HostCategory::MdnsName
+        | HostCategory::BareHostname
+        | HostCategory::Fqdn => AliasScope::Network,
+        // Neither should ever be advertised. If one is, a scope nobody outside this
+        // machine will try is the safe floor.
+        HostCategory::Virtual | HostCategory::LinkLocal => AliasScope::Local,
     }
 }
 
@@ -270,14 +293,21 @@ pub fn advertised_port(config: &HubConfig) -> u16 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvertisedHost {
     pub host: String,
-    pub kind: HostKind,
+    pub kind: HostCategory,
 }
 
+/// Turns the chosen hosts into the aliases one service instance advertises.
+///
+/// `reachable` is the subset an external prober actually reached. It is the only thing
+/// that may set `public`, because that flag invites the coordination server to health
+/// check the alias itself — and a hub on a LAN address it cannot reach would then look
+/// permanently unhealthy.
 pub fn build_aliases(
     hosts: &[AdvertisedHost],
     port: u16,
     ssl: bool,
     path: &str,
+    reachable: &[String],
 ) -> Vec<StagingAlias> {
     hosts
         .iter()
@@ -292,8 +322,8 @@ pub fn build_aliases(
             kind: "absolute".to_string(),
             scope: alias_scope(&h.host, h.kind),
             // Nothing here is guaranteed to be reachable from the coordination server, so
-            // it must not try to health check these directly.
-            public: false,
+            // it must not try to health check anything a probe has not confirmed.
+            public: reachable.contains(&h.host),
         })
         .collect()
 }
@@ -306,6 +336,8 @@ pub struct HubManifestOptions {
     /// Stable per-machine id, so a re-authorized hub is recognised as the same node.
     pub node_id: Option<String>,
     pub hosts: Vec<AdvertisedHost>,
+    /// Of `hosts`, the ones an external probe reached. Empty unless somebody checked.
+    pub reachable_hosts: Vec<String>,
     pub request_auth_key: bool,
     pub expiration_seconds: Option<u64>,
 }
@@ -341,7 +373,13 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                         url: repo.to_string(),
                     }],
                 },
-                aliases: build_aliases(&options.hosts, port, ssl, &block.host),
+                aliases: build_aliases(
+                    &options.hosts,
+                    port,
+                    ssl,
+                    &block.host,
+                    &options.reachable_hosts,
+                ),
             }
         })
         .collect();
@@ -366,14 +404,96 @@ mod tests {
 
     #[test]
     fn scopes_an_address_by_how_far_it_reaches() {
-        assert_eq!(alias_scope("localhost", HostKind::Private), AliasScope::Local);
-        assert_eq!(alias_scope("127.0.0.1", HostKind::Private), AliasScope::Local);
+        // The literals win over whatever category came with them.
+        assert_eq!(alias_scope("localhost", HostCategory::Private), AliasScope::Local);
+        assert_eq!(alias_scope("127.0.0.1", HostCategory::Private), AliasScope::Local);
         assert_eq!(
-            alias_scope("hub.tail1234.ts.net", HostKind::Private),
+            alias_scope("hub.tail1234.ts.net", HostCategory::Private),
             AliasScope::Ionscale
         );
-        assert_eq!(alias_scope("10.0.0.4", HostKind::Private), AliasScope::Network);
-        assert_eq!(alias_scope("140.78.80.150", HostKind::Public), AliasScope::Public);
+
+        assert_eq!(alias_scope("127.0.0.53", HostCategory::Loopback), AliasScope::Local);
+        assert_eq!(alias_scope("10.0.0.4", HostCategory::Private), AliasScope::Network);
+        assert_eq!(alias_scope("140.78.80.150", HostCategory::Public), AliasScope::Public);
+
+        // The bug this table exists for: a tailnet address is not a public one.
+        assert_eq!(
+            alias_scope("100.116.108.106", HostCategory::Mesh),
+            AliasScope::Ionscale
+        );
+
+        assert_eq!(alias_scope("hub.local", HostCategory::MdnsName), AliasScope::Network);
+        assert_eq!(alias_scope("hub", HostCategory::BareHostname), AliasScope::Network);
+        assert_eq!(alias_scope("hub.example.org", HostCategory::Fqdn), AliasScope::Network);
+        assert_eq!(
+            alias_scope("hub.example.org", HostCategory::VerifiedFqdn),
+            AliasScope::Public
+        );
+
+        // Never advertised, but if one slips through it must not be offered to peers.
+        assert_eq!(alias_scope("172.17.0.1", HostCategory::Virtual), AliasScope::Local);
+        assert_eq!(alias_scope("169.254.1.1", HostCategory::LinkLocal), AliasScope::Local);
+    }
+
+    /// The wire vocabulary is fixed at four values, and the server that validates them is
+    /// not in this repository. This makes "we cannot accidentally send a fifth" a test
+    /// rather than a habit.
+    #[test]
+    fn every_category_maps_onto_a_scope_the_server_knows() {
+        const KNOWN: [&str; 4] = ["local", "network", "public", "ionscale"];
+
+        for scope in [
+            AliasScope::Local,
+            AliasScope::Network,
+            AliasScope::Public,
+            AliasScope::Ionscale,
+        ] {
+            let json = serde_json::to_string(&scope).expect("serializes");
+            assert!(KNOWN.contains(&json.trim_matches('"')), "unexpected scope {json}");
+        }
+
+        for kind in [
+            HostCategory::Loopback,
+            HostCategory::Private,
+            HostCategory::Mesh,
+            HostCategory::Public,
+            HostCategory::Virtual,
+            HostCategory::LinkLocal,
+            HostCategory::MdnsName,
+            HostCategory::BareHostname,
+            HostCategory::Fqdn,
+            HostCategory::VerifiedFqdn,
+        ] {
+            let scope = alias_scope("hub.example.org", kind);
+            let json = serde_json::to_string(&scope).expect("serializes");
+            assert!(
+                KNOWN.contains(&json.trim_matches('"')),
+                "{kind:?} produced {json}"
+            );
+        }
+    }
+
+    /// The gateway is one socket, so an alias is reachable or it is not — the service
+    /// path does not enter into it, and a probe of one alias settles them all.
+    #[test]
+    fn marks_an_alias_public_only_when_a_probe_confirmed_it() {
+        let hosts = vec![
+            AdvertisedHost {
+                host: "140.78.80.150".to_string(),
+                kind: HostCategory::Public,
+            },
+            AdvertisedHost {
+                host: "10.0.0.4".to_string(),
+                kind: HostCategory::Private,
+            },
+        ];
+
+        let unconfirmed = build_aliases(&hosts, 80, false, "mikro", &[]);
+        assert!(unconfirmed.iter().all(|a| !a.public));
+
+        let confirmed = build_aliases(&hosts, 80, false, "mikro", &["140.78.80.150".to_string()]);
+        assert!(confirmed[0].public);
+        assert!(!confirmed[1].public);
     }
 
     /// Lovekit has no image, so advertising it would register an instance nothing serves.

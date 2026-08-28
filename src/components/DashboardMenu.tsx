@@ -25,7 +25,6 @@ export const AppMenu = () => {
             <Logo
               width={"25"}
               height={"25"}
-              cubeColor={"var(--primary)"}
               aColor={"var(--foreground)"}
               strokeColor={"var(--foreground)"}
             />

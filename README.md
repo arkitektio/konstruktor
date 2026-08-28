@@ -56,6 +56,10 @@ konstruktor hub create ~/MyHubs/lab-hub --server go.arkitekt.live \
   --identifier lab-hub --services rekuest,mikro,fluss --yes
 ```
 
+Addresses work the same way as in the wizard: `--reach local-only|this-network|public`
+picks them by how far the hub should reach, defaulting to `this-network`, and `--host`
+overrides that with exactly what to advertise.
+
 With a terminal, missing answers are prompted for; without one they are an error naming
 the flag that would have supplied it, so CI never hangs on a prompt. `[target]` is a path
 or the name of a registered deployment — the CLI and the desktop app share one registry,
@@ -79,8 +83,8 @@ permissions live on a *coordination server* such as [go.arkitekt.live](https://g
 the hub is authorized against one before it exists on disk.
 
 Creating a hub walks through a folder, the coordination server and the hub's name there, which
-services to run, which ports to publish, which of this machine's addresses to advertise, and whether
-the hub joins a mesh. The last step is the authorization itself: Konstruktor sends the hub's manifest
+services to run, which ports to publish, how far the hub should reach, and whether it joins a mesh.
+The last step is the authorization itself: Konstruktor sends the hub's manifest
 to the coordination server, shows you a short code, and opens the page where somebody with an account
 accepts the hub into an organization. Only once that comes back does anything get written.
 
@@ -89,6 +93,41 @@ folder defaults to `MyHub` in your home directory, the hub identifier is the fol
 and `go.arkitekt.live` is offered as the coordination server alongside any you have used before.
 Everything that has a working default sits under an "Advanced" disclosure on its step, so each step
 asks the one question it is actually there for.
+
+### Addresses
+
+Clients ask the coordination server where a service lives and get back whatever this machine
+claimed to be reachable at, so a wrong address is worse than a missing one. The Addresses step asks
+the question people actually have — local only, this network, or public — and picks the addresses
+that answer it. Everything found is shown either way, grouped by what it is: loopback, LAN, mesh,
+public, and the names this machine resolves to, graded by whether they point back here. A name that
+resolves to `127.0.1.1`, which is what most Linux boxes give their own hostname, is offered but
+never assumed.
+
+Addresses that exist and cannot help a peer — docker bridges, virtual interfaces, link-local — are
+no longer hidden. They sit behind a disclosure with the reason attached, because "why is my address
+not in the list" is easier to answer next to the address than in a source file.
+
+Tailnet addresses get their own treatment, because a machine is often on more than one. An address
+is only shown as this hub's **mesh** when it can be shown to belong to the tailnet the coordination
+server runs; every other `100.64/10` address — the personal tailscale most laptops already have —
+is listed under **other tailscales**. Those stay tickable, since a lab where every client is on that
+tailnet is a real setup, but nothing picks them for you and they are never advertised as mesh
+addresses, which would offer the organization an address none of its machines can route to.
+
+Telling the two apart needs the coordination server to declare its tailnet in
+`/.well-known/fakts` — konstruktor reads `mesh_domain` (or `tailnet_domain`, `ionscale_domain`,
+`magic_dns_suffix`) and matches the MagicDNS suffix against what it finds. No server declares it
+yet, so until one does every tailnet address is "other", which is also the truth during the wizard:
+the hub has not joined anything at that point. Once a hub has joined, its own mesh hostname is
+enough to recognise its node on the Authorize screen.
+
+Each address is labelled with how far it actually reaches, and that label is what the coordination
+server is told: `local`, `network`, `public`, or `ionscale` for the hub's own tailnet. Konstruktor can also say
+which of these the internet sees this machine as, and — once the hub is running — ask an external
+prober whether anything answers on it. Both need an endpoint configured in Settings, and neither is
+on by default: every other request this app makes goes to the coordination server you named, and
+these would not.
 
 ### The mesh
 

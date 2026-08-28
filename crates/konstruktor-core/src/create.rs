@@ -12,7 +12,7 @@ use crate::credentials::{write_credentials, HubCredentials};
 use crate::generate::write::write_generated_files;
 use crate::generate::generate_hub_files;
 use crate::profile::{hub_profile, write_profile};
-use crate::{compose, docker, registry};
+use crate::{compose, docker, git, registry};
 
 /// Creating a hub, end to end — and the single place that orchestration lives.
 ///
@@ -60,6 +60,9 @@ pub struct HubAnswers {
     #[serde(default)]
     pub global_description: Option<String>,
     pub hosts: Vec<AdvertisedHost>,
+    /// Of `hosts`, the ones an external probe reached. Empty unless somebody checked.
+    #[serde(default)]
+    pub reachable_hosts: Vec<String>,
     #[serde(default)]
     pub mesh_mode: MeshMode,
     #[serde(default)]
@@ -69,6 +72,15 @@ pub struct HubAnswers {
     /// Run `docker compose up -d` once everything is written.
     #[serde(default = "yes")]
     pub start: bool,
+    /// Make this a *dev hub*: check every enabled service's repository out into
+    /// `mounts/<service>` and mount it over the image's workspace, so the containers run
+    /// the source on this machine rather than the code baked into the image. Needs git.
+    #[serde(default)]
+    pub dev_hub: bool,
+    /// The branch to check out, for a dev hub. Left out, each repository's own default
+    /// branch is used — they do not all agree on what it is called.
+    #[serde(default)]
+    pub dev_branch: Option<String>,
 }
 
 fn local() -> String {
@@ -110,6 +122,12 @@ pub enum CreateEvent {
     Writing {
         file: String,
     },
+    /// A dev hub's source is being checked out. One per service.
+    Cloning {
+        service: String,
+        repo: String,
+        branch: Option<String>,
+    },
     Starting,
     Log {
         line: String,
@@ -132,6 +150,9 @@ pub enum CreateError {
     #[error("The deployment was written, but `docker compose up -d` failed. You can \
              retry with `konstruktor up`.")]
     StartFailed,
+    #[error("The deployment is written and registered, but the source checkout failed: \
+             {0}. Fix the checkout under `mounts/` and start it as usual.")]
+    Clone(#[from] crate::git::CloneError),
 }
 
 pub struct CreatedHub {
@@ -194,6 +215,7 @@ pub async fn create_hub(
         global_admin_password: answers.global_admin_password.clone(),
         global_description: answers.global_description.clone(),
         mesh: manual_mesh,
+        dev_hub: answers.dev_hub,
         ..Default::default()
     });
 
@@ -210,6 +232,7 @@ pub async fn create_hub(
                 .map(str::to_string),
             node_id: Some(store.device_id.clone()),
             hosts: answers.hosts.clone(),
+            reachable_hosts: answers.reachable_hosts.clone(),
             request_auth_key: answers.mesh_mode == MeshMode::Coordination,
             expiration_seconds: None,
         },
@@ -254,6 +277,7 @@ pub async fn create_hub(
         authorized_at: now_rfc3339(),
         issuer: grant.issuer.clone(),
         envelope: envelope.clone(),
+        advertised_hosts: answers.hosts.clone(),
     };
 
     let files = generate_hub_files(&config, &credentials.issued_identity());
@@ -276,6 +300,50 @@ pub async fn create_hub(
         now_rfc3339(),
     );
     let _ = registry::save(&store);
+
+    // --- check the source out, on a dev hub ---------------------------------
+    //
+    // Deliberately *after* the deployment is registered and before the stack is started.
+    // Before `up`, because compose already declares the bind mounts and an empty
+    // `mounts/<service>` would hand the container an empty workspace. After `register`,
+    // because the device grant above is single-use: a clone that fails must leave a hub
+    // the app can still see and the user can fix by hand, not an authorized folder
+    // nothing knows about and no second run can reproduce.
+    if answers.dev_hub {
+        let branch = answers
+            .dev_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
+
+        for id in config.enabled_services() {
+            let service = config.service(id);
+            let into = git::checkout_dir(&dir, &service.host);
+            std::fs::create_dir_all(&into)?;
+
+            on(CreateEvent::Cloning {
+                service: service.host.clone(),
+                repo: service.github_repo.clone(),
+                branch: branch.map(str::to_string),
+            });
+
+            let cloned = git::clone_service(&service.host, &service.github_repo, branch, &into)?;
+
+            // The config is bind-mounted at `/workspace/config.yaml`, which is *inside*
+            // the checkout. Docker creates a missing mount point itself, as root — so
+            // the file is created here instead, owned by whoever owns the checkout.
+            let placeholder = into.join("config.yaml");
+            if !placeholder.exists() {
+                std::fs::write(&placeholder, "")?;
+            }
+
+            if !cloned {
+                on(CreateEvent::Log {
+                    line: format!("{} already has a checkout — left as it is", service.host),
+                });
+            }
+        }
+    }
 
     // --- start --------------------------------------------------------------
     if answers.start {
@@ -476,6 +544,8 @@ pub struct ReauthorizeAnswers {
     pub identifier: String,
     pub description: Option<String>,
     pub hosts: Vec<AdvertisedHost>,
+    /// Of `hosts`, the ones an external probe reached.
+    pub reachable_hosts: Vec<String>,
     pub request_auth_key: bool,
 }
 
@@ -498,6 +568,7 @@ pub async fn reauthorize(
             description: answers.description.clone(),
             node_id: Some(store.device_id.clone()),
             hosts: answers.hosts.clone(),
+            reachable_hosts: answers.reachable_hosts.clone(),
             request_auth_key: answers.request_auth_key,
             expiration_seconds: None,
         },
@@ -538,6 +609,7 @@ pub async fn reauthorize(
         authorized_at: now_rfc3339(),
         issuer: grant.issuer.clone(),
         envelope,
+        advertised_hosts: answers.hosts.clone(),
     };
 
     // Generation first: a profile this app did not write could fail here, and a
@@ -551,6 +623,24 @@ pub async fn reauthorize(
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
     write_credentials(&answers.dir, &credentials)?;
     write_generated_files(&answers.dir, &files)?;
+
+    // The registry record now describes the wrong hub: the identifier is editable on the
+    // authorize screen, the coordination server can differ, and `last_generated_at` has to
+    // move with the files that were just rewritten — the dashboard compares it against
+    // `authorized_at`, which the credentials above have just pushed forward.
+    //
+    // Loaded again rather than reusing the snapshot from the top: authorization waits on a
+    // human, and saving a copy read before that wait would drop anything registered in the
+    // meantime.
+    let mut store = registry::load();
+    registry::record_regeneration(
+        &mut store,
+        &answers.dir.to_string_lossy(),
+        Some(credentials.server.clone()),
+        Some(credentials.identifier.clone()),
+        now_rfc3339(),
+    );
+    let _ = registry::save(&store);
 
     on(CreateEvent::Done {
         path: answers.dir.to_string_lossy().to_string(),

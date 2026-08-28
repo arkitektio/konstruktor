@@ -10,106 +10,152 @@
 @custom-variant isdropping (&[data-isdropping="true"]);
 @custom-variant can-drop (&[data-can-drop="true"]);
 
+/* ══════════════════════════════════════════════════════════
+   Brand tokens — the same system Kontrol runs on.
+
+   Konstruktor and Kontrol are two halves of one product: you create a hub in
+   this app and then administer it in that one. The palette below mirrors
+   `kontrol/src/index.css` token for token so the handover does not look like a
+   handover — same hue, same tinted neutrals, same derivation. The *values* are
+   shared; the stored preference is not, and cannot be: the two run on different
+   origins, and Kontrol keeps its own per-membership colour on the server.
+
+   Chroma goes through `--brand-chroma-user` rather than being set directly.
+   `.dark` lives on <html>, so an inline `--brand-chroma` written by the picker
+   would outrank it and dark mode would lose its damping; setting the *-user knob
+   instead lets each theme keep deriving its own chroma from the picked value.
+   Leave it unset for the stock palette. See `src/lib/brand.ts`.
+   ══════════════════════════════════════════════════════════ */
+
 :root {
-  /* --- MASTER THEME CONTROLS --- */
-  --brand-hue: 267.256;
-  --brand-chroma: 0.20962;
-
-  /* Base Neutrals */
-  --background: oklch(1 0 0);
-  --backgroundpaired: oklch(26.448% 0.005 var(--brand-hue));
-  --foreground: oklch(0.145 0.005 var(--brand-hue));
-
-  /* Surfaces */
-  --card: var(--background);
-  --card-foreground: var(--foreground);
-  --popover: var(--background);
-  --popover-foreground: var(--foreground);
-
-  /* Primary Colors */
-  --primary: oklch(31.185% var(--brand-chroma) var(--brand-hue));
-  --primary-similar: oklch(from var(--primary) calc(l + 0.46) calc(c - 0.09) h);
-  --primary-foreground: oklch(0.98 0.02 var(--brand-hue));
-
-  /* Secondary & Accents */
-  --secondary: oklch(0.967 0.005 var(--brand-hue));
-  --secondary-foreground: oklch(0.21 0.006 var(--brand-hue));
-  --muted: oklch(0.97 0.002 var(--brand-hue));
-  --muted-foreground: oklch(0.556 0.01 var(--brand-hue));
-  --accent: oklch(0.97 0.01 var(--brand-hue));
-  --accent-foreground: oklch(0.205 0.01 var(--brand-hue));
-
-  /* Interactive & Status */
-  --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.922 0.005 var(--brand-hue));
-  --input: oklch(0.922 0.005 var(--brand-hue));
-  --ring: oklch(from var(--primary) 0.708 calc(c * 0.5) h);
-
-  /* Charts */
-  --chart-1: oklch(0.85 0.13 calc(var(--brand-hue) - 100));
-  --chart-2: oklch(0.77 0.15 calc(var(--brand-hue) - 104));
-  --chart-3: oklch(0.7 0.15 calc(var(--brand-hue) - 105));
-  --chart-4: oklch(0.6 0.13 calc(var(--brand-hue) - 104));
-  --chart-5: oklch(0.51 0.1 calc(var(--brand-hue) - 101));
-
   --radius: 0.625rem;
 
-  /* Sidebar */
-  --sidebar: oklch(0.985 0.002 var(--brand-hue));
-  --sidebar-foreground: var(--foreground);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: var(--accent);
-  --sidebar-accent-foreground: var(--accent-foreground);
-  --sidebar-border: var(--border);
-  --sidebar-ring: var(--ring);
+  /* Arkitekt brand hue. The pre-paint script in index.html and the picker in
+     Settings both write `--brand-hue` on <html>, which re-tints everything. */
+  --brand-hue: 267.256;
+  --brand-chroma: var(--brand-chroma-user, 0.19);
+
+  /* Neutrals: light with a faint brand tint. Not pure white — a flat #fff next
+     to Kontrol's tinted surfaces reads as a different application. */
+  --background: oklch(0.97 0.004 var(--brand-hue));
+  --foreground: oklch(0.21 0.01 var(--brand-hue));
+  --card: oklch(0.96 0.005 var(--brand-hue));
+  --card-foreground: oklch(0.21 0.01 var(--brand-hue));
+  --popover: oklch(0.985 0.004 var(--brand-hue));
+  --popover-foreground: oklch(0.28 0.01 var(--brand-hue));
+  --secondary: oklch(0.95 0.006 var(--brand-hue));
+  --secondary-foreground: oklch(0.25 0.01 var(--brand-hue));
+  --muted: oklch(0.97 0.004 var(--brand-hue));
+  --muted-foreground: oklch(0.55 0.02 var(--brand-hue));
+  --accent: oklch(0.87 0.01 var(--brand-hue) / 0.5);
+  --accent-foreground: oklch(0.25 0.01 var(--brand-hue));
+  --border: oklch(0.87 0.008 var(--brand-hue) / 0.5);
+  --input: oklch(0.87 0.008 var(--brand-hue) / 0.5);
+
+  /* The far corner of the window's radial wash. Konstruktor's own — Kontrol's
+     pages are flat — but derived from the same tinted scale.
+
+     It has to stay on the same side of `--card` as `--background` is, or the
+     cards flip polarity diagonally across the window: light mode seats a card
+     slightly *below* its surface (0.96 under 0.97), so a corner darker than 0.96
+     would make the same card read as raised down there and recessed up here.
+     Hence lighter toward the corner in light mode, darker in dark. */
+  --backgroundpaired: oklch(0.99 0.003 var(--brand-hue));
+
+  /* Brand accents. */
+  --primary: oklch(0.48 var(--brand-chroma) var(--brand-hue));
+  --primary-foreground: oklch(0.98 0.01 var(--brand-hue));
+  --ring: oklch(0.55 calc(var(--brand-chroma) * 0.6) var(--brand-hue));
+
+  /* Status stays categorical: red is danger, amber is waiting, green is fine,
+     whatever hue the brand is set to. Tokens rather than raw `amber-500` so
+     every badge, dot and rail step in the app tunes from one place — and so a
+     status colour cannot quietly drift from theme to theme. */
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.98 0.01 27.325);
+  --warning: oklch(0.72 0.16 75);
+  --warning-foreground: oklch(0.25 0.06 75);
+  --success: oklch(0.62 0.15 150);
+  --success-foreground: oklch(0.98 0.02 150);
+
+  /* Data charts keep their categorical hues. */
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+
+  /* Sidebar mirrors the tinted neutrals + brand primary. */
+  --sidebar: oklch(0.985 0.004 var(--brand-hue));
+  --sidebar-foreground: oklch(0.21 0.01 var(--brand-hue));
+  --sidebar-primary: oklch(0.48 var(--brand-chroma) var(--brand-hue));
+  --sidebar-primary-foreground: oklch(0.98 0.01 var(--brand-hue));
+  --sidebar-accent: oklch(0.87 0.01 var(--brand-hue) / 0.5);
+  --sidebar-accent-foreground: oklch(0.25 0.01 var(--brand-hue));
+  --sidebar-border: oklch(0.87 0.008 var(--brand-hue) / 0.5);
+  --sidebar-ring: oklch(0.55 calc(var(--brand-chroma) * 0.6) var(--brand-hue));
+
+  /* Brand ramp — the three faces of the logo cube. */
+  --brand-logo-light: oklch(0.6 calc(var(--brand-chroma) * 0.9) var(--brand-hue));
+  --brand-logo-mid: oklch(0.52 var(--brand-chroma) var(--brand-hue));
+  --brand-logo-dark: oklch(0.46 var(--brand-chroma) var(--brand-hue));
 }
 
 .dark {
-  /* --- MASTER THEME CONTROLS --- */
-  --brand-hue: 165.057;
-  --brand-chroma: 0.14384;
+  /* Same hue as light — the brand does not change colour when the lights go
+     out. Only the chroma is damped on dark surfaces. The 0.84 factor damps a
+     picked chroma by the same ratio as the stock one. */
+  --brand-chroma: calc(var(--brand-chroma-user, 0.19) * 0.84);
 
-  --background: oklch(0% 0 0);
-  --backgroundpaired: oklch(34.846% 0.005 var(--brand-hue));
-  --foreground: oklch(0.985 0.005 var(--brand-hue));
+  --background: oklch(0.16 0.008 var(--brand-hue));
+  --foreground: oklch(0.94 0.005 var(--brand-hue));
+  --card: oklch(0.19 0.008 var(--brand-hue));
+  --card-foreground: oklch(0.98 0.005 var(--brand-hue));
+  --popover: oklch(0.2 0.008 var(--brand-hue));
+  --popover-foreground: oklch(0.9 0.005 var(--brand-hue));
+  --secondary: oklch(0.22 0.008 var(--brand-hue));
+  --secondary-foreground: oklch(0.94 0.005 var(--brand-hue));
+  --muted: oklch(0.22 0.008 var(--brand-hue));
+  --muted-foreground: oklch(0.71 0.01 var(--brand-hue) / 0.85);
+  --accent: oklch(0.45 0.01 var(--brand-hue) / 0.3);
+  --accent-foreground: oklch(0.92 0.005 var(--brand-hue));
+  --border: oklch(0.55 0.01 var(--brand-hue) / 0.2);
+  --input: oklch(0.55 0.01 var(--brand-hue) / 0.2);
 
-  --card: oklch(0.205 0.01 var(--brand-hue));
-  --card-foreground: var(--foreground);
-  --popover: var(--card);
-  --popover-foreground: var(--foreground);
+  /* Dark seats the card *above* its surface (0.19 over 0.16), so the corner goes
+     the other way — see the light-mode note. */
+  --backgroundpaired: oklch(0.13 0.01 var(--brand-hue));
 
-  --primary: oklch(70.058% var(--brand-chroma) var(--brand-hue));
-  --primary-similar: oklch(from var(--primary) calc(l - 0.19) calc(c - 0.04) h);
-  --primary-foreground: oklch(0.15 0.02 var(--brand-hue));
-
-  --secondary: oklch(0.274 0.006 var(--brand-hue));
-  --secondary-foreground: var(--foreground);
-  --muted: oklch(0.269 0.005 var(--brand-hue));
-  --muted-foreground: oklch(0.708 0.01 var(--brand-hue));
-  --accent: oklch(0.371 0.01 var(--brand-hue));
-  --accent-foreground: var(--foreground);
+  --primary: oklch(0.7 var(--brand-chroma) var(--brand-hue));
+  --primary-foreground: oklch(0.16 0.02 var(--brand-hue));
+  --ring: oklch(0.6 calc(var(--brand-chroma) * 0.6) var(--brand-hue));
 
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(from var(--primary) 0.556 calc(c * 0.5) h);
+  --destructive-foreground: oklch(0.16 0.03 22.216);
+  --warning: oklch(0.79 0.15 78);
+  --warning-foreground: oklch(0.18 0.05 78);
+  --success: oklch(0.74 0.16 152);
+  --success-foreground: oklch(0.17 0.04 152);
 
-  /* Charts */
-  --chart-1: oklch(0.85 0.13 var(--brand-hue));
-  --chart-2: oklch(0.77 0.15 calc(var(--brand-hue) - 2));
-  --chart-3: oklch(0.7 0.15 calc(var(--brand-hue) - 3));
-  --chart-4: oklch(0.6 0.13 calc(var(--brand-hue) - 2));
-  --chart-5: oklch(0.51 0.1 calc(var(--brand-hue) + 1));
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
 
-  --sidebar: var(--card);
-  --sidebar-foreground: var(--foreground);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: oklch(0.26 0.05 var(--brand-hue));
-  --sidebar-accent: var(--muted);
-  --sidebar-accent-foreground: var(--foreground);
-  --sidebar-border: var(--border);
-  --sidebar-ring: var(--ring);
+  --sidebar: oklch(0.19 0.008 var(--brand-hue));
+  --sidebar-foreground: oklch(0.94 0.005 var(--brand-hue));
+  --sidebar-primary: oklch(0.7 var(--brand-chroma) var(--brand-hue));
+  --sidebar-primary-foreground: oklch(0.16 0.02 var(--brand-hue));
+  --sidebar-accent: oklch(0.45 0.01 var(--brand-hue) / 0.3);
+  --sidebar-accent-foreground: oklch(0.92 0.005 var(--brand-hue));
+  --sidebar-border: oklch(0.55 0.01 var(--brand-hue) / 0.2);
+  --sidebar-ring: oklch(0.6 calc(var(--brand-chroma) * 0.6) var(--brand-hue));
+
+  /* Brand ramp — slightly brighter so the mark reads on dark surfaces. */
+  --brand-logo-light: oklch(0.72 calc(var(--brand-chroma) * 0.9) var(--brand-hue));
+  --brand-logo-mid: oklch(0.64 var(--brand-chroma) var(--brand-hue));
+  --brand-logo-dark: oklch(0.56 var(--brand-chroma) var(--brand-hue));
 }
 
 @theme inline {
@@ -131,6 +177,11 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -146,6 +197,9 @@
   --color-foreground: var(--foreground);
   --color-background: var(--background);
   --color-backgroundpaired: var(--backgroundpaired);
+  --color-brand-logo-light: var(--brand-logo-light);
+  --color-brand-logo-mid: var(--brand-logo-mid);
+  --color-brand-logo-dark: var(--brand-logo-dark);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -180,251 +234,4 @@
 .smartdraggable {
   -webkit-user-drag: none;
   user-select: none;
-}
-
-/* ══════════════════════════════════════════════════════════
-   Theme: Abyss Overwrite — shadcn/ui Card Aesthetic
-   ══════════════════════════════════════════════════════════ */
-
-/* Force all structural wrappers to be transparent to remove the "generic background" */
-.dockview-theme-abyss,
-.dockview-theme-abyss .dv-dockview,
-.dockview-theme-abyss .dv-split-view-container,
-.dockview-theme-abyss .dv-view-container {
-  background-color: transparent !important;
-}
-
-.dockview-theme-abyss {
-  --dv-paneview-active-outline-color: transparent !important; /* Changed from white to prevent double borders */
-  --dv-separator-border: transparent !important; /* Keep transparent so sash does the work */
-
-  --dv-tabs-and-actions-container-font-size: 13px;
-  --dv-tabs-and-actions-container-height: 44px;
-  --dv-drag-over-background-color: color-mix(in srgb, var(--primary) 8%, transparent);
-  --dv-drag-over-border-color: color-mix(in srgb, var(--primary) 40%, transparent);
-  --dv-drag-over-border: 2px dashed color-mix(in srgb, var(--primary) 35%, transparent);
-  --dv-tabs-container-scrollbar-color: color-mix(in srgb, var(--muted-foreground) 30%, transparent);
-  --dv-icon-hover-background-color: var(--muted);
-  --dv-floating-box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-  --dv-overlay-z-index: 999;
-  --dv-tab-font-size: 0.8rem;
-  --dv-border-radius: var(--radius);
-  --dv-tab-margin: 0px;
-
-  /* Nullify default sash colors so our custom ones take over completely */
-  --dv-sash-color: transparent;
-  --dv-active-sash-color: transparent !important;
-  --dv-active-sash-transition-duration: 0.1s;
-  --dv-active-sash-transition-delay: 0.3s;
-
-  --dv-scrollbar-background-color: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
-
-  /* Core Card Colors */
-  --dv-group-view-background-color: var(--card);
-  --dv-tabs-and-actions-container-background-color: transparent;
-
-  /* Tab Backgrounds (Strictly Transparent) */
-  --dv-activegroup-visiblepanel-tab-background-color: transparent;
-  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
-  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
-  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
-
-  /* Text Colors */
-  --dv-activegroup-visiblepanel-tab-color: var(--foreground);
-  --dv-activegroup-hiddenpanel-tab-color: var(--muted-foreground);
-  --dv-inactivegroup-visiblepanel-tab-color: var(--muted-foreground);
-  --dv-inactivegroup-hiddenpanel-tab-color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
-
-  /* Borders */
-  --dv-tab-divider-color: transparent;
-  --dv-paneview-header-border-color: var(--border);
-
-  box-sizing: border-box;
-}
-
-/* Force inner React tab contents to inherit the state-driven color from Dockview */
-.dockview-theme-abyss .dv-tab .dv-react-part { color: inherit; }
-.dockview-theme-abyss .dv-view  { color: inherit; }
-.dockview-theme-abyss .dv-tab .dv-react-part * { color: inherit; }
-
-.dockview-theme-abyss .dv-active-group,
-.dockview-theme-abyss .dv-inactive-group {
-  border-color: transparent !important;
-  border-radius: var(--dv-border-radius) !important;
-}
-
-/* Strip padding */
-.dockview-theme-abyss .dv-tabs-and-actions-container .dv-tab {
-  padding: 0 !important;
-}
-
-/* Base Card Styles */
-/* Base Card Styles - Borderless & Floating */
-.dockview-theme-abyss .dv-groupview {
-  overflow: hidden;
-  border-radius: var(--dv-border-radius);
-  border: none !important; /* Kills the ugly outer boundary */
-  background-color: var(--card);
-  /* Slightly enhanced shadow to compensate for the missing border */
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05) !important;
-  outline: 1px solid transparent;
-  outline-offset: -1px; /* Keeps the outline inside the card so it doesn't clip */
-  transition: outline 0.2s ease, box-shadow 0.2s ease;
-}
-
-/* Active Card Focus State - Uses a subtle colored outline instead of a thick border */
-.dockview-theme-abyss .dv-groupview.dv-active-group {
-  border: none !important;
-}
-
-.dockview-theme-abyss .dv-groupview.dv-inactive-group {
-  opacity: 0.95;
-}
-
-/* Active Card Focus State */
-.dockview-theme-abyss .dv-groupview.dv-active-group {
-  border-color: color-mix(in srgb, var(--border) 80%, var(--primary)) !important;
-  border-radius: var(--dv-border-radius) !important;
-}
-.dockview-theme-abyss .dv-groupview.dv-inactive-group {
-  opacity: 0.95;
-}
-
-/* Header Separator Line */
-.dockview-theme-abyss .dv-groupview .dv-tabs-and-actions-container {
-  border-bottom: 0px solid var(--border) !important;
-  padding: 0 0px;
-  background-color: transparent !important;
-}
-
-/* Single Tabs Integration */
-.dockview-theme-abyss .dv-groupview .dv-tabs-and-actions-container.dv-single-tab {
-  border-bottom: none;
-}
-
-/* Active Tab Underline */
-.dockview-theme-abyss .dv-active-group .dv-tabs-container > .dv-active-tab {
-  box-shadow: inset 0 -2px 0 var(--primary);
-}
-.dockview-theme-abyss .dv-inactive-group .dv-tabs-container > .dv-active-tab {
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--border) 80%, transparent);
-}
-
-/* Tab Hover */
-.dockview-theme-abyss .dv-groupview .dv-tabs-and-actions-container .dv-tab:hover {
-  background-color: transparent !important;
-  color: var(--foreground);
-}
-
-/* Card Spacing - Creates the "Floating" effect */
-.dockview-theme-abyss .dv-view:has(> .dv-groupview) {
-  padding: 6px;
-  border-radius: 5px;
-}
-
-/* Utilities / Draggers */
-.dockview-theme-abyss .dv-drop-target-container .dv-drop-target-anchor.dv-drop-target-anchor-container-changed { opacity: 0; transition: none; }
-.dockview-theme-abyss .dv-resize-container:has(> .dv-groupview) { border-radius: var(--dv-border-radius); }
-.dockview-theme-abyss .dv-resize-container { border-radius: var(--dv-border-radius) !important; border: none; box-shadow: none; }
-.dockview-theme-abyss .dv-groupview .dv-content-container { background-color: transparent !important; }
-
-.dockview-theme-abyss .dv-default-tab-action,
-.dockview-theme-abyss .dv-void-container,
-.dockview-theme-abyss .dv-right-actions-container { display: none; }
-
-.dockview-theme-abyss .dv-drop-target-anchor { border-radius: calc(var(--dv-border-radius) / 4); }
-.dockview-theme-abyss .dv-drop-target-anchor.dv-drop-target-content { border-radius: var(--dv-border-radius); }
-.dockview-theme-abyss .dv-tabs-overflow-container,
-.dockview-theme-abyss .dv-tabs-overflow-dropdown-default { border-radius: 0.5rem; height: unset !important; }
-
-.dockview-theme-abyss .dv-tab { transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
-
-
-/* ══════════════════════════════════════════════════════════
-   TAB FONT, BACKGROUND & TEXT COLOR OVERRIDES
-   ══════════════════════════════════════════════════════════ */
-.dockview-theme-abyss .dv-tab {
-  border: transparent !important;
-  background-color: transparent !important;
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif !important;
-  font-weight: 500 !important;
-  font-size: 0.875rem !important;
-  transition: color 0.15s ease, box-shadow 0.15s ease;
-}
-
-/* Force active/inactive text colors */
-.dockview-theme-abyss .dv-tab.dv-active-tab {
-  color: var(--foreground) !important;
-  border: transparent !important;
-}
-.dockview-theme-abyss .dv-tab.dv-inactive-tab {
-  color: var(--muted-foreground) !important;
-  border: transparent !important;
-}
-
-/* Force all Dockview native dividers to be transparent so our sash draws the only line */
-.dockview-theme-abyss .dv-split-view-container.dv-separator-border > .dv-view-container > .dv-view:not(:first-child) {
-  border-color: transparent !important;
-}
-.dockview-theme-abyss .dv-split-view-container.dv-separator-border {
-  border-color: transparent !important;
-}
-
-/* Overpower Tailwind inside the React tab node so colors actually apply */
-.dockview-theme-abyss .dv-tab .dv-react-part,
-.dockview-theme-abyss .dv-tab .dv-react-part > div {
-  color: inherit !important;
-  background-color: transparent !important;
-}
-
-
-/* ══════════════════════════════════════════════════════════
-   RESIZE HANDLES (SASHES) — True shadcn/ui Style
-   ══════════════════════════════════════════════════════════ */
-
-/* Keep the actual invisible grab zone transparent */
-.dockview-theme-abyss .dv-sash {
-  background-color: transparent !important;
-  border: none !important;
-}
-
-/* 1. Vertical Splitters (Line goes up and down) */
-.dockview-theme-abyss .dv-horizontal > .dv-sash-container > .dv-sash::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 50%;
-  height: 100%;
-  width: 1px; /* Ultra-thin neutral line */
-  background-color: var(--border);
-  transform: translateX(-50%);
-  transition: background-color 0.2s ease, width 0.2s ease;
-  display: block !important;
-}
-
-/* 2. Horizontal Splitters (Line goes left and right) */
-.dockview-theme-abyss .dv-vertical > .dv-sash-container > .dv-sash::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: 100%;
-  height: 1px; /* Ultra-thin neutral line */
-  background-color: var(--border);
-  transform: translateY(-50%);
-  transition: background-color 0.2s ease, height 0.2s ease;
-  display: block !important;
-}
-
-/* Hover & Drag States: Glows slightly and gets 2px thicker */
-.dockview-theme-abyss .dv-horizontal > .dv-sash-container > .dv-sash:hover::after,
-.dockview-theme-abyss .dv-horizontal > .dv-sash-container > .dv-sash.dv-active-sash::after {
-  background-color: var(--primary) !important;
-  width: 2px !important;
-}
-
-.dockview-theme-abyss .dv-vertical > .dv-sash-container > .dv-sash:hover::after,
-.dockview-theme-abyss .dv-vertical > .dv-sash-container > .dv-sash.dv-active-sash::after {
-  background-color: var(--primary) !important;
-  height: 2px !important;
 }

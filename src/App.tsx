@@ -1,7 +1,6 @@
 import "./globals.css";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { CommunicationProvider } from "./communication/communication-provider";
-import { BindingsProvider } from "./interface/provider";
 import { DashboardScreen } from "./screens/Dashboard";
 import { Home } from "./screens/Home";
 import { LogScreen } from "./screens/LogScreen";
@@ -19,7 +18,6 @@ function App() {
 
   return (
     <CommunicationProvider>
-      <BindingsProvider>
         <AlerterProvider>
           <AlerterDialog />
           <TooltipProvider>
@@ -43,7 +41,6 @@ function App() {
             </SettingsProvider>
           </TooltipProvider>
         </AlerterProvider>
-      </BindingsProvider>
     </CommunicationProvider>
   );
 }

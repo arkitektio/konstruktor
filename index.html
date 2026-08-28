@@ -3,11 +3,63 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,300;0,400;0,500;0,700;0,900;1,100;1,300;1,400;1,500;1,700;1,900&display=swap" rel="stylesheet">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + TS</title>
+    <title>Konstruktor</title>
+    <script>
+      // Apply the theme and brand hue/chroma before first paint.
+      //
+      // Konstruktor's settings live in tauri-forage and arrive asynchronously, a few
+      // frames after the window opens — long enough to paint the stock violet palette
+      // and then swap it. Mirroring the values into localStorage lets this run first,
+      // the same trick Kontrol's index.html plays, under the same key names. The keys
+      // are local to this app: a webview on tauri://localhost shares no storage with a
+      // Kontrol served from a hub gateway. `settings-provider` remains the authority;
+      // this only avoids the flash.
+      (function () {
+        try {
+          // Brand hue.
+          var hueKey = "arkitekt-brand-hue";
+          var storedHue = localStorage.getItem(hueKey);
+          if (storedHue != null) {
+            var hue = parseFloat(storedHue);
+            if (isFinite(hue)) {
+              document.documentElement.style.setProperty("--brand-hue", String(hue));
+            }
+          }
+
+          // Brand chroma. Unlike hue there is no default written here: leaving
+          // `--brand-chroma-user` unset is what gives the stock palette, and each theme
+          // derives its own chroma from it (see globals.css). Setting `--brand-chroma`
+          // directly would outrank `.dark` and flatten it. The 0.3 ceiling mirrors
+          // MAX_BRAND_CHROMA in src/lib/brand.ts.
+          var chromaKey = "arkitekt-brand-chroma";
+          var storedChroma = localStorage.getItem(chromaKey);
+          if (storedChroma != null) {
+            var chroma = parseFloat(storedChroma);
+            if (isFinite(chroma)) {
+              chroma = Math.min(0.3, Math.max(0, chroma));
+              document.documentElement.style.setProperty(
+                "--brand-chroma-user",
+                String(chroma)
+              );
+            }
+          }
+
+          // Theme. "system" and a missing value both resolve against the OS setting
+          // here, rather than leaving the window unclassed until React mounts.
+          var themeKey = "konstruktor-theme";
+          var theme = localStorage.getItem(themeKey);
+          if (theme !== "dark" && theme !== "light") {
+            theme = window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          }
+          document.documentElement.classList.remove("light", "dark");
+          document.documentElement.classList.add(theme);
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {}
+      })();
+    </script>
   </head>
 
   <body>

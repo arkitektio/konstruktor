@@ -1,12 +1,22 @@
+/**
+ * The Arkitekt mark.
+ *
+ * The cube defaults to the brand ramp (`--brand-logo-*` in `globals.css`, the same
+ * tokens Kontrol's logo reads), so re-tinting the app re-tints the mark with it. The
+ * cube's own edge takes the lighter step of the ramp, which is what keeps it reading as
+ * a solid against the outer wireframe rather than a flat silhouette.
+ */
 export const Logo = ({
   strokeColor = "#000",
-  cubeColor = "#5CDECE",
+  cubeColor = "var(--brand-logo-mid)",
+  cubeEdgeColor = "var(--brand-logo-light)",
   aColor = "#000",
   width,
   height,
 }: {
   strokeColor?: string;
   cubeColor?: string;
+  cubeEdgeColor?: string;
   aColor?: string;
   width: number | string;
   height: number | string;
@@ -38,7 +48,7 @@ export const Logo = ({
             d="M96.569 54.702a10.001 10.001 0 0 1 9.407 0l35.842 19.103a10 10 0 0 1 5.296 8.825v36.863a10 10 0 0 1-5.296 8.825l-36.183 19.285a9.998 9.998 0 0 1-8.86.271l-35.5-16.218a10 10 0 0 1-5.845-9.096V82.63a10 10 0 0 1 5.296-8.825L96.57 54.702Z"
           />
           <path
-            stroke={cubeColor}
+            stroke={cubeEdgeColor}
             strokeWidth="8"
             d="m143.699 70.275-35.842-19.103a14 14 0 0 0-13.17 0L58.845 70.275A14 14 0 0 0 51.43 82.63v39.93a14 14 0 0 0 8.182 12.734l35.502 16.219a14 14 0 0 0 12.402-.38l36.183-19.285a14 14 0 0 0 7.415-12.355V82.63a14 14 0 0 0-7.415-12.355Z"
           />

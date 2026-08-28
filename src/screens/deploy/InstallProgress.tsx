@@ -20,10 +20,21 @@ import { ScrollArea } from "../../components/ui/scroll-area";
  * the one `create_hub` call now, so the code shows up here instead — and the whole
  * "authorize again" mechanism is gone.
  */
+export type StagedEvent = Extract<CreateEvent, { event: "staged" }>;
+export type WaitingEvent = Extract<CreateEvent, { event: "waiting" }>;
+
 export type CreateState = {
   running: boolean;
   /** The last event, which is what decides the heading. */
   event?: CreateEvent;
+  /**
+   * The device code, kept apart from `event`. It has to stay on screen for as long as
+   * somebody could still act on it, and the poll loop starts sending `waiting` within
+   * milliseconds of it — so reading it off the *last* event would show it to nobody.
+   */
+  staged?: StagedEvent;
+  /** The most recent poll, for the countdown next to the code. */
+  waiting?: WaitingEvent;
   logs: string[];
   error: string | null;
   done: boolean;
@@ -36,9 +47,37 @@ export const emptyCreateState: CreateState = {
   done: false,
 };
 
+/**
+ * Fold one event into the state. Shared, because the wizard and the re-authorize screen
+ * run the same flow and used to keep their own near-copies of this.
+ */
+export const reduceCreate = (previous: CreateState, event: CreateEvent): CreateState => ({
+  ...previous,
+  event,
+  staged:
+    event.event === "staged"
+      ? event
+      : // Accepted — nothing left for anybody to type in.
+        event.event === "granted"
+        ? undefined
+        : previous.staged,
+  waiting: event.event === "waiting" ? event : previous.waiting,
+  logs:
+    event.event === "log"
+      ? [...previous.logs, event.line]
+      : event.event === "writing"
+        ? [...previous.logs, `wrote ${event.file}`]
+        : event.event === "cloning"
+          ? [
+              ...previous.logs,
+              `cloning ${event.repo}${event.branch ? ` at ${event.branch}` : ""} into mounts/${event.service}`,
+            ]
+          : previous.logs,
+});
+
 const heading = (state: CreateState): string => {
   if (state.error) return "That did not work";
-  if (state.done) return "Your hub is ready";
+  if (state.done) return "Your hub is written";
 
   switch (state.event?.event) {
     case "checking-docker":
@@ -52,6 +91,8 @@ const heading = (state: CreateState): string => {
       return "Accepted";
     case "writing":
       return "Writing the deployment…";
+    case "cloning":
+      return "Checking the source out…";
     case "starting":
     case "log":
       return "Starting the stack…";
@@ -70,8 +111,7 @@ export const InstallProgress = ({
   onClose: () => void;
 }) => {
   const finished = state.done || state.error !== null;
-  const staged = state.event?.event === "staged" ? state.event : undefined;
-  const waiting = state.event?.event === "waiting" ? state.event : undefined;
+  const { staged, waiting } = state;
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && finished && onClose()}>
@@ -91,7 +131,7 @@ export const InstallProgress = ({
           {state.error
             ? "Nothing was written unless the step below says otherwise."
             : state.done
-              ? "The deployment is in your folder and registered here."
+              ? "The deployment is in your folder and registered here. Nothing is running yet — start it from the dashboard."
               : "Konstruktor is building, authorizing and writing your deployment."}
         </DialogDescription>
 

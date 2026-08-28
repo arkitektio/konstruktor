@@ -36,6 +36,14 @@ export type HubForm = {
   /** Only for `meshMode: "manual"`; the coordination server supplies the other one. */
   meshAuthKey: string;
   meshCoordUrl: string;
+  /**
+   * Run the services from a source checkout instead of the published images. Offered
+   * only when git is on the machine — the Advanced step disables it otherwise, and
+   * clears it if a later probe finds git gone.
+   */
+  devHub: boolean;
+  /** The branch to check out, for a dev hub. Empty means each repository's default. */
+  devBranch: string;
 };
 
 /** A bare host means https; anything with a scheme is taken as given. */

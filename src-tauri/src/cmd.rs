@@ -3,7 +3,9 @@ use std::fs::canonicalize;
 use std::sync::Mutex;
 
 use konstruktor_core::docker::{self, Container, DockerProbe};
-use konstruktor_core::hosts::{self, Binding, HostCandidate};
+use konstruktor_core::git::{self, Checkout, GitProbe};
+use konstruktor_core::connect::reachability;
+use konstruktor_core::hosts;
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use tauri_plugin_fs::FsExt;
@@ -57,6 +59,14 @@ pub async fn probe_docker() -> DockerProbe {
     docker::probe().await
 }
 
+/// Git, kept apart from the Docker probe on purpose: the two have different verdicts and
+/// different consequences. Docker missing stops a deployment; git missing only takes the
+/// dev-hub option away.
+#[command]
+pub async fn probe_git() -> GitProbe {
+    git::probe()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContainerQuery {
     containers: Vec<Container>,
@@ -69,27 +79,68 @@ pub async fn list_deployment_containers(path: String) -> Result<ContainerQuery, 
         .map(|containers| ContainerQuery { containers })
 }
 
+/// What the local daemon holds for every image this deployment's stack declares.
+///
+/// Paired with the running containers' `image_id`, this is how the dashboard tells the
+/// three states apart: never pulled, pulled and running, and pulled but still waiting for
+/// a restart. It answers nothing about the registry — see `docker::image_states`.
+#[command]
+pub async fn deployment_images(path: String) -> Result<Vec<docker::ImageState>, String> {
+    let profile = profile::read_profile(&PathBuf::from(path)).map_err(|e| e.to_string())?;
+    docker::image_states(&profile.config.stack_images()).await
+}
+
 #[command]
 pub async fn restart_container(container_id: String) -> Result<(), String> {
     docker::restart_container(&container_id).await
 }
 
-#[command]
-pub async fn list_network_interfaces(v4: bool) -> Result<Vec<Binding>, String> {
-    // IPv4 only, as it always has been; the flag is kept so the frontend call site does
-    // not have to change while the port is in flight.
-    let _ = v4;
-    hosts::bindings().await
-}
-
-/// The addresses worth advertising, already classified and ordered.
+/// The addresses worth advertising, classified and ordered, with the reach presets
+/// already resolved against them.
 ///
 /// The classification used to live in `src/connect/hosts.ts`, applied to the raw list
 /// this command's predecessor returned. It sits next to the enumeration now, so the CLI
-/// gets the same answer without reimplementing the rules.
+/// gets the same answer without reimplementing the rules — and the presets ship with it
+/// for the same reason, so the wizard and `--reach` cannot drift apart.
 #[command]
-pub async fn host_candidates() -> Result<Vec<HostCandidate>, String> {
-    Ok(hosts::host_candidates(&hosts::bindings().await?))
+pub async fn host_candidates(
+    mesh_domain: Option<String>,
+    mesh_hostname: Option<String>,
+) -> Result<hosts::HostDiscovery, String> {
+    // Whatever the caller could find out about this hub's tailnet. Without it every
+    // tailnet address on the machine is somebody else's — which, before the hub has
+    // joined anything, is exactly true.
+    let mesh = hosts::KnownMesh {
+        domain: mesh_domain.filter(|d| !d.trim().is_empty()),
+        hostname: mesh_hostname.filter(|h| !h.trim().is_empty()),
+    };
+    let candidates = hosts::host_candidates(&hosts::bindings().await?, &mesh);
+    let presets = hosts::reach_presets(&candidates);
+    Ok(hosts::HostDiscovery { candidates, presets })
+}
+
+/// What address the internet sees this machine as.
+///
+/// The endpoint comes from the frontend's settings, and there is no default: this is the
+/// only request konstruktor makes to a host the user did not name, so it happens only
+/// when they have said which one.
+#[command]
+pub async fn egress_identity(endpoint: String) -> Result<String, String> {
+    reachability::egress_identity(&endpoint)
+        .await
+        .map(|identity| identity.address)
+        .map_err(|e| e.to_string())
+}
+
+/// Asks a configured prober to connect back to one advertised address.
+#[command]
+pub async fn probe_reachability(
+    prober: String,
+    host: String,
+    port: u16,
+    ssl: bool,
+) -> Result<reachability::ProbeResult, String> {
+    Ok(reachability::probe(&prober, &reachability::probe_url(&host, port, ssl)).await)
 }
 
 /// Resolve a path the user picked to its canonical form, so the registry and the compose
@@ -216,6 +267,19 @@ pub async fn discover_server(server: String) -> Result<WellKnownFakts, String> {
     wellknown::discover(&server).await.map_err(|e| e.to_string())
 }
 
+/// The tailnet a coordination server runs, if it declares one.
+///
+/// Needed to tell an address on *this hub's* mesh from one on whatever other tailnet the
+/// machine is already on. Absent — which is every server today — the address step says
+/// "other tailscale" rather than guessing, so this failing is not an error.
+#[command]
+pub async fn mesh_domain(server: String) -> Result<Option<String>, String> {
+    Ok(wellknown::discover(&server)
+        .await
+        .ok()
+        .and_then(|fakts| fakts.mesh_domain()))
+}
+
 #[command]
 pub fn suggest_folder() -> Option<String> {
     create::suggest_folder("MyHub").map(|p| p.to_string_lossy().to_string())
@@ -262,6 +326,30 @@ pub struct ServiceView {
     host: String,
     /// Where a browser reaches it through the gateway.
     url: String,
+    /// The image the profile pins this service to, e.g. `jhnnsrs/rekuest:next`.
+    image: Option<String>,
+    /// That image's tag on its own — the service's release channel.
+    tag: Option<String>,
+}
+
+/// The release channel a hub follows, read off the images its services are pinned to.
+///
+/// There is no channel field in the profile: the channel *is* the set of tags, and those
+/// are per-service. A hub whose services carry different tags has no single channel, and
+/// saying so is the point of `tags` — the alternative is a UI that picks one and lies.
+#[derive(Debug, Serialize)]
+pub struct ChannelView {
+    /// The one tag every service shares, when they do share one.
+    tag: Option<String>,
+    /// Every distinct tag in play, sorted. More than one means the hub is mixed.
+    tags: Vec<String>,
+}
+
+/// The tag out of an image reference, tolerating a registry host with a port
+/// (`registry:5000/image:tag`) by only looking after the last slash.
+fn image_tag(image: &str) -> Option<String> {
+    let last = image.rsplit('/').next().unwrap_or(image);
+    last.rsplit_once(':').map(|(_, tag)| tag.to_string())
 }
 
 /// Everything the dashboard reads out of a deployment folder, derived once here so the
@@ -278,6 +366,16 @@ pub struct HubStatus {
     admin_password: String,
     services: Vec<ServiceView>,
     mesh_hostname: Option<String>,
+    /// The port an alias advertises, as the manifest computes it — so a reachability
+    /// probe aims at the same socket the coordination server would hand out.
+    advertised_port: u16,
+    /// What this hub last told the coordination server it was reachable at.
+    ///
+    /// The authorize screen seeds from this rather than from a fresh scan: it exists to
+    /// *add* the tailnet address, and a scan of this machine will never find one.
+    advertised_hosts: Vec<konstruktor_core::connect::manifest::AdvertisedHost>,
+    /// The release channel the enabled services are pinned to.
+    channel: ChannelView,
 }
 
 #[command]
@@ -312,9 +410,19 @@ pub fn hub_status(path: String) -> Result<HubStatus, String> {
                 name: meta.map(|m| m.name.clone()).unwrap_or_else(|| id.as_str().into()),
                 host: block.host.clone(),
                 url: format!("{gateway_url}/{}", block.host),
+                image: block.image.clone(),
+                tag: block.image.as_deref().and_then(image_tag),
             }
         })
-        .collect();
+        .collect::<Vec<ServiceView>>();
+
+    let mut tags: Vec<String> = services.iter().filter_map(|s| s.tag.clone()).collect();
+    tags.sort();
+    tags.dedup();
+    let channel = ChannelView {
+        tag: if tags.len() == 1 { tags.first().cloned() } else { None },
+        tags,
+    };
 
     Ok(HubStatus {
         authorized: creds.is_some(),
@@ -324,13 +432,67 @@ pub fn hub_status(path: String) -> Result<HubStatus, String> {
         admin_user: config.global_admin.clone(),
         admin_password: config.global_admin_password.clone(),
         services,
+        channel,
         mesh_hostname: config
             .mesh
             .as_ref()
             .filter(|m| m.enabled)
             .map(|m| m.hostname.clone()),
+        advertised_port: port,
+        advertised_hosts: creds
+            .as_ref()
+            .map(|c| c.advertised_hosts.clone())
+            .unwrap_or_default(),
         profile,
     })
+}
+
+/// The source checkouts a dev hub keeps under `mounts/`.
+///
+/// An empty list is the answer for every ordinary hub, so the dashboard needs no separate
+/// "is this a dev hub" question — there is either something to switch branches in or
+/// there is not.
+#[command]
+pub fn deployment_checkouts(path: String) -> Result<Vec<Checkout>, String> {
+    let dir = PathBuf::from(path);
+    let profile = profile::read_profile(&dir).map_err(|e| e.to_string())?;
+    Ok(git::checkouts(&dir, &profile.config))
+}
+
+/// The branches one checkout could switch to. Fetches first, so it is current.
+#[command]
+pub async fn checkout_branches(path: String, service: String) -> Result<Vec<String>, String> {
+    let dir = PathBuf::from(path);
+    git::branches(&git::checkout_dir(&dir, &service))
+}
+
+/// Puts one checkout on another branch.
+///
+/// The container keeps running whatever it loaded until it is recreated — the caller is
+/// expected to say so, and the dashboard offers the restart next to this.
+#[command]
+pub async fn switch_checkout_branch(
+    path: String,
+    service: String,
+    branch: String,
+) -> Result<Checkout, String> {
+    let dir = PathBuf::from(path);
+    let at = git::checkout_dir(&dir, &service);
+    git::switch_branch(&service, &at, &branch).map_err(|e| e.to_string())?;
+
+    // The fresh state rather than a bare ok: the caller has to re-render the card, and
+    // reading it here saves a second round trip that could disagree with this one.
+    let profile = profile::read_profile(&dir).map_err(|e| e.to_string())?;
+    let repo = profile
+        .config
+        .enabled_services()
+        .into_iter()
+        .map(|id| profile.config.service(id))
+        .find(|s| s.host == service)
+        .map(|s| s.github_repo.clone())
+        .unwrap_or_default();
+
+    Ok(git::read_checkout(&service, &repo, &at))
 }
 
 /// The services a picker can offer, with their display copy.
@@ -393,6 +555,7 @@ pub async fn reauthorize_hub(
     identifier: String,
     description: Option<String>,
     hosts: Vec<konstruktor_core::connect::manifest::AdvertisedHost>,
+    reachable_hosts: Vec<String>,
     request_auth_key: bool,
     on_event: Channel<CreateEvent>,
 ) -> Result<(), String> {
@@ -405,6 +568,7 @@ pub async fn reauthorize_hub(
             identifier,
             description,
             hosts,
+            reachable_hosts,
             request_auth_key,
         },
         &cancel,

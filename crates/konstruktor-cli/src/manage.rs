@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
-use konstruktor_core::{compose, create, credentials, docker, profile, registry};
+use konstruktor_core::{compose, create, credentials, docker, git, profile, registry};
 
 use crate::ui;
 
@@ -12,6 +12,23 @@ use crate::ui;
 pub struct Target {
     /// A path, or the name of a registered deployment.
     pub target: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CheckoutArgs {
+    /// The branch to switch to. Left out, the branches on offer are listed instead.
+    pub branch: Option<String>,
+    /// The deployment: a path, or the name of a registered one. Defaults to here.
+    // A flag rather than the second positional every other command uses. Two optional
+    // positionals of different kinds cannot be told apart — `konstruktor checkout .`
+    // would be a request for a branch named `.` — and the branch is what this command is
+    // for, so the branch is what gets the positional.
+    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    pub in_deployment: Option<String>,
+    /// Only this service. By default every checkout in the deployment is switched, which
+    /// is what a dev hub following one branch across the services wants.
+    #[arg(long)]
+    pub service: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -80,6 +97,7 @@ impl Target {
 
 pub async fn doctor() -> Result<()> {
     let probe = docker::probe().await;
+    let git = git::probe();
 
     ui::say("");
     let rows = vec![
@@ -103,12 +121,26 @@ pub async fn doctor() -> Result<()> {
                 "not answering".into()
             },
         ),
+        // Reported, never required: git is only needed for a dev hub, and a plain
+        // deployment runs published images without it. It must not decide the verdict.
+        (
+            "git".to_string(),
+            git.cli_version
+                .clone()
+                .unwrap_or_else(|| if git.cli { "installed".into() } else { "not found".into() }),
+        ),
     ];
     ui::table(&rows);
     ui::say("");
 
     if probe.is_ready() {
         ui::ok("Docker is ready.");
+        if !git.is_ready() {
+            ui::step(&ui::dim(
+                "git is not installed. Hubs do not need it — only a dev hub, which checks \
+                 the services' source out and mounts it into the containers, does.",
+            ));
+        }
         ui::say("");
         Ok(())
     } else {
@@ -117,6 +149,112 @@ pub async fn doctor() -> Result<()> {
             &probe
         ))))
     }
+}
+
+/// The dev hub's checkouts: what branch each is on, and how to move them.
+///
+/// One command rather than a `branch` and a `checkout`: without a branch it lists, with
+/// one it switches. The switch refuses over uncommitted work, and says so per service
+/// rather than stopping at the first — a partial answer here is worse than a full report.
+pub fn checkout(args: &CheckoutArgs) -> Result<()> {
+    let dir = Target {
+        target: args.in_deployment.clone(),
+    }
+    .resolve()?;
+    let profile = profile::read_profile(&dir)?;
+    let checkouts = git::checkouts(&dir, &profile.config);
+
+    if checkouts.is_empty() {
+        bail!(
+            "this deployment runs published images, so there is nothing to check out. \
+             A dev hub is created with `konstruktor hub create --dev`."
+        )
+    }
+
+    // The mistake the flag above exists to prevent, caught rather than acted on: without
+    // this, `konstruktor checkout .` would try to put every service on a branch named `.`
+    // and report five identical failures instead of the one useful sentence.
+    if let Some(given) = args.branch.as_deref().map(str::trim) {
+        if given == "." || given == ".." || given.contains('/') && Path::new(given).exists() {
+            bail!("`{given}` looks like a folder. Name the deployment with `--in {given}`.")
+        }
+    }
+
+    let Some(branch) = args.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) else {
+        ui::say("");
+        for checkout in &checkouts {
+            let state = match (&checkout.error, &checkout.branch) {
+                (Some(error), _) => error.clone(),
+                (None, Some(branch)) => {
+                    format!("{branch}{}", if checkout.dirty { " (uncommitted changes)" } else { "" })
+                }
+                (None, None) => "detached HEAD".to_string(),
+            };
+            ui::say(&format!("  {}", ui::bold(&checkout.service)));
+            ui::say(&format!("    {}", ui::dim(&state)));
+
+            // Nothing to offer for a checkout that could not be read, and asking git
+            // anyway only prints a second, worse phrasing of the same problem.
+            if checkout.error.is_none() {
+                match git::branches(Path::new(&checkout.path)) {
+                    Ok(names) => ui::say(&format!("    {}", ui::dim(&names.join("  ")))),
+                    Err(error) => ui::say(&format!("    {}", ui::dim(&error))),
+                }
+            }
+        }
+        ui::say("");
+        return Ok(());
+    };
+
+    let wanted: Vec<_> = match &args.service {
+        Some(name) => {
+            let found: Vec<_> = checkouts.iter().filter(|c| &c.service == name).collect();
+            if found.is_empty() {
+                bail!("this deployment has no checkout for `{name}`")
+            }
+            found
+        }
+        None => checkouts.iter().collect(),
+    };
+
+    ui::say("");
+    let mut moved: Vec<&str> = Vec::new();
+    let mut failed: Vec<&str> = Vec::new();
+    for checkout in wanted {
+        match git::switch_branch(&checkout.service, Path::new(&checkout.path), branch) {
+            Ok(()) => {
+                moved.push(&checkout.service);
+                ui::ok(&format!("{} is on {branch}", checkout.service));
+            }
+            Err(error) => {
+                failed.push(&checkout.service);
+                ui::warn(&format!("{}: {error}", checkout.service));
+            }
+        }
+    }
+    ui::say("");
+
+    if !failed.is_empty() {
+        // Saying only what failed would understate it: the rest of the hub *did* move,
+        // so the deployment is now split across two branches. That is a state worth
+        // spelling out, because the way out of it is to name the services explicitly.
+        if moved.is_empty() {
+            bail!("nothing moved; {} was left where it was", failed.join(", "))
+        }
+        bail!(
+            "this hub is now split: {} moved to {branch}, {} did not. Fix the ones that \
+             refused, or put the others back with `--service`.",
+            moved.join(", "),
+            failed.join(", "),
+        )
+    }
+    // The containers hold whatever they loaded at start; the code on disk is not what is
+    // running until they are recreated.
+    ui::step(&ui::dim(
+        "Recreate the stack with `konstruktor up` for the containers to run this branch.",
+    ));
+    ui::say("");
+    Ok(())
 }
 
 pub fn list() -> Result<()> {

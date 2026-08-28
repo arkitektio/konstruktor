@@ -1,8 +1,8 @@
 import React, { useContext } from "react";
 
-import type { DockerProbe } from "../api";
+import type { DockerProbe, GitProbe } from "../api";
 
-export type { DockerProbe };
+export type { DockerProbe, GitProbe };
 
 /**
  * Docker, reduced to the one thing the UI has to decide: what to tell the user next.
@@ -29,6 +29,12 @@ export interface CommunicationContextType {
   checking: boolean;
   /** Run the probe again — what the "Check again" button calls. */
   recheck: () => Promise<DockerProbe>;
+  /**
+   * Git, which is optional. Kept beside the Docker probe rather than folded into it:
+   * `DockerState` is a verdict about whether a deployment can be created at all, and git
+   * only decides whether the dev-hub option is offered. `null` while the first probe runs.
+   */
+  git: GitProbe | null;
 }
 
 export const CommunicationContext =
@@ -37,6 +43,7 @@ export const CommunicationContext =
     state: "checking",
     checking: true,
     recheck: null as unknown as any,
+    git: null,
   });
 
 export const useCommunication = () => useContext(CommunicationContext);

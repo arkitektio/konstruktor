@@ -24,6 +24,38 @@ pub struct WellKnownFakts {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// Keys a coordination server might declare its tailnet under.
+///
+/// More than one because nothing is settled yet — see [`WellKnownFakts::mesh_domain`].
+const MESH_DOMAIN_KEYS: [&str; 4] = [
+    "mesh_domain",
+    "tailnet_domain",
+    "ionscale_domain",
+    "magic_dns_suffix",
+];
+
+impl WellKnownFakts {
+    /// The MagicDNS suffix of the tailnet this server runs, when it says.
+    ///
+    /// This is the only reliable way to tell a tailnet address belonging to *this hub's*
+    /// mesh from one belonging to whatever other tailnet the machine is already on — a
+    /// laptop with a personal tailscale is the common case, and its `100.x` address is
+    /// reachable by nobody the coordination server knows about. An address cannot be
+    /// asked which tailnet it is on; only the server that runs the tailnet knows.
+    ///
+    /// No server declares it today, so this reads from `extra` and tries the plausible
+    /// spellings rather than pinning one. Absent, every tailnet address is treated as
+    /// somebody else's, which is the safe way round: an unattributed address is offered
+    /// and labelled, never advertised to the organization as though it were on the mesh.
+    pub fn mesh_domain(&self) -> Option<String> {
+        MESH_DOMAIN_KEYS
+            .into_iter()
+            .find_map(|key| self.extra.get(key).and_then(|value| value.as_str()))
+            .map(|domain| domain.trim().trim_start_matches('.').to_string())
+            .filter(|domain| !domain.is_empty())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinationServerError {
     #[error("Could not reach {server}: {source}")]
@@ -102,6 +134,28 @@ pub async fn discover(server: &str) -> Result<WellKnownFakts, CoordinationServer
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn fakts(json: &str) -> WellKnownFakts {
+        serde_json::from_str(json).expect("parses")
+    }
+
+    #[test]
+    fn reads_the_tailnet_a_server_declares() {
+        assert_eq!(
+            fakts(r#"{"mesh_domain":"acme-org.ts.net"}"#).mesh_domain().as_deref(),
+            Some("acme-org.ts.net")
+        );
+        // Nothing is settled server-side yet, so the plausible spellings all work.
+        assert_eq!(
+            fakts(r#"{"magic_dns_suffix":".acme-org.ts.net"}"#).mesh_domain().as_deref(),
+            Some("acme-org.ts.net")
+        );
+        // A server that says nothing leaves every tailnet address unattributed.
+        assert_eq!(fakts(r#"{"issuer":"https://go.arkitekt.live"}"#).mesh_domain(), None);
+        assert_eq!(fakts(r#"{"mesh_domain":"  "}"#).mesh_domain(), None);
+    }
+
     use super::*;
 
     #[test]

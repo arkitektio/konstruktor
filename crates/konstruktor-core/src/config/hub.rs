@@ -119,6 +119,13 @@ pub struct GatewayBlock {
     pub ssl_cert: Option<String>,
 }
 
+/// The key `generate::compose` writes the database under in `services:`.
+///
+/// Deliberately not `db.host` — that is `daten`, the hostname the services connect to,
+/// while the compose service itself has always been called `db`. Anything joining images
+/// to containers has to use this one.
+pub const DB_COMPOSE_SERVICE: &str = "db";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbBlock {
     pub enabled: bool,
@@ -222,6 +229,43 @@ impl HubConfig {
             .filter(|id| self.service(*id).enabled)
             .collect()
     }
+
+    /// Every image the generated stack declares, keyed by the **compose service** that
+    /// runs it — the arkitekt services first, then the infrastructure.
+    ///
+    /// The key has to be the name compose writes into `services:`, because that is what
+    /// comes back on a container as `com.docker.compose.service` and what the dashboard
+    /// joins on. That is *not* always the block's `host`: the database block's host is
+    /// `daten`, while `generate::compose` writes it under the literal key `db`. The pairs
+    /// below mirror `build_compose` key for key, and `stack_images_match_the_compose_file`
+    /// in `tests/generate.rs` fails if the two ever drift apart.
+    pub fn stack_images(&self) -> Vec<(String, String)> {
+        let mut images: Vec<(String, String)> = self
+            .enabled_services()
+            .into_iter()
+            .filter_map(|id| {
+                let block = self.service(id);
+                block
+                    .image
+                    .as_ref()
+                    .map(|image| (block.host.clone(), image.clone()))
+            })
+            .collect();
+
+        images.push((DB_COMPOSE_SERVICE.to_string(), self.db.image.clone()));
+        images.push((self.local_redis.host.clone(), self.local_redis.image.clone()));
+        images.push((self.minio.host.clone(), self.minio.image.clone()));
+        images.push((
+            self.minio.init_container_host.clone(),
+            self.minio.init_container_image.clone(),
+        ));
+        images.push((self.gateway.host.clone(), self.gateway.image.clone()));
+
+        if let Some(mesh) = self.mesh.as_ref().filter(|m| m.enabled) {
+            images.push((mesh.host.clone(), mesh.image.clone()));
+        }
+        images
+    }
 }
 
 /// Everything a service block needs beyond the shared defaults.
@@ -286,7 +330,7 @@ fn seed(id: ServiceId) -> ServiceSeed {
     }
 }
 
-fn build_service_block(id: ServiceId) -> ServiceBlock {
+fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
     let seed = seed(id);
     let name = id.as_str();
 
@@ -305,7 +349,7 @@ fn build_service_block(id: ServiceId) -> ServiceBlock {
         image: seed.image.map(str::to_string),
         internal_port: 80,
         media_bucket: LocalBucket::new(&format!("{name}media")),
-        mount_github: false,
+        mount_github,
         path_config: Kinded::local(),
         redis_config: Kinded::local(),
         secret_key: generate_django_secret_key(),
@@ -371,6 +415,12 @@ pub struct HubConfigOptions {
     pub mesh: Option<MeshOptions>,
     /// Injected by the tests; generated fresh otherwise.
     pub provenance_key_pair: Option<KeyPair>,
+    /// A *dev hub*: every service's source is checked out on this machine and mounted
+    /// over the image's workspace, so `mount_github` is set on each service block and
+    /// the generated compose file carries the bind mounts. The branch is not part of the
+    /// config — upstream's model has no key for it, and it is only needed at the moment
+    /// the checkout happens.
+    pub dev_hub: bool,
 }
 
 impl Default for HubConfigOptions {
@@ -391,6 +441,7 @@ impl Default for HubConfigOptions {
             csrf_trusted_origins: None,
             mesh: None,
             provenance_key_pair: None,
+            dev_hub: false,
         }
     }
 }
@@ -412,7 +463,7 @@ fn blank(value: Option<&str>) -> Option<String> {
 pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     let mut blocks: Vec<(ServiceId, ServiceBlock)> = SERVICE_IDS
         .into_iter()
-        .map(|id| (id, build_service_block(id)))
+        .map(|id| (id, build_service_block(id, options.dev_hub)))
         .collect();
 
     if let Some(selected) = &options.services {

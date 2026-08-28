@@ -47,9 +47,14 @@ pub struct CreateArgs {
     /// Left out, a strong one is generated.
     #[arg(long)]
     pub admin_password: Option<String>,
-    /// An address to advertise. Repeatable. Defaults to every recommended one.
+    /// An address to advertise. Repeatable. Overrides --reach.
     #[arg(long = "host")]
     pub hosts: Vec<String>,
+    /// How far the hub should reach: local-only · this-network · public.
+    ///
+    /// Ignored when `--host` is given, which says exactly what to advertise.
+    #[arg(long, default_value = "this-network", value_parser = crate::parse_reach)]
+    pub reach: hosts::ReachPresetId,
     /// none · coordination · manual
     #[arg(long, default_value = "none", value_parser = crate::parse_mesh_mode)]
     pub mesh: MeshMode,
@@ -58,6 +63,13 @@ pub struct CreateArgs {
     pub mesh_key: Option<String>,
     #[arg(long)]
     pub mesh_coord_url: Option<String>,
+    /// A dev hub: check every service's source out into `mounts/` and mount it into the
+    /// containers, so they run the code on this machine. Needs git.
+    #[arg(long)]
+    pub dev: bool,
+    /// The branch to check out, with `--dev`. Left out, each repository's default branch.
+    #[arg(long)]
+    pub dev_branch: Option<String>,
     /// Skip `docker compose up -d`.
     #[arg(long)]
     pub no_start: bool,
@@ -164,10 +176,19 @@ pub async fn run(args: CreateArgs) -> Result<()> {
 
     // --- addresses ----------------------------------------------------------
     let hosts = if args.hosts.is_empty() {
-        let candidates = hosts::host_candidates(&hosts::bindings().await.unwrap_or_default());
+        // No tailnet identity to go on: the hub has not joined one yet, so any tailscale
+        // address on this machine belongs to somebody else's and is not offered.
+        let candidates = hosts::host_candidates(
+            &hosts::bindings().await.unwrap_or_default(),
+            &hosts::KnownMesh::default(),
+        );
+        // Exactly what the wizard's preset of the same name would select — the rule lives
+        // in the core precisely so these two cannot answer differently. `usable` matters:
+        // host_candidates reports everything it finds now, bridges included, and without
+        // it `create` would happily advertise docker0.
         let chosen: Vec<AdvertisedHost> = candidates
             .iter()
-            .filter(|c| c.recommended)
+            .filter(|c| c.usable && args.reach.accepts(c.kind))
             .map(|c| AdvertisedHost {
                 host: c.value.clone(),
                 kind: c.kind,
@@ -175,23 +196,26 @@ pub async fn run(args: CreateArgs) -> Result<()> {
             .collect();
         if chosen.is_empty() {
             bail!(
-                "no usable address was found on this machine — pass --host so clients \
-                 have somewhere to reach this hub"
+                "nothing on this machine matches --reach {} — widen it, or pass --host \
+                 so clients have somewhere to reach this hub",
+                match args.reach {
+                    hosts::ReachPresetId::LocalOnly => "local-only",
+                    hosts::ReachPresetId::ThisNetwork => "this-network",
+                    hosts::ReachPresetId::Public => "public",
+                }
             );
         }
         chosen
     } else {
         // A hand-given address is taken at face value; classification only decides how
-        // widely the coordination server will offer it.
+        // widely the coordination server will offer it. The shared classifier is what
+        // makes `--host localhost` local and `--host 100.64.1.2` a tailnet address —
+        // both of which used to come out public.
         args.hosts
             .iter()
             .map(|host| AdvertisedHost {
                 host: host.clone(),
-                kind: if hosts::is_private(host) {
-                    hosts::HostKind::Private
-                } else {
-                    hosts::HostKind::Public
-                },
+                kind: hosts::classify_host(host),
             })
             .collect()
     };
@@ -204,6 +228,12 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         .or_else(|| std::env::var("KONSTRUKTOR_MESH_KEY").ok());
     if args.mesh == MeshMode::Manual && mesh_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
         bail!("`--mesh manual` needs a key — pass --mesh-key or set KONSTRUKTOR_MESH_KEY");
+    }
+
+    // Checked here rather than at the checkout: by then the hub has been authorized and
+    // written, and "install git and try again" would mean creating it a second time.
+    if args.dev && !konstruktor_core::git::probe().is_ready() {
+        bail!("`--dev` checks the services' source out with git, which is not installed");
     }
 
     let answers = HubAnswers {
@@ -222,10 +252,15 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         global_admin_password: args.admin_password.clone(),
         global_description: None,
         hosts,
+        // The CLI has nobody to ask: a probe needs an external prober configured, and
+        // `create` runs before anything is listening in any case.
+        reachable_hosts: Vec::new(),
         mesh_mode: args.mesh.clone(),
         mesh_auth_key: mesh_key,
         mesh_coord_url: args.mesh_coord_url.clone(),
         start: !args.no_start,
+        dev_hub: args.dev,
+        dev_branch: args.dev_branch.clone(),
     };
 
     summarise(&answers);
@@ -291,6 +326,10 @@ fn report(event: CreateEvent, open_browser: bool) {
             ui::ok("Accepted.");
         }
         CreateEvent::Writing { file } => ui::step(&ui::dim(&format!("wrote {file}"))),
+        CreateEvent::Cloning { service, branch, .. } => ui::step(&ui::dim(&match branch {
+            Some(branch) => format!("checking {service} out at {branch}…"),
+            None => format!("checking {service} out…"),
+        })),
         CreateEvent::Starting => ui::step("Starting the stack…"),
         CreateEvent::Log { line } => ui::step(&ui::dim(&line)),
         CreateEvent::Done { .. } => {}
