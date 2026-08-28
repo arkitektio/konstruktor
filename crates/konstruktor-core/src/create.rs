@@ -152,6 +152,10 @@ pub enum CreateError {
     Folder(String),
     #[error(transparent)]
     Authorization(#[from] HubAuthorizationError),
+    /// The app flow, which is how a plugin engine is claimed — separate from the hub's
+    /// so its messages talk about an app rather than a hub.
+    #[error(transparent)]
+    AppAuthorization(#[from] crate::connect::app::AppAuthorizationError),
     #[error("Could not write the deployment: {0}")]
     Write(#[from] std::io::Error),
     #[error(

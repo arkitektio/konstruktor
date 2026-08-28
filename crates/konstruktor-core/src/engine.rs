@@ -230,8 +230,8 @@ pub async fn create_engine(
         .filter(|token| !token.is_empty())
         .is_none()
     {
-        return Err(CreateError::Authorization(
-            crate::connect::authorize::HubAuthorizationError::NoRefreshToken {
+        return Err(CreateError::AppAuthorization(
+            app::AppAuthorizationError::NoRefreshToken {
                 fields: granted.declared_fields(),
             },
         ));

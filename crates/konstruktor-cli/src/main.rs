@@ -99,11 +99,20 @@ fn classify(error: &anyhow::Error) -> i32 {
         return match create {
             CreateError::Docker(_) => exit::DOCKER,
             CreateError::Authorization(_) => exit::AUTHORIZATION,
+            // An engine's claim failing is the same kind of failure as a hub's, and a
+            // script branching on the exit code should not have to tell them apart.
+            CreateError::AppAuthorization(_) => exit::AUTHORIZATION,
             CreateError::Folder(_) => exit::USAGE,
             _ => exit::FAILURE,
         };
     }
     if error.downcast_ref::<HubAuthorizationError>().is_some() {
+        return exit::AUTHORIZATION;
+    }
+    if error
+        .downcast_ref::<konstruktor_core::connect::app::AppAuthorizationError>()
+        .is_some()
+    {
         return exit::AUTHORIZATION;
     }
     exit::FAILURE

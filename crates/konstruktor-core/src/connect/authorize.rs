@@ -90,12 +90,6 @@ pub enum HubAuthorizationError {
              services would trust nothing."
     )]
     NoJwksUrl,
-    #[error(
-        "The coordination server accepted the engine but returned no refresh token, so \
-         the container would have nothing to renew its access with. It answered with: \
-         {fields}"
-    )]
-    NoRefreshToken { fields: String },
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
 }
