@@ -12,7 +12,7 @@ use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 /// Skipped when there is no `docker compose` on the machine, so it never fails CI on a
 /// runner without Docker.
 fn docker_compose_available() -> bool {
-    std::process::Command::new("docker")
+    konstruktor_core::docker::command()
         .args(["compose", "version"])
         .output()
         .map(|o| o.status.success())
@@ -38,7 +38,7 @@ fn write_and_validate(mesh: Option<MeshOptions>, label: &str) {
     std::fs::create_dir_all(&dir).expect("temp dir");
     write_generated_files(&dir, &files).expect("files are written");
 
-    let output = std::process::Command::new("docker")
+    let output = konstruktor_core::docker::command()
         .args(["compose", "config", "-q"])
         .current_dir(&dir)
         .output()

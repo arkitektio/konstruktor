@@ -16,6 +16,7 @@ const probe = (over: Partial<DockerProbe> = {}): DockerProbe => ({
   api_version: "1.47",
   memory: 16_000_000_000,
   error: null,
+  engine: "docker",
   ...over,
 });
 

@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect } from "react";
 import { useFormContext } from "react-hook-form";
-import type { DockerProbe, DockerState, GitProbe } from "../../../api";
+import type { ContainerEngine, DockerProbe, DockerState, GitProbe } from "../../../api";
 import { useCommunication } from "../../../communication/communication-context";
 import { ErrorDisplay } from "../../../components/Error";
 import { Alert } from "../../../components/ui/alert";
@@ -55,16 +55,30 @@ type Verdict = {
   action?: { label: string; url: string; icon: React.ComponentType<{ className?: string }> };
 };
 
+/** What to call the engine that answered. Docker until we know otherwise. */
+const ENGINE_NAME: Record<ContainerEngine, string> = {
+  docker: "Docker",
+  podman: "Podman",
+};
+
+const engineName = (engine: ContainerEngine | null | undefined) =>
+  (engine && ENGINE_NAME[engine]) ?? "Docker";
+
 /**
  * Each way this can go has its own remedy — that is the whole point of splitting the
  * probe into `cli` / `compose` / `daemon` rather than one boolean. Sending somebody
  * whose Docker is merely stopped to a download page wastes a download and their time.
+ *
+ * The name is a parameter because Podman answers the same three questions and runs the
+ * same deployment; telling a Podman user their Docker is not running would be a wrong
+ * instruction, not just wrong wording. Only the install path stays Docker's: it is what
+ * we point somebody with no engine at all towards.
  */
-const VERDICTS: Record<Exclude<DockerState, "checking">, Verdict> = {
+const verdicts = (name: string): Record<Exclude<DockerState, "checking">, Verdict> => ({
   ready: {
     tone: "ok",
     icon: CircleCheck,
-    title: "Docker is ready",
+    title: `${name} is ready`,
     body: "The CLI, the compose plugin and the daemon all answered. Konstruktor can write this deployment, and you can start it from the dashboard afterwards.",
   },
   missing: {
@@ -77,8 +91,8 @@ const VERDICTS: Record<Exclude<DockerState, "checking">, Verdict> = {
   "no-compose": {
     tone: "bad",
     icon: TriangleAlert,
-    title: "Docker is installed, but Compose is missing",
-    body: "The `docker` command works, but `docker compose` does not. Compose ships as a plugin with current Docker versions — installing a recent Docker Desktop or the compose plugin fixes this.",
+    title: `${name} is installed, but Compose is missing`,
+    body: "The command line works, but `compose` does not. Compose ships as a plugin with current versions — installing a recent Docker Desktop, or the compose plugin, fixes this.",
     action: {
       label: "How to install Compose",
       url: "https://docs.docker.com/compose/install/",
@@ -88,10 +102,10 @@ const VERDICTS: Record<Exclude<DockerState, "checking">, Verdict> = {
   "no-daemon": {
     tone: "warn",
     icon: Play,
-    title: "Docker is installed, but not running",
-    body: "The command line is there, but the daemon is not answering. Start Docker Desktop (or the docker service) and check again — the stack cannot be started until it responds.",
+    title: `${name} is installed, but not running`,
+    body: `The command line is there, but the daemon is not answering. Start ${name} and check again — the stack cannot be started until it responds.`,
   },
-};
+});
 
 const TONE = {
   ok: "border-primary/60 bg-primary/5",
@@ -114,7 +128,7 @@ const ICON_TONE = {
  */
 const Findings = ({ probe }: { probe: DockerProbe }) => (
   <div className="flex flex-wrap gap-1.5 mt-3">
-    <Finding ok={probe.cli} label="docker" detail={probe.cli_version} />
+    <Finding ok={probe.cli} label={probe.engine ?? "docker"} detail={probe.cli_version} />
     <Finding ok={probe.compose} label="compose" detail={probe.compose_version} />
     <Finding ok={probe.daemon} label="daemon" detail={probe.api_version && `API ${probe.api_version}`} />
   </div>
@@ -241,7 +255,7 @@ export const DockerStep = () => {
     setValue("dockerOk", state === "ready", { shouldValidate: true });
   }, [state, setValue]);
 
-  const verdict = state === "checking" ? undefined : VERDICTS[state];
+  const verdict = state === "checking" ? undefined : verdicts(engineName(probe?.engine))[state];
   const Icon = verdict?.icon ?? Loader2;
 
   return (
@@ -265,11 +279,11 @@ export const DockerStep = () => {
           />
           <div className="min-w-0 flex-1">
             <div className="font-semibold">
-              {verdict?.title ?? "Looking for Docker…"}
+              {verdict?.title ?? "Looking for a container engine…"}
             </div>
             <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
               {verdict?.body ??
-                "Checking whether the Docker command line, the compose plugin and the daemon are all here."}
+                "Checking whether the Docker or Podman command line, the compose plugin and the daemon are all here."}
             </p>
 
             {probe && <Findings probe={probe} />}

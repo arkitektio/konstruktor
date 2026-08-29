@@ -107,7 +107,16 @@ export type DockerProbe = {
   api_version: string | null;
   memory: number | null;
   error: string | null;
+  /**
+   * Which engine answered. Podman speaks the same subcommands, so everything else here
+   * means the same thing either way — this only decides what to call it on screen.
+   * `null` when nothing was found at all.
+   */
+  engine: ContainerEngine | null;
 };
+
+/** The container engines Konstruktor knows how to drive. */
+export type ContainerEngine = "docker" | "podman";
 
 /**
  * Git, which is optional in a way Docker is not: a hub runs published images and never

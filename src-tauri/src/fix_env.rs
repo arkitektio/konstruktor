@@ -62,13 +62,30 @@ pub fn fix_vars(vars: &[&str]) -> std::result::Result<(), Error> {
     }
 }
 
-/// Reads the shell configuration to properly set the PATH environment variable.
+/// Reads the shell configuration to properly set the variables needed to find and reach
+/// the container engine.
+///
+/// `PATH` so the `docker` or `podman` binary can be found at all — an app launched from
+/// Finder inherits `/usr/bin:/bin:/usr/sbin:/sbin`, which has neither Homebrew nor Docker
+/// Desktop's own bin directory in it. The rest because a user who points their shell at a
+/// non-default engine endpoint means it for this app too, and without them the app would
+/// silently talk to a different daemon than their terminal does.
 ///
 /// ## Platform-specific
 ///
 /// - **Windows**: Does nothing as the environment variables are already set.
 pub fn fix() -> std::result::Result<(), Error> {
-    fix_vars(&["PATH"])
+    fix_vars(&[
+        "PATH",
+        // Docker and every docker-compatible runtime.
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_CONFIG",
+        // Podman.
+        "CONTAINER_HOST",
+        // Which engine to prefer, when both are installed.
+        "KONSTRUKTOR_ENGINE",
+    ])
 }
 
 /// Reads the shell configuration to properly set all environment variables.

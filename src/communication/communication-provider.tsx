@@ -21,6 +21,7 @@ const unreachable = (error: unknown): DockerProbe => ({
   api_version: null,
   memory: null,
   error: error instanceof Error ? error.message : String(error),
+  engine: null,
 });
 
 const CommunicationProvider: React.FC<ICommunicationProviderProps> = ({

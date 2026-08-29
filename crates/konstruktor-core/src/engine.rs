@@ -19,6 +19,7 @@ use serde_norway::Value;
 use crate::connect::app::{self, AppEnvelope, AppManifest};
 use crate::create::{now_rfc3339, CreateError, CreateEvent};
 use crate::docker;
+use crate::engine_probe::EngineKind;
 use crate::generate::service::{list, map, s};
 use crate::generate::write::write_generated_files;
 use crate::generate::GeneratedFiles;
@@ -31,8 +32,9 @@ pub const DEPLOYER_IMAGE: &str = "jhnnsrs/deployer:next";
 pub const DEPLOYER_SERVICE: &str = "deployer";
 
 /// Where the daemon is reached, and where an engine's whole point lies: without the
-/// socket it cannot start a single plugin.
-const DOCKER_SOCKET: &str = "/var/run/docker.sock";
+/// socket it cannot start a single plugin. Which socket that is depends on the engine —
+/// Podman has no `docker.sock` — so it is read off the discovered engine rather than
+/// hardcoded, and passed down explicitly so the generators stay pure.
 
 /// The engine's own config, in the deployment folder and inside the container.
 const CONFIG_FILE: &str = "configs/deployer.yaml";
@@ -73,7 +75,8 @@ pub struct CreatedEngine {
 /// One service. `restart: unless-stopped` rather than the hub's `on-failure` policy: an
 /// engine is a long-running agent whose job is to be there when somebody installs a
 /// plugin, and a machine that reboots should come back with it running.
-pub fn build_engine_compose() -> Value {
+pub fn build_engine_compose(engine: EngineKind) -> Value {
+    let socket = engine.container_socket();
     map(vec![(
         "services",
         map(vec![(
@@ -88,7 +91,7 @@ pub fn build_engine_compose() -> Value {
                         // The socket is bind-mounted, not proxied: the deployer starts
                         // sibling containers on this machine's daemon rather than
                         // running a daemon of its own.
-                        s(&format!("{DOCKER_SOCKET}:{DOCKER_SOCKET}")),
+                        s(&format!("{socket}:{socket}")),
                         // Its identity, read-only. This is the file the device-code flow
                         // produced: a client id and a refresh token, which is all the
                         // engine needs to get itself an access token from then on.
@@ -101,15 +104,19 @@ pub fn build_engine_compose() -> Value {
 }
 
 /// Every file an engine deployment consists of, keyed by its path in the folder.
-pub fn generate_engine_files(answers: &EngineAnswers, granted: &AppEnvelope) -> GeneratedFiles {
+pub fn generate_engine_files(
+    answers: &EngineAnswers,
+    granted: &AppEnvelope,
+    engine: EngineKind,
+) -> GeneratedFiles {
     let mut files = GeneratedFiles::new();
     files.insert(
         "docker-compose.yaml".to_string(),
-        crate::generate::dump(&build_engine_compose()),
+        crate::generate::dump(&build_engine_compose(engine)),
     );
     files.insert(
         CONFIG_FILE.to_string(),
-        crate::generate::dump(&build_engine_config(answers, granted)),
+        crate::generate::dump(&build_engine_config(answers, granted, engine)),
     );
     files
 }
@@ -123,7 +130,11 @@ pub fn generate_engine_files(answers: &EngineAnswers, granted: &AppEnvelope) -> 
 ///
 /// The key names under `fakts` follow what a fakts-next client reads. They are the one
 /// part of this file that was not handed over by the server; everything in it is.
-fn build_engine_config(answers: &EngineAnswers, granted: &AppEnvelope) -> Value {
+fn build_engine_config(
+    answers: &EngineAnswers,
+    granted: &AppEnvelope,
+    engine: EngineKind,
+) -> Value {
     let mut fakts = vec![
         (
             "endpoint_url",
@@ -148,7 +159,10 @@ fn build_engine_config(answers: &EngineAnswers, granted: &AppEnvelope) -> Value 
                 ("instance_id", s(answers.identifier.trim())),
             ]),
         ),
-        ("docker", map(vec![("socket", s(DOCKER_SOCKET))])),
+        (
+            "docker",
+            map(vec![("socket", s(engine.container_socket()))]),
+        ),
     ])
 }
 
@@ -240,7 +254,7 @@ pub async fn create_engine(
     on(CreateEvent::Granted { mesh_key: false });
 
     // --- write --------------------------------------------------------------
-    let files = generate_engine_files(answers, &granted);
+    let files = generate_engine_files(answers, &granted, crate::engine_probe::engine().kind);
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
     }
@@ -270,7 +284,7 @@ pub async fn create_engine(
 }
 
 fn start(dir: &Path, on: &(dyn Fn(CreateEvent) + Sync)) -> Result<(), CreateError> {
-    let output = std::process::Command::new("docker")
+    let output = crate::docker::command()
         .args(crate::compose::up())
         .current_dir(dir)
         .output()?;
@@ -305,7 +319,7 @@ mod tests {
     /// The socket is the whole feature: an engine without it can start no plugin.
     #[test]
     fn the_engine_gets_the_docker_socket() {
-        let compose = build_engine_compose();
+        let compose = build_engine_compose(EngineKind::Docker);
         let volumes = compose["services"][DEPLOYER_SERVICE]["volumes"]
             .as_sequence()
             .expect("volumes");
@@ -334,7 +348,7 @@ mod tests {
 
     #[test]
     fn an_engine_is_a_compose_file_and_its_identity() {
-        let files = generate_engine_files(&answers(), &granted());
+        let files = generate_engine_files(&answers(), &granted(), EngineKind::Docker);
         let names: Vec<&str> = files.keys().map(String::as_str).collect();
         assert_eq!(names, ["configs/deployer.yaml", "docker-compose.yaml"]);
     }
@@ -354,7 +368,7 @@ mod tests {
     /// refresh token, and *not* the access token, which is stale within the hour.
     #[test]
     fn the_container_is_handed_the_client_and_the_refresh_token() {
-        let files = generate_engine_files(&answers(), &granted());
+        let files = generate_engine_files(&answers(), &granted(), EngineKind::Docker);
         let config = &files["configs/deployer.yaml"];
 
         assert!(config.contains("client_id: engine-client-id"));
@@ -365,7 +379,7 @@ mod tests {
         );
 
         // And it is mounted, or writing it would have been pointless.
-        let compose = build_engine_compose();
+        let compose = build_engine_compose(EngineKind::Docker);
         let volumes = compose["services"][DEPLOYER_SERVICE]["volumes"]
             .as_sequence()
             .expect("volumes");

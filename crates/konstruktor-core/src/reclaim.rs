@@ -314,7 +314,7 @@ fn repair_ownership(path: &Path, owner_of: &Path, images: &[String]) -> Result<S
             )
         })?;
 
-    let output = std::process::Command::new("docker")
+    let output = crate::docker::command()
         .args(&args)
         .stdin(std::process::Stdio::null())
         .output()

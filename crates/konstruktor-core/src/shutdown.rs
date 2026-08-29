@@ -4,7 +4,7 @@
 //! anything handed to an async runtime would never get to run.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::compose;
 
@@ -24,7 +24,7 @@ pub fn stop(dir: &Path, timeout_secs: Option<u32>) -> bool {
         None => compose::stop().into_iter().map(String::from).collect(),
     };
 
-    Command::new("docker")
+    crate::docker::command()
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())

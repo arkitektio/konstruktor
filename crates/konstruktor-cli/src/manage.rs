@@ -122,7 +122,13 @@ pub async fn doctor() -> Result<()> {
     ui::say("");
     let rows = vec![
         (
-            "docker".to_string(),
+            // The engine names itself: on a Podman machine a row labelled "docker"
+            // reporting Podman's version is just confusing.
+            probe
+                .engine
+                .map(|engine| engine.binary_name())
+                .unwrap_or("docker")
+                .to_string(),
             probe
                 .cli_version
                 .clone()
@@ -164,7 +170,7 @@ pub async fn doctor() -> Result<()> {
     ui::say("");
 
     if probe.is_ready() {
-        ui::ok("Docker is ready.");
+        ui::ok(&format!("{} is ready.", probe.engine_label()));
         if !git.is_ready() {
             ui::step(&ui::dim(
                 "git is not installed. Hubs do not need it — only a dev hub, which checks \
@@ -408,7 +414,7 @@ pub fn compose(target: &Target, args: Vec<&str>, verb: &str) -> Result<()> {
     ui::say("");
     ui::step(&format!("{verb} {}…", ui::bold(&dir.to_string_lossy())));
 
-    let status = std::process::Command::new("docker")
+    let status = konstruktor_core::docker::command()
         .args(&args)
         .current_dir(&dir)
         .status()
@@ -461,7 +467,7 @@ pub fn down(args: DownArgs) -> Result<()> {
 
 pub async fn ps(target: &Target) -> Result<()> {
     let dir = target.resolve()?;
-    let status = std::process::Command::new("docker")
+    let status = konstruktor_core::docker::command()
         .args(compose::ps())
         .current_dir(&dir)
         .status()
@@ -522,7 +528,7 @@ pub fn superuser(args: SuperuserArgs) -> Result<()> {
         ui::bold(&args.service)
     ));
 
-    let output = std::process::Command::new("docker")
+    let output = konstruktor_core::docker::command()
         .args(&argv)
         .current_dir(&dir)
         .output()
@@ -553,7 +559,7 @@ pub fn logs(args: LogsArgs) -> Result<()> {
     let dir = args.target.resolve()?;
     let argv = compose::logs(args.service.as_deref(), args.tail);
 
-    let status = std::process::Command::new("docker")
+    let status = konstruktor_core::docker::command()
         .args(&argv)
         .current_dir(&dir)
         .status()

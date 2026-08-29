@@ -381,7 +381,7 @@ pub async fn create_hub(
     // --- start --------------------------------------------------------------
     if answers.start {
         on(CreateEvent::Starting);
-        let output = std::process::Command::new("docker")
+        let output = crate::docker::command()
             .args(compose::up())
             .current_dir(&dir)
             .output()?;
@@ -409,24 +409,32 @@ pub async fn create_hub(
 }
 
 /// The three remedies, worded once.
+///
+/// The engine names itself where it matters: Podman runs the same deployment through the
+/// same subcommands, and telling somebody running Podman that their Docker is not running
+/// is a wrong instruction rather than merely wrong wording. Only the install path stays
+/// Docker's — it is what somebody with no engine at all is pointed towards.
 pub fn describe_docker(probe: &docker::DockerProbe) -> String {
+    let name = probe.engine_label();
     match probe.state() {
-        docker::DockerState::Ready => "Docker is ready.".into(),
+        docker::DockerState::Ready => format!("{name} is ready."),
         docker::DockerState::Missing => {
-            "Docker is not installed. Konstruktor hands the finished deployment to Docker \
-             Compose, so Docker has to be on this machine — see \
+            "No container engine is installed. Konstruktor hands the finished deployment \
+             to Docker Compose, so Docker has to be on this machine — see \
              https://docs.docker.com/get-started/get-docker/"
                 .into()
         }
         docker::DockerState::NoCompose => {
-            "Docker is installed, but `docker compose` is not. Compose ships as a plugin \
-             with current Docker versions — see https://docs.docker.com/compose/install/"
-                .into()
+            format!(
+                "{name} is installed, but `compose` is not. Compose ships as a plugin \
+                 with current versions — see https://docs.docker.com/compose/install/"
+            )
         }
         docker::DockerState::NoDaemon => {
-            "Docker is installed, but the daemon is not answering. Start Docker Desktop \
-             (or the docker service) and try again."
-                .into()
+            format!(
+                "{name} is installed, but the daemon is not answering. Start {name} and \
+                 try again."
+            )
         }
     }
 }

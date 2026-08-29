@@ -635,7 +635,7 @@ pub async fn create_superuser(
         email.as_deref().map(str::trim).filter(|e| !e.is_empty()),
     );
 
-    let output = std::process::Command::new("docker")
+    let output = konstruktor_core::docker::command()
         .args(&args)
         .current_dir(&path)
         .output()
@@ -674,7 +674,7 @@ pub async fn compose_command(
         other => return Err(format!("unknown compose action `{other}`")),
     };
 
-    let output = std::process::Command::new("docker")
+    let output = konstruktor_core::docker::command()
         .args(&args)
         .current_dir(&path)
         .output()

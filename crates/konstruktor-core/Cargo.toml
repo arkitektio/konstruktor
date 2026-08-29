@@ -8,7 +8,6 @@ description = "Generates Arkitekt hub deployments: the profile, the compose proj
 
 [dependencies]
 base64.workspace = true
-bollard.workspace = true
 dirs.workspace = true
 dns-lookup.workspace = true
 network-interface.workspace = true
@@ -19,7 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "rt", "macros"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "process"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

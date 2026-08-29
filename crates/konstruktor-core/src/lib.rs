@@ -7,6 +7,7 @@ pub mod credentials;
 pub mod destroy;
 pub mod docker;
 pub mod engine;
+pub mod engine_probe;
 pub mod generate;
 pub mod git;
 pub mod hosts;

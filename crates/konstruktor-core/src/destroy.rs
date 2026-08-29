@@ -22,7 +22,7 @@
 //!   caller can say so.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -203,7 +203,7 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
 /// Blocking, and its output is kept: it is the only thing that explains a failure, and a
 /// failure here stops the delete.
 fn compose_down(dir: &Path) -> Result<(), DeleteError> {
-    let output = Command::new("docker")
+    let output = crate::docker::command()
         .args(compose::down_everything())
         .current_dir(dir)
         .stdin(Stdio::null())

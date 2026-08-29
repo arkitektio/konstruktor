@@ -19,7 +19,6 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 inquire = "0.7"
 base64 = "0.22"
-bollard = "0.21"
 dirs = "6"
 dns-lookup = "3.0"
 network-interface = "2.0"
