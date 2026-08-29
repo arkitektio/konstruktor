@@ -7,7 +7,7 @@ resolver = "2"
 members = ["crates/konstruktor-core", "crates/konstruktor-cli", "src-tauri"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/arkitektio/konstruktor"
