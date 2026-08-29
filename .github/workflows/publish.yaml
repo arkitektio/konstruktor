@@ -11,7 +11,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+          # A universal binary, so the .dmg runs on Intel Macs too: `macos-latest` is
+          # Apple Silicon, and a host-arch build would leave them with nothing.
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-latest
+            args: ""
+          - platform: windows-latest
+            args: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -25,6 +33,9 @@ jobs:
           cache: pnpm
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both halves of the universal binary; a no-op on the other platforms.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - name: rust cache
         uses: swatinem/rust-cache@v2
         with:
@@ -39,7 +50,19 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing and notarization. The bundler imports the certificate into a
+          # keychain of its own, so there is no `security create-keychain` step to do here,
+          # and no APPLE_SIGNING_IDENTITY: the identity is read off the certificate.
+          # Empty on Linux and Windows, where the bundler ignores them. On macOS these
+          # secrets must exist: the bundler tests for the variable, not for a value, so an
+          # unset secret arrives as an empty string and fails the certificate import.
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
+          args: ${{ matrix.args }}
           tagName: konstruktor-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version
           releaseName: "Konstruktor v__VERSION__"
           releaseBody: "See the assets to download this version and install."
