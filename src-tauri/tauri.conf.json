@@ -41,7 +41,6 @@
   },
   "productName": "konstruktor",
   "mainBinaryName": "konstruktor-desktop",
-  "version": "0.0.1",
   "identifier": "io.github.jhnnsrs.konstruktor",
   "plugins": {},
   "app": {

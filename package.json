@@ -1,7 +1,6 @@
 {
   "name": "konstruktor",
   "private": true,
-  "version": "0.0.0",
   "type": "module",
   "packageManager": "pnpm@11.23.0",
   "scripts": {

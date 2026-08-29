@@ -1,11 +1,149 @@
 name: "Publish Everything"
 
+# Two pushes in quick succession would otherwise both compute the same next version and
+# race to create the same tag. Queued rather than cancelled: a run that has already tagged
+# and pushed must be allowed to finish uploading its assets.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 on:
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release this exact version instead of computing one from the commits"
+        required: false
+        type: string
 
 jobs:
+  # Gates the tag: a version is only cut from a tree that passes. The per-platform tests in
+  # `publish-cli` still matter — they are what catches Windows-specific breakage — but they
+  # run too late to stop a bad commit being tagged, so this runs first.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: test
+        run: cargo test -p konstruktor-core -p konstruktor-cli
+
+  # Decides the version, writes it everywhere, tags it. Everything downstream builds the
+  # tag this job creates, rather than whatever master happens to be by then.
+  #
+  # This has to live in the same workflow as the publishing: a push made with the default
+  # GITHUB_TOKEN does not trigger another workflow run, so a separate "tag it" workflow
+  # would produce a tag that nothing ever builds. The same rule is what keeps the release
+  # commit from re-triggering this workflow.
+  version:
+    needs: test
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.next.outputs.released }}
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history and every tag: cog derives the bump from `git describe` and
+          # the commit subjects since the tag it finds.
+          fetch-depth: 0
+          fetch-tags: true
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: install cog
+        # The action is really an installer: it puts cog on PATH before running whatever
+        # `command` it is given, and the steps below drive cog directly so the dry-run and
+        # the bump can be handled separately. `--version` is the harmless no-op command.
+        # (`install-only: true` would say this outright, but it only exists on the
+        # action's main branch, not in any tagged release.)
+        uses: cocogitto/cocogitto-action@v4.1.0
+        with:
+          command: --version
+      - name: install cargo-edit
+        # Provides `cargo set-version`, which cog.toml's pre_bump_hook uses to write the
+        # version into the workspace and Cargo.lock.
+        run: cargo install cargo-edit --locked
+
+      # Re-running this workflow on a SHA that has already been released would otherwise
+      # cut a second, empty version: with the tag sitting on HEAD, cog counts the commits
+      # it points at all over again.
+      - name: skip commits that are already released
+        id: guard
+        run: |
+          if git describe --exact-match --match 'konstruktor-v*' HEAD >/dev/null 2>&1; then
+            echo "HEAD is already tagged $(git describe --exact-match --match 'konstruktor-v*' HEAD); nothing to release."
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: decide the next version
+        id: next
+        if: steps.guard.outputs.fresh == 'true'
+        env:
+          FORCED: ${{ inputs.version }}
+        run: |
+          if [ -n "$FORCED" ]; then
+            tag="konstruktor-v${FORCED}"
+          else
+            # Prints the tag it would create, or a "nothing to bump" message.
+            tag="$(cog bump --auto --dry-run 2>/dev/null || true)"
+          fi
+          if printf '%s' "$tag" | grep -qE '^konstruktor-v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Next release: $tag"
+            {
+              echo "released=true"
+              echo "tag=$tag"
+              echo "version=${tag#konstruktor-v}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "No releasable commits; skipping the release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: bump, tag and push
+        if: steps.next.outputs.released == 'true'
+        env:
+          FORCED: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$FORCED" ]; then
+            cog bump --version "$FORCED"
+          else
+            cog bump --auto
+          fi
+          git push origin HEAD "${{ steps.next.outputs.tag }}"
+
+      - name: generate the release notes
+        id: notes
+        if: steps.next.outputs.released == 'true'
+        run: |
+          {
+            echo "notes<<KONSTRUKTOR_NOTES_EOF"
+            cog changelog --at "${{ steps.next.outputs.tag }}"
+            echo "KONSTRUKTOR_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
   publish-tauri:
+    needs: version
+    if: needs.version.outputs.released == 'true'
     permissions:
       contents: write
     strategy:
@@ -24,6 +162,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: setup pnpm
         uses: pnpm/action-setup@v4
       - name: setup node
@@ -63,16 +203,21 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           args: ${{ matrix.args }}
-          tagName: konstruktor-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version
-          releaseName: "Konstruktor v__VERSION__"
-          releaseBody: "See the assets to download this version and install."
+          tagName: ${{ needs.version.outputs.tag }}
+          releaseName: "Konstruktor v${{ needs.version.outputs.version }}"
+          releaseBody: ${{ needs.version.outputs.notes }}
+          # Stays a draft until `publish-checksums` has attached SHA256SUMS, then that job
+          # publishes it. Drafts are excluded from GitHub's /releases/latest redirect, and
+          # install.sh both resolves through that redirect and refuses to install without
+          # SHA256SUMS — so a release that goes live here would break every `curl | sh` for
+          # the ~20 minutes the remaining builds and notarization take.
           releaseDraft: true
           prerelease: false
 
   # The CLI ships as a plain binary per target, next to the desktop app's installers in
-  # the same draft release. `needs: publish-tauri` so the draft exists to upload into.
+  # the same release. `needs: publish-tauri` so the release exists to upload into.
   publish-cli:
-    needs: publish-tauri
+    needs: [version, publish-tauri]
     permissions:
       contents: write
     strategy:
@@ -91,6 +236,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -127,12 +274,14 @@ jobs:
 
   # One checksum file for the whole release: the installer refuses to install without it.
   publish-checksums:
-    needs: publish-cli
+    needs: [version, publish-cli]
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           pattern: cli-*
@@ -140,10 +289,16 @@ jobs:
           path: dist
       - name: collect checksums
         run: cat dist/*.sha256 | sed 's| .*/| |' > dist/SHA256SUMS && cat dist/SHA256SUMS
-      - name: upload to the draft release
+      - name: upload to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          gh release upload "konstruktor-v$version" \
+          gh release upload "${{ needs.version.outputs.tag }}" \
             dist/konstruktor-* dist/SHA256SUMS --clobber
+
+      # The last step of the last job: everything is attached, so the release can now
+      # become the one `/releases/latest` resolves to.
+      - name: publish the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ needs.version.outputs.tag }}" --draft=false

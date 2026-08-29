@@ -1,0 +1,25 @@
+# Konstruktor's version is derived from the commit history, not edited by hand:
+# `cog bump --auto` reads the conventional-commit subjects since the last release tag and
+# decides the next semver. See the Releases section of the README.
+tag_prefix = "konstruktor-v"
+
+# The version is declared in exactly ONE place — `[workspace.package] version` in
+# Cargo.toml — and `cargo set-version` propagates it to the three member crates and
+# Cargo.lock. `src-tauri/tauri.conf.json` and `package.json` deliberately declare no
+# version at all: Tauri falls back to `src-tauri/Cargo.toml`, which inherits the workspace
+# version, so there is nothing left to keep in sync.
+pre_bump_hooks = ["cargo set-version --workspace {{version}}"]
+
+# Release notes are generated per release into the GitHub release body (`cog changelog
+# --at <tag>`), so there is no CHANGELOG.md in the tree to keep current.
+disable_changelog = true
+
+# A release is only ever cut from master; the publish workflow only runs there anyway.
+branch_whitelist = ["master"]
+
+# Lets the generated notes link commits back to GitHub.
+[changelog]
+template = "remote"
+remote = "github.com"
+owner = "arkitektio"
+repository = "konstruktor"

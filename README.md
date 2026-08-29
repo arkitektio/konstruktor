@@ -212,3 +212,38 @@ pnpm tauri dev        # run the app
 pnpm test             # unit tests, no Docker needed
 KONSTRUKTOR_E2E=1 pnpm test   # additionally runs the real CLI in Docker
 ```
+
+### Releases
+
+The version is not edited by hand — it is derived from the commit subjects on `master`. Every push
+that contains a releasable commit bumps the version, tags it, and publishes a signed release; the
+tag is the single source of truth that `install.sh` resolves through
+`/releases/latest/download`.
+
+| Commit subject | Effect |
+| --- | --- |
+| `fix:`, `perf:`, `revert:` | patch — `1.2.3` → `1.2.4` |
+| `feat:` | minor — `1.2.3` → `1.3.0` |
+| `feat!:` (any type with `!`), or a `BREAKING CHANGE:` footer | major — `1.2.3` → `2.0.0` |
+| `chore:`, `docs:`, `ci:`, `refactor:`, `style:`, `test:` | no release |
+
+That last row is how you push without shipping. A release is built as a draft and only becomes the
+one `/releases/latest` resolves to once every artifact — including `SHA256SUMS`, which `install.sh`
+requires — has been attached. But it is public, signed and notarized from that moment on, with no
+review step in between, so the subject line you write is the release note your users read: `fix:
+stuff` makes a changelog entry that says `fix: stuff`.
+
+Versioning is handled by [cocogitto](https://docs.cocogitto.io/), configured in `cog.toml`. The
+version is declared in exactly one place — `[workspace.package] version` in `Cargo.toml` — and
+`cargo set-version` propagates it to the member crates and `Cargo.lock` during the bump.
+`src-tauri/tauri.conf.json` and `package.json` carry no version of their own: Tauri falls back to
+`src-tauri/Cargo.toml`, which inherits the workspace version.
+
+To see what the next release would be, without changing anything:
+
+```bash
+cog bump --auto --dry-run   # commit or stash first: cog refuses to run on a dirty tree
+```
+
+To release a version the commit log cannot describe on its own, run the "Publish Everything"
+workflow manually and give it an explicit version.
