@@ -18,7 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "rt", "macros", "process"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "process", "fs", "io-util"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

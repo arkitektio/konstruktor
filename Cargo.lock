@@ -2257,6 +2257,7 @@ dependencies = [
 name = "konstruktor"
 version = "0.2.0"
 dependencies = [
+ "dirs",
  "konstruktor-core",
  "serde",
  "serde_json",

@@ -31,10 +31,10 @@ pub fn down() -> Vec<&'static str> {
 }
 /// Removes named volumes as well as the containers.
 ///
-/// Far less destructive than it sounds, and the name is the trap: with the profile this
-/// generates, the database and object storage are **bind mounts inside the deployment
-/// folder** and the stack declares no named volumes at all, so this takes no data with it.
-/// Deleting a hub's data is `destroy::purge_data`, which removes those directories itself.
+/// With the default profile the database and object storage *are* named volumes, so this
+/// deletes the data. A profile that opted into bind mounts in the deployment folder
+/// declares no data volumes, and for it this takes nothing with it. Either way, deleting
+/// a hub's data on purpose is `destroy::purge_data`'s job, which knows which case it is in.
 pub fn down_volumes() -> Vec<&'static str> {
     vec!["compose", "down", "--volumes"]
 }

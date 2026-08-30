@@ -19,7 +19,16 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::engine_probe::{self, Engine, EngineKind};
+use crate::engine_probe::{self, Engine, EngineBrand, EngineKind};
+use crate::remedy::{self, Platform, Prereqs, Remedy};
+
+/// The oldest Compose that has every flag the generated stacks and the dashboard rely on
+/// (`--ansi never`, `ps --format json`, `config --format json`). Older is refused rather
+/// than failing later in a confusing place.
+const MIN_COMPOSE: (u64, u64, u64) = (2, 20, 0);
+/// Engine API 1.41 is Docker 20.10 — the first with compose v2 as a plugin. Podman
+/// reports a compatible number.
+const MIN_API: (u64, u64) = (1, 41);
 
 /// A daemon round trip is the only call here that can block on a socket nobody is serving,
 /// so every one of them is bounded. The dashboard polls the probe, so an unbounded call
@@ -81,19 +90,38 @@ pub struct DockerProbe {
     /// Which engine this is about, so the UI can name it rather than assuming Docker.
     /// `None` when nothing was found at all.
     pub engine: Option<EngineKind>,
+    /// Which product is behind it — what to tell the user to start, or update.
+    pub brand: EngineBrand,
+    /// The OS the probe ran on, so a UI needs no second opinion on what to recommend.
+    pub platform: Platform,
+    /// The verdict, so the front ends read it rather than each re-deriving the priority
+    /// of the failures. Kept in step with [`DockerProbe::state`] by [`probe`].
+    pub state: DockerState,
+    /// What to do about it, primary first. Empty when ready.
+    pub remedies: Vec<Remedy>,
+}
+
+impl Default for Platform {
+    fn default() -> Self {
+        Platform::current()
+    }
 }
 
 /// The engine reduced to the one thing a UI has to decide: what to tell the user next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum DockerState {
     Ready,
     /// No engine binary is there at all — offer an install.
+    #[default]
     Missing,
     /// The CLI is present but `compose` is not — offer a newer Docker.
     NoCompose,
     /// Everything is installed but the daemon is silent — say "start Docker".
     NoDaemon,
+    /// Everything answers, but Compose or the engine predates what the generated stacks
+    /// need — offer an update. After the daemon check, so the API version is known.
+    TooOld,
 }
 
 impl DockerProbe {
@@ -104,9 +132,44 @@ impl DockerProbe {
             DockerState::NoCompose
         } else if !self.daemon {
             DockerState::NoDaemon
+        } else if self.too_old() {
+            DockerState::TooOld
         } else {
             DockerState::Ready
         }
+    }
+
+    /// Compose or the daemon predates what we generate. An unparseable version is not
+    /// "too old": refusing to work over a banner we could not read would be a bug of
+    /// ours, not a fault of theirs.
+    fn too_old(&self) -> bool {
+        let compose_old = self
+            .compose_version
+            .as_deref()
+            .and_then(parse_version)
+            .map(|v| v < MIN_COMPOSE)
+            .unwrap_or(false);
+        let api_old = self
+            .api_version
+            .as_deref()
+            .and_then(parse_version)
+            .map(|(major, minor, _)| (major, minor) < MIN_API)
+            .unwrap_or(false);
+        compose_old || api_old
+    }
+
+    /// Fills the derived fields — the verdict and its remedies — from the raw findings.
+    pub fn finish(mut self) -> DockerProbe {
+        self.platform = Platform::current();
+        self.state = self.state();
+        self.remedies = remedy::remedies(
+            self.state,
+            self.brand,
+            self.engine,
+            self.platform,
+            &Prereqs::detect(self.platform),
+        );
+        self
     }
 
     pub fn is_ready(&self) -> bool {
@@ -295,6 +358,17 @@ pub(crate) fn parse_cli_version(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// `2.29.7`, `v2.29.7`, `2.29.7-desktop.1` and `1.47` all become comparable numbers.
+pub(crate) fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+    let core = text.trim().trim_start_matches('v');
+    let core = core.split(|c: char| c == '-' || c == '+' || c == ' ').next()?;
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+    let major = parts.next()??;
+    let minor = parts.next().flatten().unwrap_or(0);
+    let patch = parts.next().flatten().unwrap_or(0);
+    Some((major, minor, patch))
+}
+
 /// The API version out of a `version --format '{{json .}}'` payload.
 ///
 /// Docker reports the daemon's under `Server.ApiVersion`; Podman, which is its own client
@@ -329,11 +403,12 @@ pub async fn probe() -> DockerProbe {
     // hands back the `info` it had to fetch to find out, so the daemon is asked once.
     let Some(found) = engine_probe::discover(DAEMON_TIMEOUT).await else {
         // Nothing installed. `Missing` is the verdict, and it is not an error.
-        return probe;
+        return probe.finish();
     };
     let engine = found.engine;
 
     probe.engine = Some(engine.kind);
+    probe.brand = found.brand;
     probe.cli = true;
     probe.cli_version = probe_command(&engine, &["--version"])
         .as_deref()
@@ -372,7 +447,40 @@ pub async fn probe() -> DockerProbe {
         None => probe.error = found.error,
     }
 
-    probe
+    probe.finish()
+}
+
+/// Where the daemon's socket is on the daemon's side of things, for the deployer's bind
+/// mount — or `None` to keep the engine's classic path.
+///
+/// Only Linux asks. Everywhere else the daemon runs in a VM, and the path the CLI's
+/// context names is on the *host*: mounting it inside the VM would mount nothing. On
+/// Linux the two are the same filesystem, and a rootless daemon really does serve from
+/// `$XDG_RUNTIME_DIR/docker.sock` rather than `/var/run/docker.sock`.
+pub async fn host_socket(engine: &Engine) -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let args: &[&str] = match engine.kind {
+        EngineKind::Docker => &["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        EngineKind::Podman => &["info", "--format", "{{.Host.RemoteSocket.Path}}"],
+    };
+    let output = run(engine.async_command().args(args), DAEMON_TIMEOUT).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    socket_path(&text, engine.kind.container_socket())
+}
+
+/// The path out of an endpoint, when it is a local socket somewhere other than the
+/// default. `tcp://` and `ssh://` endpoints have no path to mount.
+pub(crate) fn socket_path(endpoint: &str, default: &str) -> Option<String> {
+    let path = endpoint.strip_prefix("unix://").unwrap_or(endpoint);
+    if !path.starts_with('/') || path == default {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 /// The containers belonging to the compose project in `path`.
@@ -510,6 +618,10 @@ pub struct ImageState {
     pub image_id: Option<String>,
     /// When that image was built, as the engine reports it.
     pub created: Option<String>,
+    /// `RepoDigests` — the registry digests this image was pulled as, e.g.
+    /// `jhnnsrs/rekuest@sha256:…`. What an upstream check compares against.
+    #[serde(default)]
+    pub repo_digests: Vec<String>,
 }
 
 /// Resolves every image the stack declares against the local engine.
@@ -549,6 +661,17 @@ pub async fn image_states(images: &[(String, String)]) -> Result<Vec<ImageState>
                 .and_then(|i| i.get("Created"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            repo_digests: inspected
+                .as_ref()
+                .and_then(|i| i.get("RepoDigests"))
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
     }
     Ok(states)
@@ -622,6 +745,93 @@ mod tests {
             .state(),
             DockerState::NoDaemon
         );
+    }
+
+    /// An engine that answers but predates what the stacks need is its own verdict,
+    /// after the daemon check — the update advice depends on knowing the API version.
+    #[test]
+    fn an_old_engine_is_told_to_update_not_reinstalled() {
+        let old_compose = DockerProbe {
+            cli: true,
+            compose: true,
+            compose_version: Some("v2.5.0".into()),
+            daemon: true,
+            api_version: Some("1.47".into()),
+            ..Default::default()
+        };
+        assert_eq!(old_compose.state(), DockerState::TooOld);
+
+        let old_api = DockerProbe {
+            cli: true,
+            compose: true,
+            compose_version: Some("2.29.7".into()),
+            daemon: true,
+            api_version: Some("1.40".into()),
+            ..Default::default()
+        };
+        assert_eq!(old_api.state(), DockerState::TooOld);
+
+        let current = DockerProbe {
+            cli: true,
+            compose: true,
+            compose_version: Some("2.20.0".into()),
+            daemon: true,
+            api_version: Some("1.41".into()),
+            ..Default::default()
+        };
+        assert_eq!(current.state(), DockerState::Ready);
+
+        // A banner we could not parse is not held against anybody.
+        let odd = DockerProbe {
+            cli: true,
+            compose: true,
+            compose_version: Some("unknown".into()),
+            daemon: true,
+            ..Default::default()
+        };
+        assert_eq!(odd.state(), DockerState::Ready);
+    }
+
+    #[test]
+    fn reads_versions_in_every_spelling() {
+        assert_eq!(parse_version("2.29.7"), Some((2, 29, 7)));
+        assert_eq!(parse_version("v2.29.7"), Some((2, 29, 7)));
+        assert_eq!(parse_version("2.29.7-desktop.1"), Some((2, 29, 7)));
+        assert_eq!(parse_version("1.47"), Some((1, 47, 0)));
+        assert_eq!(parse_version("latest"), None);
+    }
+
+    /// The deployer mounts the socket where the daemon serves it; a rootless daemon does
+    /// not serve at the classic path, and a remote endpoint has no path at all.
+    #[test]
+    fn a_rootless_socket_is_mounted_from_where_it_is() {
+        assert_eq!(
+            socket_path("unix:///run/user/1000/docker.sock", "/var/run/docker.sock").as_deref(),
+            Some("/run/user/1000/docker.sock")
+        );
+        assert_eq!(socket_path("unix:///var/run/docker.sock", "/var/run/docker.sock"), None);
+        assert_eq!(socket_path("tcp://10.0.0.2:2375", "/var/run/docker.sock"), None);
+        assert_eq!(socket_path("", "/var/run/docker.sock"), None);
+    }
+
+    /// The finished probe carries its verdict and something to do about it, so neither
+    /// front end has to work either out.
+    #[test]
+    fn a_finished_probe_carries_its_remedies() {
+        let missing = DockerProbe::default().finish();
+        assert_eq!(missing.state, DockerState::Missing);
+        assert!(!missing.remedies.is_empty());
+        assert!(missing.remedies[0].primary);
+
+        let ready = DockerProbe {
+            cli: true,
+            compose: true,
+            daemon: true,
+            ..Default::default()
+        }
+        .finish();
+        assert_eq!(ready.state, DockerState::Ready);
+        assert!(ready.remedies.is_empty());
     }
 
     /// A missing binary is reported ahead of a silent daemon: sending somebody whose

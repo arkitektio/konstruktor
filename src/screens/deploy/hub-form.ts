@@ -4,6 +4,7 @@ import type {
   MeshMode,
   ServiceId,
   ServiceOptions,
+  StorageMode,
 } from "../../api";
 
 /**
@@ -49,6 +50,8 @@ export type HubForm = {
    * Source mode needs git, so every entry is cleared if a probe comes back without it.
    */
   serviceOptions: Partial<Record<ServiceId, ServiceOverride>>;
+  /** Where the database and object storage go. The default is the fast one. */
+  storage: StorageMode;
 };
 
 /** One service's answers. Empty strings rather than nulls, as the inputs produce them. */

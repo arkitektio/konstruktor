@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use konstruktor_core::config::hub::StorageMode;
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
 use konstruktor_core::connect::manifest::AdvertisedHost;
 use konstruktor_core::create::{
@@ -70,6 +71,13 @@ pub struct CreateArgs {
     /// The branch to check out, with `--dev`. Left out, each repository's default branch.
     #[arg(long)]
     pub dev_branch: Option<String>,
+    /// Where the database and object storage keep their data. `volumes` (the default)
+    /// uses Docker's own named volumes, which is by far the fastest on Docker Desktop;
+    /// `folder` bind-mounts `./db_data` and `./minio_data` inside the deployment folder
+    /// so the data is a directory you can see — at a real cost in I/O on macOS and
+    /// Windows.
+    #[arg(long, default_value = "volumes", value_parser = parse_storage)]
+    pub storage: StorageMode,
     /// Skip `docker compose up -d`.
     #[arg(long)]
     pub no_start: bool,
@@ -260,6 +268,7 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         start: !args.no_start,
         dev_hub: args.dev,
         dev_branch: args.dev_branch.clone(),
+        storage: args.storage,
         // `--dev` is all or nothing here. Picking source mode for one service at a time
         // is a wizard affordance; the flag stays the CLI's whole answer.
         service_options: Default::default(),
@@ -343,9 +352,26 @@ pub(crate) fn report(event: CreateEvent, open_browser: bool) {
     }
 }
 
+pub fn parse_storage(value: &str) -> Result<StorageMode, String> {
+    match value {
+        "volumes" | "docker-volumes" => Ok(StorageMode::DockerVolumes),
+        "folder" | "deployment-folder" => Ok(StorageMode::DeploymentFolder),
+        other => Err(format!("unknown storage `{other}` — expected volumes or folder")),
+    }
+}
+
 fn summarise(answers: &HubAnswers) {
     ui::table(&[
         ("folder".into(), answers.dir.clone()),
+        (
+            "storage".into(),
+            match answers.storage {
+                StorageMode::DockerVolumes => "Docker volumes (fast)".into(),
+                StorageMode::DeploymentFolder => {
+                    "bind mounts in the folder (slow on Docker Desktop)".into()
+                }
+            },
+        ),
         ("coordination".into(), answers.coord_server.clone()),
         ("identifier".into(), answers.identifier.clone()),
         (

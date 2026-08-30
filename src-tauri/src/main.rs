@@ -4,14 +4,16 @@
 )]
 mod cmd;
 mod fix_env;
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
-    tray::TrayIconBuilder,
-    Manager, RunEvent,
-};
+mod tray;
+use tauri::{Manager, RunEvent};
 
 fn main() {
-    fix_env::fix().unwrap();
+    // The login shell is read for `PATH` and the `DOCKER_*` variables. It can fail — a
+    // profile that errors, a shell that prompts — and that is not a reason to have no
+    // window: `engine_probe::candidates` is the floor under exactly this case.
+    if let Err(error) = fix_env::fix() {
+        eprintln!("could not read the login shell's environment: {error}");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
@@ -21,28 +23,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(cmd::StartedStacks::default())
+        .manage(tray::TrayState::default())
+        .manage(cmd::InstallState::default())
         .setup(|app| {
-            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
-            let menu = MenuBuilder::new(app)
-                .item(&hide)
-                .item(&PredefinedMenuItem::separator(app)?)
-                .item(&quit)
-                .build()?;
-            let _tray = TrayIconBuilder::new()
-                .menu(&menu)
-                .on_menu_event(move |app, event| match event.id().as_ref() {
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    "hide" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.hide();
-                        }
-                    }
-                    _ => {}
-                })
-                .build(app)?;
+            tray::init(app.handle())?;
 
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
@@ -55,8 +39,12 @@ fn main() {
             cmd::list_deployment_containers,
             cmd::restart_container,
             cmd::deployment_images,
+            cmd::check_updates,
             cmd::probe_docker,
             cmd::probe_git,
+            cmd::install_engine,
+            cmd::cancel_install,
+            cmd::start_engine,
             cmd::deployment_checkouts,
             cmd::checkout_branches,
             cmd::switch_checkout_branch,
@@ -85,6 +73,16 @@ fn main() {
             cmd::create_engine,
             cmd::reauthorize_hub,
             cmd::compose_command,
+            cmd::compose_command_streamed,
+            cmd::read_compose_file,
+            cmd::read_compose_backup,
+            cmd::write_compose_file,
+            cmd::validate_compose_file,
+            cmd::backup_folder,
+            cmd::backup_deployment,
+            cmd::read_backup_manifest,
+            cmd::restore_plan,
+            cmd::restore_deployment,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

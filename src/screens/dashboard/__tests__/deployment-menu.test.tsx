@@ -33,6 +33,7 @@ const planDeletion = vi.fn(async (_id: string) => ({
   data_dirs: ["/home/someone/MyHub/db_data", "/home/someone/MyHub/minio_data"],
   skipped: [] as { mount: string; explanation: string }[],
   on_a_mesh: false,
+  storage: "deployment-folder" as const,
 }));
 const purgeDeploymentData = vi.fn(async (_id: string) => ({
   path: "/home/someone/MyHub",
@@ -48,6 +49,8 @@ vi.mock("@tauri-apps/plugin-shell", () => ({
 vi.mock("../../../api", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   composeCommand: (path: string, action: string) => composeCommand(path, action),
+  // The menu's actions stream now; the test only cares that the command was issued.
+  composeCommandStreamed: (path: string, action: string) => composeCommand(path, action),
   deleteDeployment: (id: string) => deleteDeployment(id),
   planDeletion: (id: string) => planDeletion(id),
   purgeDeploymentData: (id: string) => purgeDeploymentData(id),
@@ -99,7 +102,6 @@ const mount = () =>
       >
         <DeploymentMenu
           deployment={DEPLOYMENT}
-          url="http://localhost:7080"
           onRefresh={() => undefined}
           onReload={() => undefined}
         />
@@ -132,8 +134,8 @@ describe("the deployment menu", () => {
     mount();
     await openMenu();
 
+    // "Open in browser" is gone on purpose: Orkestrator is how a hub gets opened.
     for (const label of [
-      "Open in browser",
       "Open folder",
       "Logs",
       "Reload",
@@ -366,6 +368,7 @@ describe("deleting a hub's data", () => {
       data_dirs: ["/home/someone/MyHub/db_data"],
       skipped: [],
       on_a_mesh: true,
+      storage: "deployment-folder" as const,
     });
     const dialog = await openPurge();
     await waitFor(() => expect(dialog.textContent).toContain("tailnet"));
@@ -385,6 +388,7 @@ describe("deleting a hub's data", () => {
         },
       ],
       on_a_mesh: false,
+      storage: "deployment-folder" as const,
     });
     const dialog = await openPurge();
     await waitFor(() => expect(dialog.textContent).toContain("/data"));

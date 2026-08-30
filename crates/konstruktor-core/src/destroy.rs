@@ -6,10 +6,12 @@
 //! hub had never been created", and the reason both live in the core rather than in a
 //! front end is that each is a sequence with an order that matters, not a single call.
 //!
-//! Note what `docker compose down --volumes` is *not*: with the shipped profile the
-//! database and object storage are bind mounts inside the deployment folder and the stack
-//! declares no named volumes, so that command removes no data at all. Deleting data is
-//! [`purge_data`]'s job, and only [`purge_data`]'s.
+//! Where the data is depends on the profile's storage mode (`config::hub::StorageMode`).
+//! With the default named volumes, `docker compose down --volumes` is what removes it;
+//! with the folder opt-out the stack declares no data volumes and that command removes
+//! nothing, so the directories are deleted from the host. [`purge_data`] does whichever
+//! applies — it takes the stack down with its volumes *and* removes the directories a
+//! folder-mode profile names — and it is the only place data is deleted from.
 //!
 //! What it deliberately does **not** touch:
 //!
@@ -84,6 +86,9 @@ pub struct DeletionPlan {
     /// destroys it — and the key that joined the mesh was single-use, so the hub cannot
     /// simply come back. Worth saying before either destructive action, not after.
     pub on_a_mesh: bool,
+    /// Where the data is — the engine's volumes, which `down --volumes` removes, or
+    /// directories in the folder, which are `data_dirs`. Decides what the dialogs say.
+    pub storage: crate::config::hub::StorageMode,
 }
 
 /// What actually happened, step by step.
@@ -193,6 +198,10 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
             .collect(),
         skipped: found.skipped,
         on_a_mesh,
+        storage: profile
+            .as_ref()
+            .map(|profile| crate::config::hub::storage_mode_of(&profile.config))
+            .unwrap_or_default(),
     };
     Ok((dir, plan))
 }
@@ -501,7 +510,12 @@ mod tests {
         std::fs::write(dir.join("hub_credentials.json"), "{}").unwrap();
         std::fs::write(dir.join("docker-compose.yaml"), "services: {}").unwrap();
 
-        let config = build_hub_config(&HubConfigOptions::default());
+        // The folder mode: with the default volumes there would be no directory to
+        // purge, and `compose down --volumes` would be doing this instead.
+        let config = build_hub_config(&HubConfigOptions {
+            storage: crate::config::hub::StorageMode::DeploymentFolder,
+            ..Default::default()
+        });
         let (removed, failures) = purge_dirs(&dir, &config);
 
         assert!(failures.is_empty(), "{failures:?}");

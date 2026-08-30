@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { DockerProbe, dockerState } from "../communication-context";
 
 /**
- * The probe answers three questions, and each "no" has its own remedy. Collapsing them
- * into one boolean is what used to send somebody whose Docker was merely stopped to a
- * download page.
+ * The verdict is the core's. The probe arrives with its `state` already decided — by the
+ * same code `konstruktor doctor` runs — and this side adds only "checking", for before
+ * the first probe has come back. It must never re-derive the verdict from the booleans:
+ * that is how the two front ends used to drift.
  */
 
 const probe = (over: Partial<DockerProbe> = {}): DockerProbe => ({
@@ -17,37 +18,29 @@ const probe = (over: Partial<DockerProbe> = {}): DockerProbe => ({
   memory: 16_000_000_000,
   error: null,
   engine: "docker",
+  brand: "colima",
+  platform: "macos",
+  state: "ready",
+  remedies: [],
   ...over,
 });
 
-describe("what the wizard makes of a docker probe", () => {
+describe("what the app makes of a docker probe", () => {
   it("is still checking before the first probe comes back", () => {
     expect(dockerState(null)).toBe("checking");
   });
 
-  it("is ready only when all three answered", () => {
+  it("reads the verdict the core decided", () => {
     expect(dockerState(probe())).toBe("ready");
+    expect(dockerState(probe({ state: "missing" }))).toBe("missing");
+    expect(dockerState(probe({ state: "no-compose" }))).toBe("no-compose");
+    expect(dockerState(probe({ state: "no-daemon" }))).toBe("no-daemon");
+    expect(dockerState(probe({ state: "too-old" }))).toBe("too-old");
   });
 
-  it("asks for an install when the binary is not there", () => {
-    expect(dockerState(probe({ cli: false, cli_version: null }))).toBe("missing");
-  });
-
-  it("names compose when the CLI is there without its plugin", () => {
-    expect(dockerState(probe({ compose: false, compose_version: null }))).toBe(
-      "no-compose"
-    );
-  });
-
-  it("asks for the daemon to be started, not for a download", () => {
-    expect(
-      dockerState(probe({ daemon: false, api_version: null, error: "no socket" }))
-    ).toBe("no-daemon");
-  });
-
-  it("reports the missing binary first — a stopped daemon is not the point then", () => {
-    expect(dockerState(probe({ cli: false, compose: false, daemon: false }))).toBe(
-      "missing"
-    );
+  it("does not second-guess the core from the booleans", () => {
+    // The booleans say "missing"; the core said "no-daemon". The core wins — it is the
+    // only place the priority of the failures is written down.
+    expect(dockerState(probe({ cli: false, state: "no-daemon" }))).toBe("no-daemon");
   });
 });

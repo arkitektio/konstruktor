@@ -1,13 +1,18 @@
 import { open } from "@tauri-apps/plugin-shell";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Download,
-  ExternalLink,
   EyeOff,
+  FileCode2,
+  HardDriveDownload,
+  HardDriveUpload,
+  KeyRound,
   FolderOpen,
   MoreHorizontal,
   RefreshCw,
+  RotateCw,
   ScrollText,
   ShieldCheck,
   Trash2,
@@ -29,8 +34,10 @@ import {
 } from "../../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 import * as api from "../../api";
-import type { DeletionPlan, DeploymentRecord } from "../../api";
+import type { DeletionPlan, DeploymentRecord, HubStatus } from "../../api";
 import { useRegistry } from "../../registry/registry-context";
+import { BackupDialog } from "./BackupDialog";
+import { RestoreDialog } from "./RestoreDialog";
 
 /**
  * Everything you can do to a deployment that is not "start it" or "stop it".
@@ -43,7 +50,7 @@ import { useRegistry } from "../../registry/registry-context";
  */
 
 /** Which confirmation is open, if any. Each one names a different amount of loss. */
-type Confirm = "down" | "purge" | "forget" | "delete";
+type Confirm = "down" | "purge" | "forget" | "delete" | "backup" | "restore";
 
 /**
  * The two confirmations that are a line of copy and a button.
@@ -52,13 +59,13 @@ type Confirm = "down" | "purge" | "forget" | "delete";
  * be typed, and both need a description richer than a string.
  */
 const CONFIRM_COPY: Record<
-  Exclude<Confirm, "delete" | "purge">,
+  Exclude<Confirm, "delete" | "purge" | "backup" | "restore">,
   { title: string; description: string; action: string }
 > = {
   down: {
     title: "Remove the containers?",
     description:
-      "Stops and removes the containers and networks. The database and object storage stay on disk in the deployment folder, so starting it again picks up where it left off.",
+      "Stops and removes the containers and networks. The database and object storage are kept — the volumes and folders survive a down — so starting it again picks up where it left off.",
     action: "Remove",
   },
   forget: {
@@ -71,13 +78,13 @@ const CONFIRM_COPY: Record<
 
 export const DeploymentMenu = ({
   deployment,
-  /** The gateway, when the profile could be read. Absent hides the "open" item. */
-  url,
+  /** The profile, when it could be read — the seeded admin account comes from it. */
+  status,
   onRefresh,
   onReload,
 }: {
   deployment: DeploymentRecord;
-  url?: string;
+  status?: HubStatus;
   onRefresh: () => void;
   onReload: () => void;
 }) => {
@@ -116,6 +123,14 @@ export const DeploymentMenu = ({
     path: deployment.path,
     action: "pull",
     title: "Pull images",
+    callback: onRefresh,
+  });
+
+  /** `compose up` on a running stack — what applies a pulled image or a moved branch. */
+  const recreate = useComposeAction({
+    path: deployment.path,
+    action: "up",
+    title: "Recreate",
     callback: onRefresh,
   });
 
@@ -160,12 +175,6 @@ export const DeploymentMenu = ({
         </Tooltip>
 
         <DropdownMenuContent className="min-w-56">
-          {url && (
-            <DropdownMenuItem onSelect={() => open(url)}>
-              <ExternalLink />
-              Open in browser
-            </DropdownMenuItem>
-          )}
           <DropdownMenuItem onSelect={() => open(deployment.path)}>
             <FolderOpen />
             Open folder
@@ -173,6 +182,10 @@ export const DeploymentMenu = ({
           <DropdownMenuItem onSelect={() => navigate(`/logs/${deployment.id}`)}>
             <ScrollText />
             Logs
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => navigate(`/compose/${deployment.id}`)}>
+            <FileCode2 />
+            Edit compose file
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={onReload}>
             <RefreshCw />
@@ -187,19 +200,52 @@ export const DeploymentMenu = ({
             <Download />
             {pull.running ? "Pulling…" : "Pull images"}
           </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={recreate.running}
+            onSelect={() => void recreate.run()}
+          >
+            <RotateCw />
+            {recreate.running ? "Recreating…" : "Recreate containers"}
+          </DropdownMenuItem>
 
           {deployment.kind === "hub" && (
             <>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setConfirm("backup")}>
+                <HardDriveDownload />
+                Back up data…
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => navigate(`/connect/${deployment.id}`)}>
                 <ShieldCheck />
                 Authorize
               </DropdownMenuItem>
+              {/*
+                The seeded admin account, without a card of its own on the page: needed
+                once when the hub is new, so it is one item that copies the password.
+              */}
+              {status && (
+                <DropdownMenuItem
+                  onSelect={() => void writeText(status.admin_password)}
+                  title={`Copies the password for ${status.admin_user}`}
+                >
+                  <KeyRound />
+                  Copy admin password
+                  <span className="ml-auto pl-3 text-xs text-muted-foreground">
+                    {status.admin_user}
+                  </span>
+                </DropdownMenuItem>
+              )}
             </>
           )}
 
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Danger zone</DropdownMenuLabel>
+          {deployment.kind === "hub" && (
+            <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("restore")}>
+              <HardDriveUpload />
+              Restore from backup…
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("down")}>
             <Trash2 />
             Remove containers
@@ -223,6 +269,24 @@ export const DeploymentMenu = ({
         </DropdownMenuContent>
       </DropdownMenu>
 
+      {confirm === "backup" && (
+        <BackupDialog
+          open
+          deployment={deployment}
+          storage={status?.storage}
+          onOpenChange={(next) => !next && setConfirm(null)}
+        />
+      )}
+
+      {confirm === "restore" && (
+        <RestoreDialog
+          open
+          deployment={deployment}
+          onOpenChange={(next) => !next && setConfirm(null)}
+          onDone={onRefresh}
+        />
+      )}
+
       {confirm === "purge" && (
         <ConfirmByNameDialog
           open
@@ -241,6 +305,8 @@ export const DeploymentMenu = ({
               <span>
                 Stops and removes the containers, then deletes the database and the object
                 storage — every file, image and account in this hub — for good.
+                {plan?.storage === "docker-volumes" &&
+                  " The data is in Docker volumes, which are removed with the stack."}
               </span>
               {plan && plan.data_dirs.length > 0 && (
                 <span className="font-mono text-xs break-all">
@@ -293,8 +359,10 @@ export const DeploymentMenu = ({
               <span>
                 This removes the containers and the networks, and then the folder itself,
                 at <span className="font-mono break-all">{deployment.path}</span> —
-                including the database and object storage kept inside it. Nothing is left
-                behind and none of it can be undone.
+                {plan?.storage === "docker-volumes"
+                  ? " along with the Docker volumes holding the database and object storage."
+                  : " including the database and object storage kept inside it."}{" "}
+                Nothing is left behind and none of it can be undone.
               </span>
               {plan?.skipped.map((skip) => (
                 <span key={skip.mount}>

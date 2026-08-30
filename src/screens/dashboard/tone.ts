@@ -43,6 +43,19 @@ export const serviceColor = (containers: Container[]) => {
 };
 
 /**
+ * The coloured edge of a service tile, carried by the left border alone so a grid of a
+ * dozen tiles is not a grid of a dozen tinted boxes.
+ */
+export const serviceEdge = (containers: Container[], stackUp: boolean) => {
+  // Red is for a service that is down while the stack is up. With the stack off there is
+  // nothing wrong with any one service, so nothing on the page should say there is.
+  if (!stackUp || containers.length === 0) return "border-l-muted-foreground/40";
+  if (containers.every((c) => c.state === "running")) return "border-l-success";
+  if (containers.some((c) => c.state === "running")) return "border-l-warning";
+  return "border-l-destructive";
+};
+
+/**
  * "Something is waiting for you" is not "something is broken".
  *
  * Amber, never `destructive`: a hub with a pulled-but-unapplied image is working fine,

@@ -2,7 +2,20 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
   AdvertisedHost,
+  ContainerEngine,
+  InstallLine,
+  InstallOutcome,
+  InstallerId,
+  StartTarget,
+  BackupEvent,
+  BackupManifest,
+  BackupReport,
+  RestoreEvent,
+  RestoreOptions,
+  RestorePlan,
+  RestoreReport,
   Checkout,
+  ComposeFileView,
   ComposeAction,
   CreateEvent,
   DataPurge,
@@ -17,6 +30,7 @@ import type {
   HubAnswers,
   HubStatus,
   ImageState,
+  UpstreamCheck,
   ProbeResult,
   ServiceMeta,
   WellKnownFakts,
@@ -39,16 +53,42 @@ export const probeDocker = () => invoke<DockerProbe>("probe_docker");
 /**
  * Docker reduced to the one thing the UI decides on: what to tell the user next.
  *
- * The three failures stay apart because their remedies differ — a missing binary is a
- * download, a missing plugin is a newer Docker, a silent daemon is "start Docker".
+ * The verdict is the core's — `DockerProbe.state` — so the CLI's `doctor` and this app
+ * can never disagree about it. All this adds is "checking", for before the first probe
+ * has come back.
  */
 export const dockerState = (probe: DockerProbe | null) => {
   if (!probe) return "checking" as const;
-  if (!probe.cli) return "missing" as const;
-  if (!probe.compose) return "no-compose" as const;
-  if (!probe.daemon) return "no-daemon" as const;
-  return "ready" as const;
+  return probe.state;
 };
+
+/** What to call the engine in a sentence. Docker until we know otherwise. */
+const ENGINE_NAME: Record<ContainerEngine, string> = {
+  docker: "Docker",
+  podman: "Podman",
+};
+
+export const engineName = (engine: ContainerEngine | null | undefined) =>
+  (engine && ENGINE_NAME[engine]) ?? "Docker";
+
+/**
+ * Runs one of the core's fixed installers, streaming its output. The id selects a plan
+ * written in Rust; nothing typed here is ever executed.
+ */
+export const installEngine = (
+  installer: InstallerId,
+  onLine: (line: InstallLine) => void
+) => {
+  const channel = new Channel<InstallLine>();
+  channel.onmessage = onLine;
+  return invoke<InstallOutcome>("install_engine", { installer, onLine: channel });
+};
+
+export const cancelInstall = () => invoke<void>("cancel_install");
+
+/** Launches the product behind a stopped daemon and returns at once. */
+export const startEngine = (target: StartTarget) =>
+  invoke<void>("start_engine", { target });
 
 /**
  * Whether git is on this machine. Deliberately its own probe rather than a field on the
@@ -228,8 +268,9 @@ export const deleteDeployment = (id: string) =>
   invoke<Deletion>("delete_deployment", { id });
 
 /**
- * Erases a hub's data in place: the containers first, then the bind-mounted database and
- * object storage directories. The folder, `hub_config.yaml`, the credentials,
+ * Erases a hub's data in place: the containers first, with their volumes, then any
+ * database and object storage directories a folder-mode profile names. The folder,
+ * `hub_config.yaml`, the credentials,
  * `docker-compose.yaml` and `configs/` all stay, so the hub starts again empty.
  *
  * By id rather than by path, like `deleteDeployment` and for the same reason — the core
@@ -297,6 +338,23 @@ export const allowDeploymentDir = (path: string) =>
  * Buffered rather than streamed: every one of these runs to completion, and nothing in
  * the UI displays output while a command is still going.
  */
+/** One line of a compose command's narration, as Rust streams it. */
+export type ComposeLine = { line: string; stderr: boolean };
+
+/**
+ * `composeCommand`, with every line of output handed to `onLine` as it is written —
+ * what the buttons turn into progress. Resolves to the whole stdout at the end.
+ */
+export const composeCommandStreamed = (
+  path: string,
+  action: ComposeAction,
+  onLine: (line: ComposeLine) => void
+) => {
+  const channel = new Channel<ComposeLine>();
+  channel.onmessage = onLine;
+  return invoke<string>("compose_command_streamed", { path, action, onLine: channel });
+};
+
 export const composeCommand = (
   path: string,
   action: ComposeAction,
@@ -325,6 +383,10 @@ export const restartContainer = (containerId: string) =>
 export const deploymentImages = (path: string) =>
   invoke<ImageState[]>("deployment_images", { path });
 
+/** Asks each image's registry whether its tag moved on since the last pull. Network. */
+export const checkUpdates = (path: string) =>
+  invoke<UpstreamCheck[]>("check_updates", { path });
+
 export type Container = {
   id: string | null;
   names: string[] | null;
@@ -337,4 +399,77 @@ export type Container = {
   status: string | null;
   state: string | null;
   service: string | null;
+};
+
+// --- the compose file, by hand -------------------------------------------------
+
+export const readComposeFile = (path: string) =>
+  invoke<ComposeFileView>("read_compose_file", { path });
+
+export const readComposeBackup = (path: string) =>
+  invoke<string | null>("read_compose_backup", { path });
+
+/** Saves the file, keeping the previous one as `docker-compose.yaml.bak`. */
+export const writeComposeFile = (path: string, contents: string) =>
+  invoke<void>("write_compose_file", { path, contents });
+
+/**
+ * Docker's own verdict on the file on disk: `null` when it accepts it, otherwise the
+ * complaint it printed. Rejects only when the engine could not be asked at all.
+ */
+export const validateComposeFile = (path: string) =>
+  invoke<string | null>("validate_compose_file", { path });
+
+// --- backups ---------------------------------------------------------------------
+
+/** Where a backup started now would land, for the dialog to say before it starts. */
+export const backupFolder = (path: string, target: string) =>
+  invoke<string>("backup_folder", { path, target });
+
+/**
+ * Backs the hub up into `target`, with every line of progress handed to `onEvent`.
+ * Resolves to the report once the folder is complete.
+ */
+export const backupDeployment = (
+  path: string,
+  target: string,
+  onEvent: (event: BackupEvent) => void
+) => {
+  const channel = new Channel<BackupEvent>();
+  channel.onmessage = onEvent;
+  return invoke<BackupReport>("backup_deployment", { path, target, onEvent: channel });
+};
+
+// --- restore -----------------------------------------------------------------------
+
+export const readBackupManifest = (backup: string) =>
+  invoke<BackupManifest>("read_backup_manifest", { backup });
+
+/** The comparison, for the review step. Touches nothing. */
+export const restorePlan = (path: string, backup: string, options: RestoreOptions) =>
+  invoke<RestorePlan>("restore_plan", {
+    path,
+    backup,
+    method: options.method,
+    restorePostgres: options.restore_postgres,
+    restoreMinio: options.restore_minio,
+  });
+
+/** The restore itself; resolves to the report once the health check is done. */
+export const restoreDeployment = (
+  path: string,
+  backup: string,
+  options: RestoreOptions,
+  onEvent: (event: RestoreEvent) => void
+) => {
+  const channel = new Channel<RestoreEvent>();
+  channel.onmessage = onEvent;
+  return invoke<RestoreReport>("restore_deployment", {
+    path,
+    backup,
+    method: options.method,
+    restorePostgres: options.restore_postgres,
+    restoreMinio: options.restore_minio,
+    onEvent: channel,
+  });
 };

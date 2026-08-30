@@ -1,8 +1,9 @@
 //! Getting a hub's data directories back so they can be deleted.
 //!
-//! A hub keeps its database and its object storage in **bind mounts inside its own
-//! folder** — `./db_data` and `./minio_data` by default. That is deliberate (see
-//! `config::hub`), but it has a consequence nothing else in the app had to deal with: the
+//! A hub that opted out of the engine's volumes keeps its database and its object
+//! storage in **bind mounts inside its own folder** — `./db_data` and `./minio_data`
+//! (see `config::hub::StorageMode`). That has a consequence nothing else in the app had
+//! to deal with: the
 //! Docker daemon runs as root, creates those directories itself on the first `compose
 //! up`, and the containers write into them as root. A desktop user then cannot delete
 //! them, and `remove_dir_all` fails with `EACCES`.
@@ -520,7 +521,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("minio_data")).unwrap();
         let root = std::fs::canonicalize(&dir).unwrap();
 
-        let mut config = build_hub_config(&HubConfigOptions::default());
+        let mut config = build_hub_config(&HubConfigOptions {
+            storage: crate::config::hub::StorageMode::DeploymentFolder,
+            ..Default::default()
+        });
         let found = data_dirs(&dir, &config);
         assert_eq!(
             found.removable,

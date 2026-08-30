@@ -1,6 +1,9 @@
-import { ArrowRight, Boxes, Plus, Puzzle, TriangleAlert } from "lucide-react";
+import { ArrowRight, Boxes, Plus, Puzzle, TriangleAlert, Wrench } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { engineName } from "../api";
 import { useCommunication } from "../communication/communication-context";
+import { EngineSetupDialog } from "../components/engine/EngineSetupDialog";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Logo } from "../layout/Logo";
@@ -9,11 +12,12 @@ import type { DeploymentRecord } from "../api";
 import { useRegistry } from "../registry/registry-context";
 import { DeploymentPaths } from "./deploy/NewDeployment";
 
-/** What Home says about Docker when it is not ready. Silent when it is. */
-const DOCKER_WARNING: Record<string, string> = {
-  missing: "Docker is not installed. A new deployment cannot be started without it.",
-  "no-compose": "Docker is here, but the compose plugin is missing.",
-  "no-daemon": "Docker is installed, but not running. Start it to manage deployments.",
+/** What Home says about the engine when it is not ready. Silent when it is. */
+const DOCKER_WARNING: Record<string, (name: string) => string> = {
+  missing: () => "No container engine is installed. A deployment cannot be started without one.",
+  "no-compose": (name) => `${name} is here, but the compose plugin is missing.`,
+  "no-daemon": (name) => `${name} is installed, but not running. Start it to manage deployments.`,
+  "too-old": (name) => `${name} is installed, but too old for the stacks Konstruktor writes.`,
 };
 
 /**
@@ -89,9 +93,10 @@ const Column = ({
 
 export const Home: React.FC<{}> = () => {
   const { deployments, loading } = useRegistry();
-  const { state } = useCommunication();
+  const { state, probe } = useCommunication();
+  const [setup, setSetup] = useState(false);
 
-  const warning = DOCKER_WARNING[state];
+  const warning = DOCKER_WARNING[state]?.(engineName(probe?.engine));
   const engines = deployments.filter((d) => d.kind === "engine");
   const hubs = deployments.filter((d) => d.kind !== "engine");
 
@@ -117,7 +122,7 @@ export const Home: React.FC<{}> = () => {
             </p>
           </div>
 
-          {warning && <DockerWarning message={warning} />}
+          {warning && <DockerWarning message={warning} onFix={() => setSetup(true)} />}
 
           {/*
             Split by kind, side by side. A hub and a plugin engine are different things
@@ -162,7 +167,7 @@ export const Home: React.FC<{}> = () => {
               </p>
             </div>
 
-            {warning && <DockerWarning message={warning} />}
+            {warning && <DockerWarning message={warning} onFix={() => setSetup(true)} />}
 
             <div className="w-full text-left">
               <DeploymentPaths />
@@ -170,13 +175,20 @@ export const Home: React.FC<{}> = () => {
           </div>
         </div>
       )}
+
+      <EngineSetupDialog open={setup} onOpenChange={setSetup} />
     </Page>
   );
 };
 
-const DockerWarning = ({ message }: { message: string }) => (
-  <div className="flex items-start gap-2 rounded-lg border border-warning/60 bg-warning/10 px-3 py-2 text-left text-xs">
-    <TriangleAlert className="size-3.5 shrink-0 mt-0.5 text-warning" />
-    <span className="text-muted-foreground">{message}</span>
+/** The warning, with the one thing to do about it: open the panel that knows how. */
+const DockerWarning = ({ message, onFix }: { message: string; onFix: () => void }) => (
+  <div className="flex items-center gap-2 rounded-lg border border-warning/60 bg-warning/10 px-3 py-2 text-left text-xs w-full">
+    <TriangleAlert className="size-3.5 shrink-0 text-warning" />
+    <span className="text-muted-foreground flex-1">{message}</span>
+    <Button size="xs" variant="outline" onClick={onFix}>
+      <Wrench className="size-3" />
+      Fix it
+    </Button>
   </div>
 );

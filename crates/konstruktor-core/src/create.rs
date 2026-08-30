@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog::ServiceId;
-use crate::config::hub::{build_hub_config, HubConfig, HubConfigOptions, ServiceOptions};
+use crate::config::hub::{
+    build_hub_config, HubConfig, HubConfigOptions, ServiceOptions, StorageMode,
+};
 use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshOptions};
 use crate::connect::authorize::{self, HubAuthorizationError};
 use crate::connect::manifest::{build_hub_request, AdvertisedHost, HubManifestOptions};
@@ -88,6 +90,10 @@ pub struct HubAnswers {
     /// CLI's "all of them" and the two are a union.
     #[serde(default)]
     pub service_options: BTreeMap<ServiceId, ServiceOptions>,
+    /// Where the database and object storage keep their data: the engine's own volumes
+    /// (the default, and the fast one) or bind mounts in the deployment folder.
+    #[serde(default)]
+    pub storage: StorageMode,
 }
 
 fn local() -> String {
@@ -232,6 +238,7 @@ pub async fn create_hub(
         mesh: manual_mesh,
         dev_hub: answers.dev_hub,
         service_options: answers.service_options.clone(),
+        storage: answers.storage,
         ..Default::default()
     });
 
@@ -410,33 +417,10 @@ pub async fn create_hub(
 
 /// The three remedies, worded once.
 ///
-/// The engine names itself where it matters: Podman runs the same deployment through the
-/// same subcommands, and telling somebody running Podman that their Docker is not running
-/// is a wrong instruction rather than merely wrong wording. Only the install path stays
-/// Docker's — it is what somebody with no engine at all is pointed towards.
+/// The verdict and what to do about it, as text. Worded once, in `remedy`, for both
+/// front ends — the desktop app shows the same remedies as buttons.
 pub fn describe_docker(probe: &docker::DockerProbe) -> String {
-    let name = probe.engine_label();
-    match probe.state() {
-        docker::DockerState::Ready => format!("{name} is ready."),
-        docker::DockerState::Missing => {
-            "No container engine is installed. Konstruktor hands the finished deployment \
-             to Docker Compose, so Docker has to be on this machine — see \
-             https://docs.docker.com/get-started/get-docker/"
-                .into()
-        }
-        docker::DockerState::NoCompose => {
-            format!(
-                "{name} is installed, but `compose` is not. Compose ships as a plugin \
-                 with current versions — see https://docs.docker.com/compose/install/"
-            )
-        }
-        docker::DockerState::NoDaemon => {
-            format!(
-                "{name} is installed, but the daemon is not answering. Start {name} and \
-                 try again."
-            )
-        }
-    }
+    crate::remedy::describe(probe)
 }
 
 /// An RFC 3339 timestamp without pulling in a date library for one call site.

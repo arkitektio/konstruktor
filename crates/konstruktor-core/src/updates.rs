@@ -1,0 +1,279 @@
+//! "Is there something newer upstream?" — answered without pulling.
+//!
+//! A pull is the honest way to find out, and the expensive one: it downloads the layers
+//! whether or not anything changed. A registry answers the same question for free — the
+//! digest a tag resolves to is in one response header — so the dashboard asks the
+//! registry when it opens and only suggests a pull when the answer differs from what the
+//! engine already holds.
+//!
+//! Only the digest is compared. Every registry that speaks the distribution API (Docker
+//! Hub, GHCR, Quay, a private one) returns `Docker-Content-Digest` for a manifest request,
+//! and that digest is exactly what the engine records in `RepoDigests` after a pull.
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tokio::task::JoinSet;
+
+use crate::docker::ImageState;
+
+const TIMEOUT: Duration = Duration::from_secs(10);
+
+const ACCEPT: &str = "application/vnd.docker.distribution.manifest.list.v2+json, \
+application/vnd.oci.image.index.v1+json, \
+application/vnd.docker.distribution.manifest.v2+json, \
+application/vnd.oci.image.manifest.v1+json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpstreamState {
+    /// The tag upstream points at what the engine already has.
+    Current,
+    /// The tag has moved on; a pull would bring something new.
+    Newer,
+    /// Nothing pulled yet, so there is nothing to compare — a pull is due regardless.
+    Missing,
+    /// The registry could not be asked, or did not say. `error` explains.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamCheck {
+    pub service: String,
+    pub image: String,
+    pub state: UpstreamState,
+    pub remote_digest: Option<String>,
+    pub error: Option<String>,
+}
+
+/// One image reference, taken apart the way the engine does it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Reference {
+    pub host: String,
+    pub repository: String,
+    pub tag: String,
+}
+
+/// `[host/]path[:tag]` — Docker's rules: the first component is a host only if it has a
+/// dot or a port, or is `localhost`; a bare Hub name lives under `library/`.
+pub(crate) fn parse(image: &str) -> Reference {
+    // A `@sha256:…` pin cannot move, but it is not what the stack files write; strip it
+    // so the tag lookup still works if someone does.
+    let image = image.split('@').next().unwrap_or(image);
+
+    let (mut path, tag) = match image.rsplit_once(':') {
+        // `host:5000/repo` has a colon before a slash — that is a port, not a tag.
+        Some((path, tag)) if !tag.contains('/') => (path.to_string(), tag.to_string()),
+        _ => (image.to_string(), "latest".to_string()),
+    };
+
+    let mut host = "registry-1.docker.io".to_string();
+    if let Some((first, rest)) = path.split_once('/') {
+        if first.contains('.') || first.contains(':') || first == "localhost" {
+            host = if first == "docker.io" {
+                "registry-1.docker.io".to_string()
+            } else {
+                first.to_string()
+            };
+            path = rest.to_string();
+        }
+    }
+    if host == "registry-1.docker.io" && !path.contains('/') {
+        path = format!("library/{path}");
+    }
+
+    Reference {
+        host,
+        repository: path,
+        tag,
+    }
+}
+
+/// The digest `image` resolves to at its registry right now.
+pub async fn remote_digest(image: &str) -> Result<String, String> {
+    let reference = parse(image);
+    let client = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://{}/v2/{}/manifests/{}",
+        reference.host, reference.repository, reference.tag
+    );
+
+    let first = client
+        .head(&url)
+        .header("Accept", ACCEPT)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let response = if first.status() == reqwest::StatusCode::UNAUTHORIZED {
+        let challenge = first
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| "registry asked for auth without saying how".to_string())?;
+        let token = token(&client, challenge, &reference).await?;
+        client
+            .head(&url)
+            .header("Accept", ACCEPT)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        first
+    };
+
+    if !response.status().is_success() {
+        return Err(format!("registry answered {}", response.status()));
+    }
+    response
+        .headers()
+        .get("docker-content-digest")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .ok_or_else(|| "registry did not report a digest".to_string())
+}
+
+/// Trades a `Bearer realm=…,service=…,scope=…` challenge for an anonymous pull token.
+async fn token(
+    client: &reqwest::Client,
+    challenge: &str,
+    reference: &Reference,
+) -> Result<String, String> {
+    let params = challenge
+        .trim_start_matches("Bearer ")
+        .split(',')
+        .filter_map(|part| {
+            let (key, value) = part.trim().split_once('=')?;
+            Some((key.to_string(), value.trim_matches('"').to_string()))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let realm = params
+        .get("realm")
+        .ok_or_else(|| "auth challenge without a realm".to_string())?;
+    let scope = params
+        .get("scope")
+        .cloned()
+        .unwrap_or_else(|| format!("repository:{}:pull", reference.repository));
+
+    let mut query = vec![("scope", scope)];
+    if let Some(service) = params.get("service") {
+        query.push(("service", service.clone()));
+    }
+
+    #[derive(Deserialize)]
+    struct Token {
+        token: Option<String>,
+        access_token: Option<String>,
+    }
+    let issued: Token = client
+        .get(realm)
+        .query(&query)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    issued
+        .token
+        .or(issued.access_token)
+        .ok_or_else(|| "auth server issued no token".to_string())
+}
+
+fn digest_of(repo_digest: &str) -> &str {
+    repo_digest.rsplit('@').next().unwrap_or(repo_digest)
+}
+
+/// Every image the stack declares, checked against its registry, concurrently.
+pub async fn check(images: &[ImageState]) -> Vec<UpstreamCheck> {
+    let mut set = JoinSet::new();
+    for (index, state) in images.iter().cloned().enumerate() {
+        set.spawn(async move { (index, check_one(state).await) });
+    }
+    let mut results = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(item) = joined {
+            results.push(item);
+        }
+    }
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, check)| check).collect()
+}
+
+async fn check_one(local: ImageState) -> UpstreamCheck {
+    let base = |state, remote_digest, error| UpstreamCheck {
+        service: local.service.clone(),
+        image: local.image.clone(),
+        state,
+        remote_digest,
+        error,
+    };
+
+    if !local.present {
+        return base(UpstreamState::Missing, None, None);
+    }
+    match remote_digest(&local.image).await {
+        Ok(remote) => {
+            let known = local
+                .repo_digests
+                .iter()
+                .any(|d| digest_of(d) == remote);
+            if local.repo_digests.is_empty() {
+                // Built locally, or loaded from a tarball: there is no digest to compare.
+                base(
+                    UpstreamState::Unknown,
+                    Some(remote),
+                    Some("local image carries no registry digest".to_string()),
+                )
+            } else if known {
+                base(UpstreamState::Current, Some(remote), None)
+            } else {
+                base(UpstreamState::Newer, Some(remote), None)
+            }
+        }
+        Err(error) => base(UpstreamState::Unknown, None, Some(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_references() {
+        assert_eq!(
+            parse("jhnnsrs/rekuest:next"),
+            Reference {
+                host: "registry-1.docker.io".into(),
+                repository: "jhnnsrs/rekuest".into(),
+                tag: "next".into()
+            }
+        );
+        assert_eq!(parse("postgres").repository, "library/postgres");
+        assert_eq!(parse("postgres").tag, "latest");
+        assert_eq!(parse("docker.io/library/redis:7").host, "registry-1.docker.io");
+    }
+
+    #[test]
+    fn other_registries() {
+        let ghcr = parse("ghcr.io/arkitektio/kabinet:dev");
+        assert_eq!(ghcr.host, "ghcr.io");
+        assert_eq!(ghcr.repository, "arkitektio/kabinet");
+        let ported = parse("localhost:5000/thing");
+        assert_eq!(ported.host, "localhost:5000");
+        assert_eq!(ported.repository, "thing");
+        assert_eq!(ported.tag, "latest");
+        assert_eq!(parse("quay.io/minio/minio@sha256:abc").tag, "latest");
+    }
+
+    #[test]
+    fn digest_strips_repo() {
+        assert_eq!(digest_of("jhnnsrs/rekuest@sha256:abc"), "sha256:abc");
+    }
+}

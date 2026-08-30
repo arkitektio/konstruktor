@@ -76,7 +76,15 @@ pub struct CreatedEngine {
 /// engine is a long-running agent whose job is to be there when somebody installs a
 /// plugin, and a machine that reboots should come back with it running.
 pub fn build_engine_compose(engine: EngineKind) -> Value {
+    build_engine_compose_at(engine, None)
+}
+
+/// The same, with the host side of the socket mount overridden — a rootless daemon on
+/// Linux serves from under `$XDG_RUNTIME_DIR`, not `/var/run`. Inside the container it
+/// stays at the classic path, which is where the deployer looks.
+pub fn build_engine_compose_at(engine: EngineKind, host_socket: Option<&str>) -> Value {
     let socket = engine.container_socket();
+    let host = host_socket.unwrap_or(socket);
     map(vec![(
         "services",
         map(vec![(
@@ -91,7 +99,7 @@ pub fn build_engine_compose(engine: EngineKind) -> Value {
                         // The socket is bind-mounted, not proxied: the deployer starts
                         // sibling containers on this machine's daemon rather than
                         // running a daemon of its own.
-                        s(&format!("{socket}:{socket}")),
+                        s(&format!("{host}:{socket}")),
                         // Its identity, read-only. This is the file the device-code flow
                         // produced: a client id and a refresh token, which is all the
                         // engine needs to get itself an access token from then on.
@@ -108,11 +116,12 @@ pub fn generate_engine_files(
     answers: &EngineAnswers,
     granted: &AppEnvelope,
     engine: EngineKind,
+    host_socket: Option<&str>,
 ) -> GeneratedFiles {
     let mut files = GeneratedFiles::new();
     files.insert(
         "docker-compose.yaml".to_string(),
-        crate::generate::dump(&build_engine_compose(engine)),
+        crate::generate::dump(&build_engine_compose_at(engine, host_socket)),
     );
     files.insert(
         CONFIG_FILE.to_string(),
@@ -254,7 +263,9 @@ pub async fn create_engine(
     on(CreateEvent::Granted { mesh_key: false });
 
     // --- write --------------------------------------------------------------
-    let files = generate_engine_files(answers, &granted, crate::engine_probe::engine().kind);
+    let engine = crate::engine_probe::engine();
+    let host_socket = docker::host_socket(&engine).await;
+    let files = generate_engine_files(answers, &granted, engine.kind, host_socket.as_deref());
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
     }
@@ -348,7 +359,7 @@ mod tests {
 
     #[test]
     fn an_engine_is_a_compose_file_and_its_identity() {
-        let files = generate_engine_files(&answers(), &granted(), EngineKind::Docker);
+        let files = generate_engine_files(&answers(), &granted(), EngineKind::Docker, None);
         let names: Vec<&str> = files.keys().map(String::as_str).collect();
         assert_eq!(names, ["configs/deployer.yaml", "docker-compose.yaml"]);
     }
@@ -368,7 +379,7 @@ mod tests {
     /// refresh token, and *not* the access token, which is stale within the hour.
     #[test]
     fn the_container_is_handed_the_client_and_the_refresh_token() {
-        let files = generate_engine_files(&answers(), &granted(), EngineKind::Docker);
+        let files = generate_engine_files(&answers(), &granted(), EngineKind::Docker, None);
         let config = &files["configs/deployer.yaml"];
 
         assert!(config.contains("client_id: engine-client-id"));

@@ -13,6 +13,8 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Page } from "../layout/Page";
 import { PageHeader, SectionHeading } from "../layout/PageHeader";
+import { useCommunication } from "../communication/communication-context";
+import { EngineSetupPanel } from "../components/engine/EngineSetupPanel";
 import { DeploymentMenu } from "./dashboard/DeploymentMenu";
 import { RUN_STATE_DOT } from "./dashboard/tone";
 import { RUN_STATE_LABEL, runSummary } from "./dashboard/lifecycle";
@@ -29,6 +31,10 @@ import { cn } from "../utils";
  */
 export const EngineDashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
   const [containers, setContainers] = useState<Container[]>([]);
+  const { state: engineState } = useCommunication();
+  // The daemon went away — or was never there. An empty container list would read as
+  // "not started"; this reads as what it is.
+  const engineDown = engineState !== "ready" && engineState !== "checking";
 
   const load = useCallback(async () => {
     try {
@@ -108,6 +114,12 @@ export const EngineDashboard = ({ deployment }: { deployment: DeploymentRecord }
             />
           }
         />
+
+        {engineDown && (
+          <div className="max-w-2xl">
+            <EngineSetupPanel />
+          </div>
+        )}
 
         <div>
           <SectionHeading hint="The one container this deployment is. It holds this machine's Docker socket, which is how it starts and stops plugins.">

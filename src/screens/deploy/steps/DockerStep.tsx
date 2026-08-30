@@ -1,159 +1,15 @@
 import { open } from "@tauri-apps/plugin-shell";
-import {
-  CircleCheck,
-  Download,
-  ExternalLink,
-  GitBranch,
-  Loader2,
-  Play,
-  RefreshCw,
-  TriangleAlert,
-} from "lucide-react";
+import { ExternalLink, GitBranch, RefreshCw } from "lucide-react";
 import { useEffect } from "react";
 import { useFormContext } from "react-hook-form";
-import type { ContainerEngine, DockerProbe, DockerState, GitProbe } from "../../../api";
+import type { GitProbe } from "../../../api";
 import { useCommunication } from "../../../communication/communication-context";
 import { ErrorDisplay } from "../../../components/Error";
-import { Alert } from "../../../components/ui/alert";
-import { Badge } from "../../../components/ui/badge";
+import { EngineSetupPanel } from "../../../components/engine/EngineSetupPanel";
 import { Button } from "../../../components/ui/button";
 import { Card } from "../../../components/ui/card";
 import { cn } from "../../../utils";
 import { StepFrame } from "../../wizard/StepFrame";
-
-/**
- * Where the Docker install instructions live, per platform. `plugin-os` reads a value
- * the shell injects, which is absent outside the Tauri window (tests, `vite dev` in a
- * browser), so the lookup is guarded and falls back to the generic page.
- */
-const INSTALL_DOCS: Record<string, string> = {
-  macos: "https://docs.docker.com/desktop/setup/install/mac-install/",
-  windows: "https://docs.docker.com/desktop/setup/install/windows-install/",
-  linux: "https://docs.docker.com/engine/install/",
-};
-
-const GENERIC_DOCS = "https://docs.docker.com/get-started/get-docker/";
-
-const installDocs = (): string => {
-  try {
-    // Read straight off the injected global rather than through `platform()`, which
-    // throws when the global is absent — outside the Tauri window we just want the
-    // generic page, not an exception on a cosmetic lookup.
-    const platform = (window as any).__TAURI_OS_PLUGIN_INTERNALS__?.platform;
-    return INSTALL_DOCS[platform] ?? GENERIC_DOCS;
-  } catch {
-    return GENERIC_DOCS;
-  }
-};
-
-type Verdict = {
-  tone: "ok" | "warn" | "bad";
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  body: string;
-  /** The one thing to do about it, when there is one. */
-  action?: { label: string; url: string; icon: React.ComponentType<{ className?: string }> };
-};
-
-/** What to call the engine that answered. Docker until we know otherwise. */
-const ENGINE_NAME: Record<ContainerEngine, string> = {
-  docker: "Docker",
-  podman: "Podman",
-};
-
-const engineName = (engine: ContainerEngine | null | undefined) =>
-  (engine && ENGINE_NAME[engine]) ?? "Docker";
-
-/**
- * Each way this can go has its own remedy — that is the whole point of splitting the
- * probe into `cli` / `compose` / `daemon` rather than one boolean. Sending somebody
- * whose Docker is merely stopped to a download page wastes a download and their time.
- *
- * The name is a parameter because Podman answers the same three questions and runs the
- * same deployment; telling a Podman user their Docker is not running would be a wrong
- * instruction, not just wrong wording. Only the install path stays Docker's: it is what
- * we point somebody with no engine at all towards.
- */
-const verdicts = (name: string): Record<Exclude<DockerState, "checking">, Verdict> => ({
-  ready: {
-    tone: "ok",
-    icon: CircleCheck,
-    title: `${name} is ready`,
-    body: "The CLI, the compose plugin and the daemon all answered. Konstruktor can write this deployment, and you can start it from the dashboard afterwards.",
-  },
-  missing: {
-    tone: "bad",
-    icon: Download,
-    title: "Docker is not installed",
-    body: "Konstruktor hands the finished deployment to Docker Compose, so Docker has to be on this machine. It is the only thing you need to install — there is no Python and no CLI to set up. Install it, then come back and check again.",
-    action: { label: "Install Docker", url: installDocs(), icon: Download },
-  },
-  "no-compose": {
-    tone: "bad",
-    icon: TriangleAlert,
-    title: `${name} is installed, but Compose is missing`,
-    body: "The command line works, but `compose` does not. Compose ships as a plugin with current versions — installing a recent Docker Desktop, or the compose plugin, fixes this.",
-    action: {
-      label: "How to install Compose",
-      url: "https://docs.docker.com/compose/install/",
-      icon: ExternalLink,
-    },
-  },
-  "no-daemon": {
-    tone: "warn",
-    icon: Play,
-    title: `${name} is installed, but not running`,
-    body: `The command line is there, but the daemon is not answering. Start ${name} and check again — the stack cannot be started until it responds.`,
-  },
-});
-
-const TONE = {
-  ok: "border-primary/60 bg-primary/5",
-  warn: "border-warning/60 bg-warning/10",
-  bad: "border-destructive/60 bg-destructive/5",
-} as const;
-
-const ICON_TONE = {
-  ok: "text-primary",
-  warn: "text-warning",
-  bad: "text-destructive",
-} as const;
-
-/**
- * The individual findings, so "it says no" is never the whole answer.
- *
- * Only the three Docker asks itself about live here. Git is checked in a section of its
- * own further down: it is reported, never required, and a grey dot next to the three
- * that decide whether the wizard can continue reads like a fourth failure.
- */
-const Findings = ({ probe }: { probe: DockerProbe }) => (
-  <div className="flex flex-wrap gap-1.5 mt-3">
-    <Finding ok={probe.cli} label={probe.engine ?? "docker"} detail={probe.cli_version} />
-    <Finding ok={probe.compose} label="compose" detail={probe.compose_version} />
-    <Finding ok={probe.daemon} label="daemon" detail={probe.api_version && `API ${probe.api_version}`} />
-  </div>
-);
-
-const Finding = ({
-  ok,
-  label,
-  detail,
-}: {
-  ok: boolean;
-  label: string;
-  detail?: string | null;
-}) => (
-  <Badge
-    variant="outline"
-    className={cn("gap-1 font-normal", ok ? "text-foreground" : "text-muted-foreground")}
-  >
-    <span
-      className={cn("size-1.5 rounded-full", ok ? "bg-primary" : "bg-muted-foreground/40")}
-    />
-    {label}
-    {ok && detail ? <span className="text-muted-foreground">{detail}</span> : null}
-  </Badge>
-);
 
 /**
  * Git, checked on its own.
@@ -244,7 +100,7 @@ const GitSection = ({
  * cached answer from before that would be wrong.
  */
 export const DockerStep = () => {
-  const { probe, state, checking, recheck, git } = useCommunication();
+  const { state, checking, recheck, git } = useCommunication();
   const { setValue } = useFormContext();
 
   useEffect(() => {
@@ -255,65 +111,13 @@ export const DockerStep = () => {
     setValue("dockerOk", state === "ready", { shouldValidate: true });
   }, [state, setValue]);
 
-  const verdict = state === "checking" ? undefined : verdicts(engineName(probe?.engine))[state];
-  const Icon = verdict?.icon ?? Loader2;
-
   return (
     <StepFrame
       title="Docker"
       subtitle="The one thing this machine has to have"
       lead="Konstruktor writes the deployment itself and hands it to Docker Compose to run. Nothing else gets installed on your system — no Python, no CLI, no helper container."
     >
-      <Card
-        className={cn(
-          "gap-0 py-5 border transition-colors",
-          verdict ? TONE[verdict.tone] : "border-border"
-        )}
-      >
-        <div className="px-5 flex items-start gap-3">
-          <Icon
-            className={cn(
-              "size-5 shrink-0 mt-0.5",
-              verdict ? ICON_TONE[verdict.tone] : "animate-spin text-muted-foreground"
-            )}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="font-semibold">
-              {verdict?.title ?? "Looking for a container engine…"}
-            </div>
-            <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
-              {verdict?.body ??
-                "Checking whether the Docker or Podman command line, the compose plugin and the daemon are all here."}
-            </p>
-
-            {probe && <Findings probe={probe} />}
-
-            <div className="flex flex-wrap items-center gap-2 mt-4">
-              {verdict?.action && (
-                <Button size="sm" onClick={() => open(verdict.action!.url)}>
-                  <verdict.action.icon className="size-3.5" />
-                  {verdict.action.label}
-                </Button>
-              )}
-              {state !== "ready" && (
-                <Button
-                  size="sm"
-                  variant={verdict?.action ? "outline" : "default"}
-                  disabled={checking}
-                  onClick={() => recheck()}
-                >
-                  <RefreshCw className={cn("size-3.5", checking && "animate-spin")} />
-                  {checking ? "Checking…" : "Check again"}
-                </Button>
-              )}
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {state === "no-daemon" && probe?.error && (
-        <Alert className="mt-3 text-xs text-muted-foreground">{probe.error}</Alert>
-      )}
+      <EngineSetupPanel />
 
       {/* Its own section: a different question, with a different answer, from Docker's. */}
       <GitSection git={git} checking={checking} recheck={recheck} />

@@ -23,8 +23,9 @@ serde.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 thiserror.workspace = true
 strip-ansi-escapes = "0.2"
-tokio.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "rt", "macros"] }
 tokio-util.workspace = true
+dirs.workspace = true
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"

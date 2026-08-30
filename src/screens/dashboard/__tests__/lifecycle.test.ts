@@ -26,6 +26,7 @@ const image = (over: Partial<ImageState>): ImageState => ({
   present: true,
   image_id: "sha256:aaa",
   created: "2026-08-01T10:00:00Z",
+  repo_digests: ["jhnnsrs/rekuest@sha256:aaa"],
   ...over,
 });
 

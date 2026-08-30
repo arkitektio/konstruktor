@@ -656,3 +656,57 @@ mod beyond_upstream {
         );
     }
 }
+
+/// Where the data goes, as the compose file spells it. The default is the engine's own
+/// volumes; the opt-out is bind mounts in the folder, and then no data volume is declared
+/// at all — which is what makes `down --volumes` harmless for that shape of hub.
+mod storage {
+    use super::*;
+    use konstruktor_core::catalog::ServiceId;
+    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions, StorageMode};
+
+    fn built(storage: StorageMode) -> HubConfig {
+        build_hub_config(&HubConfigOptions {
+            device_id: "device".into(),
+            coord_server: "go.arkitekt.live".into(),
+            services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
+            storage,
+            ..Default::default()
+        })
+    }
+
+    fn compose(config: &HubConfig) -> Value {
+        let files = generate_hub_files(config, &IssuedIdentity::default());
+        serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML")
+    }
+
+    #[test]
+    fn the_default_keeps_the_data_in_named_volumes() {
+        let compose = compose(&built(StorageMode::DockerVolumes));
+        assert_eq!(
+            compose["services"]["db"]["volumes"][0],
+            Value::from("db_data:/var/lib/postgresql/data")
+        );
+        assert_eq!(
+            compose["services"]["minio"]["volumes"][0],
+            Value::from("minio_data:/data")
+        );
+        assert!(compose["volumes"].get("db_data").is_some());
+        assert!(compose["volumes"].get("minio_data").is_some());
+    }
+
+    #[test]
+    fn the_opt_out_bind_mounts_into_the_folder_and_declares_no_data_volume() {
+        let compose = compose(&built(StorageMode::DeploymentFolder));
+        assert_eq!(
+            compose["services"]["db"]["volumes"][0],
+            Value::from("./db_data:/var/lib/postgresql/data")
+        );
+        assert_eq!(
+            compose["services"]["minio"]["volumes"][0],
+            Value::from("./minio_data:/data")
+        );
+        assert!(compose["volumes"].get("db_data").is_none());
+        assert!(compose["volumes"].get("minio_data").is_none());
+    }
+}

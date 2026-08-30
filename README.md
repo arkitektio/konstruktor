@@ -8,19 +8,32 @@ the [Arkitekt](http://arkitekt.live) platform.
 
 # About Docker!
 
-Konstruktor writes the deployment itself and hands it to Docker Compose to run, so Docker has to be
-installed on the host machine — but nothing else does. There is no Python, no `arkitekt-next` CLI and
-no helper container involved. The app checks for the presence of Docker and Docker Compose, but will
-**not** install them.
+Konstruktor writes the deployment itself and hands it to Docker Compose to run, so a
+Docker-compatible container engine has to be on the machine — but nothing else does. There is no
+Python, no `arkitekt-next` CLI and no helper container involved.
 
-The check runs as the app starts and again as the first step of the wizard, and it answers three
-questions separately, because each "no" has its own remedy: the `docker` binary is missing (install
-Docker), the CLI is there without its compose plugin (install a current Docker), or the daemon is not
-answering (start Docker). The wizard will not go past that step until all three are satisfied.
+The check runs as the app starts, again as the first step of the wizard, and keeps running on its
+own until the engine is ready. It answers the questions separately, because each "no" has its own
+remedy: no engine binary at all, a `docker` CLI without its `compose` plugin, a daemon that is not
+answering, or an engine too old for the generated stacks (Compose < 2.20, Engine API < 1.41). The
+wizard will not go past that step until all are satisfied.
 
- Please refer to the [Docker documentation](https://docs.docker.com/get-docker/) for
-instructions on how to install Docker on your machine.
+When something is wrong the app shows what to do for **your** OS and, where it can tell, for the
+product you already have — "start Colima" rather than "start Docker". Open-source engines come
+first:
 
+| OS      | Recommended                                  | Also works                                    |
+| ------- | -------------------------------------------- | --------------------------------------------- |
+| macOS   | **Colima** — one click if Homebrew is there  | OrbStack, Podman Desktop, Docker Desktop      |
+| Windows | **Rancher Desktop** — one click via `winget` | Podman Desktop, Docker Desktop                |
+| Linux   | **Docker Engine** from your distribution     | Podman (`podman-docker` + `podman-compose`)   |
+
+On macOS and Windows the app can run the installer for you and shows its output as it goes. On
+Linux it gives you the commands to paste — they need `sudo`, and that stays yours. The same advice
+is printed by `konstruktor doctor`.
+
+Podman is driven through the same commands as Docker. `KONSTRUKTOR_ENGINE=podman` picks it on a
+machine that has both.
 
 ## Installation
 
@@ -93,6 +106,39 @@ folder defaults to `MyHub` in your home directory, the hub identifier is the fol
 and `go.arkitekt.live` is offered as the coordination server alongside any you have used before.
 Everything that has a working default sits under an "Advanced" disclosure on its step, so each step
 asks the one question it is actually there for.
+
+### Storage
+
+A hub's database and object storage live in **named Docker volumes** by default. On macOS and
+Windows those sit inside Docker's own virtual machine, which is by far the fastest storage a
+container can get — a bind mount into the deployment folder goes through the file-sharing layer
+instead, and Postgres over that is easily an order of magnitude slower on writes.
+
+The wizard's Storage step (and `--storage folder` on the command line) lets you opt out and keep
+`db_data/` and `minio_data/` as directories inside the deployment folder, so the data is something
+you can see and move with the rest of the hub. It warns you first, and it means it: pick it only
+if you need the data as a folder.
+
+Either way the data can be copied out with **Back up data…** in the dashboard's menu, or
+`konstruktor backup <folder>`. A backup is a timestamped folder holding a `pg_dumpall` of the
+database, a byte copy of the database files, a copy of the object storage and the hub's own
+configuration, plus a `manifest.json` recording which services the hub ran, at which image tags
+and resolved image ids, which Postgres, and which storage mode. The copies run `rsync` inside a
+throwaway container — with the default storage nothing on the host can read the volumes directly
+— so it works the same for both modes.
+
+**Restore from backup…** (or `konstruktor restore <folder>`) puts it back, into the hub it came
+from or into any other. It first compares the manifest with the target: a service in the backup the
+target does not run blocks the restore; a different tag or a different build of the same tag is a
+warning you confirm past. The SQL dump is replayed by default; the raw `postgres/data` copy is an
+option, and only into the same Postgres major. Afterwards the hub is started and every service is
+checked — the containers have to stay up, Postgres has to accept connections, and each service has
+to answer through the gateway — and the result is shown per service, so "restored" means "works",
+not "files copied".
+
+The generated `docker-compose.yaml` is yours to edit — **Edit compose file** in the dashboard's
+menu opens it, keeps the previous version as `docker-compose.yaml.bak` on every save, and asks
+Docker whether it accepts the result. Changes apply on the next *Recreate containers*.
 
 ### Addresses
 

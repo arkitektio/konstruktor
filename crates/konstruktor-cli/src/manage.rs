@@ -64,6 +64,38 @@ pub struct SuperuserArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct BackupArgs {
+    /// The folder to back up into. A timestamped subfolder is created inside it.
+    pub into: PathBuf,
+    /// The deployment: a path, or the name of a registered one. Defaults to here.
+    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    pub in_deployment: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct RestoreArgs {
+    /// The backup folder — the one holding `manifest.json`.
+    pub backup: PathBuf,
+    /// The deployment to restore into: a path, or the name of a registered one. Defaults
+    /// to here.
+    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    pub in_deployment: Option<String>,
+    /// Copy the raw database files back instead of replaying the SQL dump. Only into the
+    /// same Postgres major.
+    #[arg(long)]
+    pub raw: bool,
+    /// Leave the database alone.
+    #[arg(long)]
+    pub skip_postgres: bool,
+    /// Leave the object storage alone.
+    #[arg(long)]
+    pub skip_minio: bool,
+    /// Skip the confirmation. Required when this is not a terminal.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct LogsArgs {
     #[command(flatten)]
     pub target: Target,
@@ -568,4 +600,176 @@ pub fn logs(args: LogsArgs) -> Result<()> {
         bail!("docker {} exited with {status}", argv.join(" "));
     }
     Ok(())
+}
+
+/// `konstruktor backup <folder>`: a `pg_dumpall`, a copy of the database files, a copy of
+/// the object storage, and the deployment's own configuration, in a timestamped folder.
+///
+/// The copies run in a container with `rsync` — the data is in a Docker volume by
+/// default, which nothing on the host can read directly. See `konstruktor_core::backup`.
+pub async fn backup(args: BackupArgs) -> Result<()> {
+    use konstruktor_core::backup::{self, BackupEvent, BackupRequest};
+
+    let dir = Target {
+        target: args.in_deployment.clone(),
+    }
+    .resolve()?;
+    let request = BackupRequest {
+        dir,
+        target: args.into.clone(),
+    };
+
+    ui::say("");
+    ui::step(&format!(
+        "Backing {} up into {}…",
+        ui::bold(&request.dir.to_string_lossy()),
+        ui::bold(&request.target.to_string_lossy())
+    ));
+
+    let report = backup::run(&request, &|event| match event {
+        BackupEvent::Step { title, .. } => {
+            ui::say("");
+            ui::step(&title);
+        }
+        BackupEvent::Line { line, .. } => ui::say(&ui::dim(&format!("  {line}"))),
+        BackupEvent::Skipped { reason, .. } => ui::warn(&format!("skipped — {reason}")),
+    })
+    .await?;
+
+    ui::say("");
+    ui::ok(&format!("Backup written to {}", report.path));
+    for warning in &report.warnings {
+        ui::warn(warning);
+    }
+    ui::say("");
+    // The one line a script wants.
+    println!("{}", report.path);
+    Ok(())
+}
+
+/// `konstruktor restore <backup>`: the plan first — what the backup holds against what
+/// this hub runs — then, once confirmed, the restore and the health check.
+pub async fn restore(args: RestoreArgs) -> Result<()> {
+    use konstruktor_core::restore::{self, DbMethod, RestoreEvent, RestoreRequest, Verdict};
+
+    let dir = Target {
+        target: args.in_deployment.clone(),
+    }
+    .resolve()?;
+    let request = RestoreRequest {
+        dir,
+        backup: args.backup.clone(),
+        method: if args.raw { DbMethod::Raw } else { DbMethod::Dump },
+        restore_postgres: !args.skip_postgres,
+        restore_minio: !args.skip_minio,
+    };
+
+    ui::say("");
+    ui::step(&format!(
+        "Comparing {} with {}…",
+        ui::bold(&request.backup.to_string_lossy()),
+        ui::bold(&request.dir.to_string_lossy())
+    ));
+    let plan = restore::plan(&request).await?;
+
+    ui::say("");
+    ui::table(&[
+        (
+            "backup of".into(),
+            plan.manifest.hub.identifier.clone().unwrap_or_else(|| "unauthorized hub".into()),
+        ),
+        (
+            "taken".into(),
+            konstruktor_core::backup::timestamp(plan.manifest.taken_at),
+        ),
+        (
+            "same hub".into(),
+            if plan.same_hub { "yes".into() } else { "no".into() },
+        ),
+    ]);
+    ui::say("");
+    let mut rows: Vec<(String, String)> = plan
+        .services
+        .iter()
+        .map(|s| {
+            (
+                s.host.clone(),
+                format!(
+                    "{}  →  {}  [{}]",
+                    s.backup_image,
+                    s.deployed_image.as_deref().unwrap_or("not deployed"),
+                    match s.verdict {
+                        Verdict::Same => "same",
+                        Verdict::DifferentTag => "different tag",
+                        Verdict::DifferentBuild => "different build",
+                        Verdict::MissingInTarget => "MISSING",
+                        Verdict::NotResolvable => "same tag",
+                    }
+                ),
+            )
+        })
+        .collect();
+    for extra in &plan.extra_in_target {
+        rows.push((extra.as_str().into(), "runs here, nothing in the backup".into()));
+    }
+    rows.push((
+        "db".into(),
+        format!("{}  →  {}", plan.db.backup_image, plan.db.deployed_image),
+    ));
+    ui::table(&rows);
+
+    ui::say("");
+    for warning in &plan.warnings {
+        ui::warn(warning);
+    }
+    if !plan.blocking.is_empty() {
+        for reason in &plan.blocking {
+            ui::fail(reason);
+        }
+        bail!("the restore cannot go ahead");
+    }
+
+    if !args.yes {
+        if !ui::is_interactive() {
+            bail!("this replaces the hub's data; pass -y to confirm without a terminal");
+        }
+        let ok = inquire::Confirm::new("Replace this hub's data with the backup?")
+            .with_default(false)
+            .prompt()?;
+        if !ok {
+            bail!("cancelled");
+        }
+    }
+
+    let report = restore::run(&request, &|event| match event {
+        RestoreEvent::Step { title, .. } => {
+            ui::say("");
+            ui::step(&title);
+        }
+        RestoreEvent::Line { line, .. } => ui::say(&ui::dim(&format!("  {line}"))),
+        RestoreEvent::Skipped { reason, .. } => ui::warn(&format!("skipped — {reason}")),
+        RestoreEvent::Checked { service, healthy, detail } => {
+            if healthy {
+                ui::ok(&format!("{service}: {detail}"));
+            } else {
+                ui::fail(&format!("{service}: {detail}"));
+            }
+        }
+    })
+    .await?;
+
+    ui::say("");
+    for warning in &report.warnings {
+        ui::warn(warning);
+    }
+    if report.all_healthy {
+        ui::ok(&format!(
+            "Restored, and all {} services answer.",
+            report.health.len()
+        ));
+        ui::say("");
+        Ok(())
+    } else {
+        bail!("restored, but not every service is healthy — see above")
+    }
 }

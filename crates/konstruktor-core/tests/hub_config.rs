@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use konstruktor_core::catalog::ServiceId;
 use konstruktor_core::config::hub::{
-    build_hub_config, HubConfig, HubConfigOptions, ServiceOptions,
+    build_hub_config, storage_mode_of, HubConfig, HubConfigOptions, ServiceOptions, StorageMode,
 };
 use serde_norway::Value;
 
@@ -130,11 +130,29 @@ fn source_mode_can_be_asked_for_one_service_at_a_time() {
     assert!(all.rekuest.mount_github && all.mikro.mount_github);
 }
 
-/// Upstream defaults MinIO to the container-absolute `/data`, which docker turns into an
-/// anonymous volume. Keeping both mounts relative makes the deployment one movable folder.
+/// The default is a named volume for each: upstream's container-absolute `/data` would be
+/// an *anonymous* volume, and a bind mount into the folder is the slow path on every
+/// desktop engine. An empty `mount` is what the generator reads as "use `volume_name`".
 #[test]
-fn storage_stays_inside_the_deployment_folder() {
+fn storage_lives_in_docker_volumes_by_default() {
     let config = built();
+    assert_eq!(storage_mode_of(&config), StorageMode::DockerVolumes);
+    assert_eq!(config.minio.mount, None);
+    assert_eq!(config.db.mount, None);
+    assert_eq!(config.db.volume_name, "db_data");
+    assert_eq!(config.minio.volume_name, "minio_data");
+}
+
+/// The opt-out keeps both mounts relative, so the deployment stays one movable folder.
+#[test]
+fn storage_can_be_kept_inside_the_deployment_folder() {
+    let config = build_hub_config(&HubConfigOptions {
+        device_id: "device".into(),
+        coord_server: "go.arkitekt.live".into(),
+        storage: StorageMode::DeploymentFolder,
+        ..Default::default()
+    });
+    assert_eq!(storage_mode_of(&config), StorageMode::DeploymentFolder);
     assert_eq!(config.minio.mount.as_deref(), Some("./minio_data"));
     assert_eq!(config.db.mount.as_deref(), Some("./db_data"));
 }

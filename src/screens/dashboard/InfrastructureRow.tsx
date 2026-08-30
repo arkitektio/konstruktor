@@ -20,10 +20,13 @@ import { containerColor, PENDING_BADGE } from "./tone";
 export const InfrastructureRow = ({
   containers,
   deployment,
+  stackUp,
   updates,
   onRestart,
 }: {
   containers: Container[];
+  /** With the stack off, an exited database is not a fault and is not drawn as one. */
+  stackUp: boolean;
   /** Only for the logs link — the log screen is addressed by deployment and service. */
   deployment: DeploymentRecord;
   updates: ServiceUpdate[];
@@ -41,8 +44,8 @@ export const InfrastructureRow = ({
           <div
             key={container.id}
             className={cn(
-              "border rounded-lg px-3 py-2 flex items-center gap-3",
-              containerColor(container)
+              "border rounded-md px-2.5 py-1.5 flex items-center gap-2",
+              stackUp ? containerColor(container) : "border-border opacity-60"
             )}
           >
             {isInitContainer(container) ? (
@@ -52,7 +55,7 @@ export const InfrastructureRow = ({
             )}
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-medium truncate">
+                <span className="text-xs font-medium truncate">
                   {container.service ?? container.id}
                 </span>
                 {/*
@@ -65,14 +68,19 @@ export const InfrastructureRow = ({
                   </Badge>
                 )}
               </div>
-              <div className="text-xs text-muted-foreground truncate">
+              <div
+                className="text-[11px] text-muted-foreground truncate"
+                title={update?.tag ? `${container.service} · ${update.tag}` : undefined}
+              >
                 {container.status ?? container.state}
-                {update?.tag ? ` · ${update.tag}` : ""}
               </div>
             </div>
             {update?.state === "pulled" && (
-              <Badge variant="outline" className={cn("shrink-0", PENDING_BADGE)}>
-                Update ready
+              <Badge
+                variant="outline"
+                className={cn("shrink-0 h-5 px-1.5 text-[10px] font-normal", PENDING_BADGE)}
+              >
+                update
               </Badge>
             )}
             {/*
@@ -83,7 +91,8 @@ export const InfrastructureRow = ({
             {container.service && (
               <Button
                 variant="ghost"
-                size="sm"
+                size="icon-xs"
+                className="text-muted-foreground"
                 title="Logs for this container"
                 asChild
               >
@@ -96,7 +105,8 @@ export const InfrastructureRow = ({
             )}
             <Button
               variant="ghost"
-              size="sm"
+              size="icon-xs"
+              className="text-muted-foreground"
               title={
                 isInitContainer(container)
                   ? "Run this init container again"

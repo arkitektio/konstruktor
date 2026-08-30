@@ -4,15 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as api from "../../api";
 import type { Checkout } from "../../api";
 import { useAlerter } from "../../alerter/alerter-context";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import {
   Command,
   CommandEmpty,
@@ -38,8 +30,9 @@ import { cn } from "../../utils";
  * container goes on running whatever it imported at start until the stack is recreated,
  * which is what the note under a switched service says.
  *
- * The whole card is absent on an ordinary hub: `deploymentCheckouts` answers with an
- * empty list, which is the only "is this a dev hub" question anything has to ask.
+ * There is no card: each picker sits on its service's tile, where the tag would be on an
+ * ordinary hub. `deploymentCheckouts` answering with an empty list is the only "is this
+ * a dev hub" question anything has to ask.
  */
 
 /** What one checkout is, in a phrase — the same order of precedence the CLI uses. */
@@ -49,14 +42,17 @@ const describe = (checkout: Checkout): string => {
   return checkout.branch ?? "unknown";
 };
 
-const BranchPicker = ({
+export const BranchPicker = ({
   path,
   checkout,
   onSwitched,
+  compact = false,
 }: {
   path: string;
   checkout: Checkout;
   onSwitched: (next: Checkout) => void;
+  /** Inline in a service tile: no border, no chrome, just the branch and a caret. */
+  compact?: boolean;
 }) => {
   const { alert } = useAlerter();
   const [open, setOpen] = useState(false);
@@ -112,18 +108,24 @@ const BranchPicker = ({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
-          variant="outline"
-          size="sm"
+          variant={compact ? "ghost" : "outline"}
+          size={compact ? "xs" : "sm"}
           role="combobox"
           disabled={busy}
-          className="gap-1.5 font-mono text-xs"
+          title={checkout.dirty ? "Uncommitted changes — a switch will be refused." : "Switch branch"}
+          className={cn(
+            "gap-1.5 font-mono text-xs",
+            compact && "h-5 px-1 -ml-1 text-muted-foreground hover:text-foreground min-w-0",
+            checkout.dirty && "text-warning",
+          )}
         >
           {busy ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
             <GitBranch className="size-3" />
           )}
-          {describe(checkout)}
+          <span className="truncate">{describe(checkout)}</span>
+          {checkout.dirty && <AlertTriangle className="size-3" />}
           <ChevronsUpDown className="size-3 opacity-50" />
         </Button>
       </PopoverTrigger>
@@ -164,63 +166,6 @@ const BranchPicker = ({
     </Popover>
   );
 };
-
-export const CheckoutsCard = ({
-  path,
-  checkouts,
-  onChanged,
-}: {
-  path: string;
-  checkouts: Checkout[];
-  /** A checkout moved — the caller re-reads, and shows that a recreate is due. */
-  onChanged: (next: Checkout) => void;
-}) => (
-  <Card>
-    <CardHeader>
-      <CardTitle className="flex items-center gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-          <GitBranch className="size-4" />
-        </span>
-        Source checkouts
-        <Badge variant="outline">dev hub</Badge>
-      </CardTitle>
-      <CardDescription>
-        Each service runs the code in <code>mounts/</code> rather than the code baked into
-        its image, so the branch checked out here is the branch that runs. Switching one
-        is refused over uncommitted changes — commit or stash them first. Recreate the
-        stack afterwards for the containers to pick the new code up.
-      </CardDescription>
-    </CardHeader>
-    <CardContent className="flex flex-col gap-2">
-      {checkouts.map((checkout) => (
-        <div
-          key={checkout.service}
-          className="flex items-center justify-between gap-2 text-xs"
-        >
-          <span className="flex items-center gap-2 min-w-0">
-            <span className="truncate" title={checkout.repo}>
-              {checkout.service}
-            </span>
-            {checkout.dirty && (
-              <Badge
-                variant="outline"
-                className="gap-1 font-normal border-warning/60 text-warning"
-                title="Tracked files differ from HEAD. Untracked files are ignored — the containers write into this folder."
-              >
-                <AlertTriangle className="size-3" />
-                uncommitted
-              </Badge>
-            )}
-            {checkout.head && !checkout.error && (
-              <span className="text-muted-foreground font-mono">{checkout.head}</span>
-            )}
-          </span>
-          <BranchPicker path={path} checkout={checkout} onSwitched={onChanged} />
-        </div>
-      ))}
-    </CardContent>
-  </Card>
-);
 
 /** Reads a deployment's checkouts, and keeps them in step with what the user switches. */
 export const useCheckouts = (path: string) => {

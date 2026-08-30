@@ -33,29 +33,6 @@
         "$TMPDIR/**/*"
       ]
     },
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "args": true,
-          "cmd": "docker",
-          "name": "/usr/local/bin/docker",
-          "sidecar": false
-        },
-        {
-          "args": true,
-          "cmd": "docker",
-          "name": "/usr/bin/docker",
-          "sidecar": false
-        },
-        {
-          "args": true,
-          "cmd": "docker",
-          "name": "docker",
-          "sidecar": false
-        }
-      ]
-    },
     "shell:allow-open",
     "dialog:allow-open",
     "dialog:allow-save",

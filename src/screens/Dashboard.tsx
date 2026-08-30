@@ -1,7 +1,6 @@
-import { open } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Boxes, ExternalLink, ShieldCheck } from "lucide-react";
+import { Boxes, FlaskConical, GitBranch, Loader2, ShieldCheck } from "lucide-react";
 
 import { CommandButton, DangerousCommandButton } from "../CommandButton";
 import { AppMenu } from "../components/AppMenu";
@@ -10,15 +9,12 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Page } from "../layout/Page";
 import { PageHeader, SectionHeading } from "../layout/PageHeader";
-import { ResponsiveGrid } from "../layout/ResponsiveGrid";
 import { cn } from "../utils";
 
 import * as api from "../api";
 import { useRegistry } from "../registry/registry-context";
-import type { Container, DeploymentRecord, HubStatus, ImageState } from "../api";
-import { AdminCard } from "./dashboard/AdminCard";
-import { ChannelCard } from "./dashboard/ChannelCard";
-import { CheckoutsCard, useCheckouts } from "./dashboard/CheckoutsCard";
+import type { Container, DeploymentRecord, HubStatus, ImageState, UpstreamCheck } from "../api";
+import { useCheckouts } from "./dashboard/CheckoutsCard";
 import { DeploymentMenu } from "./dashboard/DeploymentMenu";
 import { EngineDashboard } from "./EngineDashboard";
 import { InfrastructureRow } from "./dashboard/InfrastructureRow";
@@ -44,8 +40,8 @@ import { RUN_STATE_DOT } from "./dashboard/tone";
  *
  * The page is organised around the deployment's life rather than around its parts: the
  * rail at the top answers "how far has this got" (created, authorized, configured,
- * started), the two cards under it answer "what is it following" and "is anything
- * waiting", and only then does it list services. The rules behind all of that live in
+ * started), an updates card appears only when something is waiting, and only then does
+ * it list services — with the release channel in that section's heading. The rules behind all of that live in
  * `dashboard/lifecycle.ts`, deliberately away from the JSX.
  *
  * The page itself only *reports*. Acting on the deployment happens in two places and no
@@ -64,6 +60,11 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
   const { checkouts, reload: reloadCheckouts, replace: replaceCheckout } = useCheckouts(deployment.path);
   /** A branch moved since the stack was last brought up, so the code on disk is ahead. */
   const [switched, setSwitched] = useState(false);
+  /**
+   * What the registries said, asked once when the page opens and again after a pull.
+   * `undefined` while the question is out; it is network, and can take a while.
+   */
+  const [upstream, setUpstream] = useState<UpstreamCheck[] | undefined>();
 
   /**
    * A hub profile, for the deployments that have one.
@@ -130,6 +131,22 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
     return () => clearInterval(timer);
   }, [loadImages]);
 
+  const checkUpstream = useCallback(async () => {
+    if (!isHub) return;
+    setUpstream(undefined);
+    try {
+      setUpstream(await api.checkUpdates(deployment.path));
+    } catch (e) {
+      // Offline, or a registry that would not say: the tiles simply show no verdict.
+      console.error("Could not check the registries for updates", e);
+      setUpstream([]);
+    }
+  }, [deployment.path, isHub]);
+
+  useEffect(() => {
+    void checkUpstream();
+  }, [checkUpstream]);
+
   const services = status?.services ?? [];
 
   const byService = useMemo(() => {
@@ -161,13 +178,25 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
     [deployment, status, run]
   );
   const pending = updateSummary(updates);
-
-  const url = status?.gateway_url;
+  const upstreamByService = useMemo(
+    () => new Map((upstream ?? []).map((u) => [u.service, u])),
+    [upstream]
+  );
+  const newer = (upstream ?? []).filter((u) => u.state === "newer");
+  const checkoutByService = useMemo(
+    () => new Map(checkouts.map((c) => [c.service, c])),
+    [checkouts]
+  );
+  const devHub = checkouts.length > 0;
+  /** Up or partly up: the difference between a red tile and a grey page. */
+  const stackUp = run.state === "running" || run.state === "partial";
 
   const refreshAll = () => {
     void loadContainers();
     void loadImages();
     void reloadCheckouts();
+    // A pull is the one thing that changes the registry's verdict.
+    void checkUpstream();
     // Recreating is what makes the containers run the checked-out code, and it is the
     // only thing that clears the notice.
     setSwitched(false);
@@ -188,28 +217,36 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
     <Page
       menu={<AppMenu back="/" breadcrumb={deployment.name} />}
       buttons={
+        // One action at a time: Start while the stack is off, Stop while it is up. A
+        // partly running stack gets both, since either could be what is wanted.
         <>
-          <CommandButton
-            title={run.state === "running" ? "Recreate" : "Start"}
-            runningTitle="Starting…"
-            path={deployment.path}
-            action="up"
-            callback={refreshAll}
-          />
-          <DangerousCommandButton
-            title="Stop"
-            runningTitle="Stopping…"
-            confirmTitle="Stop this deployment?"
-            confirmDescription="Every service will be shut down. Your data stays where it is."
-            path={deployment.path}
-            action="stop"
-            callback={refreshAll}
-          />
+          {(!stackUp || run.state === "partial") && (
+            <CommandButton
+              title={run.state === "partial" ? "Recreate" : "Start"}
+              runningTitle="Starting…"
+              path={deployment.path}
+              project={deployment.project}
+              action="up"
+              callback={refreshAll}
+            />
+          )}
+          {stackUp && (
+            <DangerousCommandButton
+              title="Stop"
+              runningTitle="Stopping…"
+              confirmTitle="Stop this deployment?"
+              confirmDescription="Every service will be shut down. Your data stays where it is."
+              path={deployment.path}
+              project={deployment.project}
+              action="stop"
+              callback={refreshAll}
+            />
+          )}
         </>
       }
     >
       {/* Kontrol's page rhythm: header, separator, then blocks a fixed gap apart. */}
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-6">
         <PageHeader
           icon={Boxes}
           title={deployment.name}
@@ -218,6 +255,12 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
               <Badge variant="outline" className="font-normal">
                 Hub
               </Badge>
+              {devHub && (
+                <Badge variant="outline" className="font-normal gap-1 border-warning/60 text-warning">
+                  <FlaskConical className="size-3" />
+                  dev
+                </Badge>
+              )}
               <Badge variant="outline" className="font-normal gap-1.5">
                 <span
                   className={cn("size-2 rounded-full", RUN_STATE_DOT[run.state])}
@@ -234,27 +277,29 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
               <span className="block max-w-[52ch] truncate" title={deployment.path}>
                 {deployment.path}
               </span>
-              {status?.authorized && (
-                <span className="flex items-center gap-1.5">
-                  <ShieldCheck className="size-3.5" />
-                  {status.identifier ?? "authorized"} on{" "}
-                  {status.profile.config.coord_server}
-                </span>
-              )}
               {status?.mesh_hostname && <span>mesh · {status.mesh_hostname}</span>}
             </span>
           }
           actions={
             <>
-              {url && (
-                <Button variant="outline" size="sm" onClick={() => open(url)}>
-                  <ExternalLink className="size-3.5" />
-                  Open {url}
-                </Button>
+              {/*
+                Where the hub is registered, top right: it is the fact people look for
+                first when they have more than one hub, and the gateway URL that used to
+                sit here is Orkestrator's business, not this page's.
+              */}
+              {status?.authorized && (
+                <span
+                  className="hidden md:flex items-center gap-1.5 text-sm text-muted-foreground"
+                  title={`Registered as ${status.identifier ?? "?"} on ${status.profile.config.coord_server}`}
+                >
+                  <ShieldCheck className="size-3.5 text-success" />
+                  <span className="font-medium text-foreground">{status.identifier ?? "authorized"}</span>
+                  on {status.profile.config.coord_server}
+                </span>
               )}
               <DeploymentMenu
                 deployment={deployment}
-                url={url}
+                status={status}
                 onRefresh={refreshAll}
                 onReload={reloadAll}
               />
@@ -268,39 +313,47 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
           </Alert>
         )}
 
-        <div>
-          <SectionHeading hint="Where this deployment has got to, read off its folder and its containers.">
-            Lifecycle
-          </SectionHeading>
-          <LifecycleRail stages={rail} />
-        </div>
+        <LifecycleRail stages={rail} />
+
+        {/*
+          Always on a dev hub, never dismissable. The services run whatever is checked
+          out under `mounts/`, and a branch switch can migrate the database forward in a
+          way no tag ever would — so the hub is a workbench, and the page keeps saying so.
+        */}
+        {devHub && (
+          <Alert className="max-w-3xl text-sm border-warning/60 [&>svg]:text-warning">
+            <FlaskConical className="size-4" />
+            <span>
+              <span className="font-medium">Development hub.</span> The services run from
+              source checkouts, and switching branches can change their schemas underneath
+              the data. Data integrity cannot be ensured — never use this hub with
+              production data.
+            </span>
+          </Alert>
+        )}
+        {switched && (
+          <Alert className="max-w-2xl text-sm items-center">
+            <span className="flex-1">
+              The checkout moved, but the containers are still running the code they
+              started with. Recreate the stack to pick it up.
+            </span>
+            <CommandButton
+              title="Recreate"
+              runningTitle="Recreating…"
+              path={deployment.path}
+              project={deployment.project}
+              action="up"
+              callback={refreshAll}
+            />
+          </Alert>
+        )}
 
         {/*
           The updates card stays outside the profile guard: it needs only the images and
           the folder, and it carries the one button that pulls them. A hub whose profile
           cannot be read is exactly the one you might want to pull images for.
         */}
-        {checkouts.length > 0 && (
-          <div className="flex flex-col gap-3">
-            <CheckoutsCard
-              path={deployment.path}
-              checkouts={checkouts}
-              onChanged={(next) => {
-                replaceCheckout(next);
-                setSwitched(true);
-              }}
-            />
-            {switched && (
-              <Alert className="max-w-2xl text-sm">
-                The checkout moved, but the containers are still running the code they
-                started with. Recreate the stack to pick it up.
-              </Alert>
-            )}
-          </div>
-        )}
-
         <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
-          {status && <ChannelCard status={status} updates={updates} />}
           {/*
             Only when something is actually waiting. A card that says "nothing waiting"
             every day of the week is noise, and it was the loudest thing on the page.
@@ -318,27 +371,88 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
 
         {services.length > 0 && (
           <div>
+            {/*
+              The release channel lives in the heading rather than in a card of its own:
+              it is one word ("next"), or a short list when the services disagree — which
+              is how a stock hub ships, kraph on `dev` and the rest on `next` — and every
+              tile below carries its own tag anyway.
+            */}
             <SectionHeading
               hint={
                 pending.pulled.length > 0
                   ? `${pending.pulled.length} of these are running an image older than the one on disk.`
-                  : undefined
+                  : newer.length > 0
+                    ? `${newer.length} of these have a newer image upstream — pull images from the menu to fetch them.`
+                    : upstream === undefined
+                      ? "Checking the registries for newer images…"
+                      : devHub
+                        ? "Each service runs the branch shown on its tile. Switching is refused over uncommitted changes."
+                        : undefined
               }
             >
-              Services
+              <span className="flex items-center gap-2">
+                Services
+                {status && (
+                  <Badge
+                    variant="outline"
+                    className="gap-1 font-mono font-normal normal-case tracking-normal"
+                    title={
+                      status.channel.tag
+                        ? `Every service follows the ${status.channel.tag} tag.`
+                        : "The services follow more than one tag."
+                    }
+                  >
+                    <GitBranch className="size-3" />
+                    {status.channel.tag ?? status.channel.tags.join(" · ")}
+                  </Badge>
+                )}
+                {upstream === undefined && (
+                  <Loader2 className="size-3 animate-spin" />
+                )}
+              </span>
             </SectionHeading>
-            <ResponsiveGrid>
-              {services.map((service) => (
-                <ServiceCard
-                  key={service.id}
-                  service={service}
-                  containers={byService.get(service.host) ?? []}
-                  deployment={deployment}
-                  update={updatesByService.get(service.host)}
-                  onRestart={restart}
-                />
-              ))}
-            </ResponsiveGrid>
+            <div className="relative">
+              <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                {services.map((service) => (
+                  <ServiceCard
+                    key={service.id}
+                    service={service}
+                    containers={byService.get(service.host) ?? []}
+                    deployment={deployment}
+                    stackUp={stackUp}
+                    update={updatesByService.get(service.host)}
+                    upstream={upstreamByService.get(service.host)}
+                    checkout={checkoutByService.get(service.host)}
+                    onRestart={restart}
+                    onSwitched={(next) => {
+                      replaceCheckout(next);
+                      setSwitched(true);
+                    }}
+                  />
+                ))}
+              </div>
+              {/*
+                The stack is off: the grid stays legible underneath, greyed, and the one
+                thing to do sits on top of it. This is the same Start as the footer's.
+              */}
+              {!stackUp && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/40 backdrop-blur-[1px]">
+                  <div className="flex flex-col items-center gap-2 rounded-lg border bg-card px-5 py-4 shadow-sm">
+                    <div className="text-sm text-muted-foreground">
+                      {run.state === "never" ? "This hub has never been started." : "This hub is stopped."}
+                    </div>
+                    <CommandButton
+                      title="Start hub"
+                      runningTitle="Starting…"
+                      path={deployment.path}
+                      project={deployment.project}
+                      action="up"
+                      callback={refreshAll}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -349,6 +463,7 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
             </SectionHeading>
             <InfrastructureRow
               containers={infrastructure}
+              stackUp={stackUp}
               deployment={deployment}
               updates={updates}
               onRestart={restart}
@@ -356,7 +471,6 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
           </div>
         )}
 
-        {status && <AdminCard status={status} />}
       </div>
     </Page>
   );

@@ -17,6 +17,7 @@ export type DockerState =
   | "ready"
   | "no-daemon"
   | "no-compose"
+  | "too-old"
   | "missing";
 
 export { dockerState } from "../api";

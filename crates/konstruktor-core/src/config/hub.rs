@@ -461,6 +461,51 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
     block
 }
 
+/// Where the database and the object storage keep their bytes.
+///
+/// The default is a named Docker volume for each, which lives inside the engine's own
+/// VM on macOS and Windows and on the host filesystem on Linux — in every case the
+/// fastest storage a container can get. A bind mount into the deployment folder goes
+/// through the file-sharing layer on the desktop engines (gRPC-FUSE, virtiofs), which
+/// is fine for a config file and very much not fine for Postgres or for a bucket of
+/// images: the difference is easily an order of magnitude on writes.
+///
+/// `DeploymentFolder` is kept as the opt-out for the one thing a named volume is worse
+/// at — the data being a folder you can see, move and copy by hand — and the front ends
+/// say so before anyone picks it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StorageMode {
+    /// Named volumes, managed by the engine. `mount` is left empty on both blocks.
+    #[default]
+    DockerVolumes,
+    /// Bind mounts at `./db_data` and `./minio_data` inside the deployment folder.
+    DeploymentFolder,
+}
+
+impl StorageMode {
+    /// Whether the data lives in the engine's own volumes, rather than in a folder.
+    pub fn uses_volumes(self) -> bool {
+        matches!(self, StorageMode::DockerVolumes)
+    }
+}
+
+/// The bind mount the database uses when the data lives in the deployment folder.
+pub const DB_FOLDER_MOUNT: &str = "./db_data";
+/// The bind mount the object storage uses when the data lives in the deployment folder.
+pub const MINIO_FOLDER_MOUNT: &str = "./minio_data";
+
+/// Reads a profile back into a [`StorageMode`]: any bind mount on either block means the
+/// data is in a folder, an empty `mount` on both means the volumes.
+pub fn storage_mode_of(config: &HubConfig) -> StorageMode {
+    let bound = |mount: &Option<String>| mount.as_deref().is_some_and(|m| !m.is_empty());
+    if bound(&config.db.mount) || bound(&config.minio.mount) {
+        StorageMode::DeploymentFolder
+    } else {
+        StorageMode::DockerVolumes
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HubConfigOptions {
     /// Stable per-machine id; the registry owns it.
@@ -497,6 +542,8 @@ pub struct HubConfigOptions {
     /// What was asked of one service in particular. Only the services that were given an
     /// answer appear — everything absent takes the deployment-wide default.
     pub service_options: BTreeMap<ServiceId, ServiceOptions>,
+    /// Where the database and object storage live. See [`StorageMode`].
+    pub storage: StorageMode,
 }
 
 /// What a front end can say about a single service, beyond whether it runs at all.
@@ -562,6 +609,7 @@ impl Default for HubConfigOptions {
             provenance_key_pair: None,
             dev_hub: false,
             service_options: BTreeMap::new(),
+            storage: StorageMode::default(),
         }
     }
 }
@@ -653,11 +701,10 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             github_repo: "https://github.com/arkitektio/daten-server".into(),
             host: "daten".into(),
             image: "jhnnsrs/daten:dev".into(),
-            // Bind-mounted inside the deployment folder, so no compose command — ours
-            // or one the user runs in a terminal — can take the database with it, and so
-            // the whole deployment stays one movable folder. Erasing the data is
-            // deliberately a separate, confirmed act: `destroy::purge_data`.
-            mount: Some("./db_data".into()),
+            // A named volume by default — see `StorageMode` for why the bind mount
+            // into the folder is the opt-out rather than the rule. Either way erasing
+            // the data is a separate, confirmed act: `destroy::purge_data`.
+            mount: (!options.storage.uses_volumes()).then(|| DB_FOLDER_MOUNT.into()),
             postgres_password: generate_alpha_numeric_string(40),
             postgres_user: generate_name(),
             volume_name: "db_data".into(),
@@ -705,9 +752,9 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             init_container_image: "jhnnsrs/init:dev".into(),
             internal_port: 9000,
             // Upstream's default is the container-absolute `/data`, which docker turns
-            // into an anonymous volume. Keeping it beside the database makes the whole
-            // deployment one movable folder.
-            mount: Some("./minio_data".into()),
+            // into an *anonymous* volume — nothing to find again after `down`. Ours is
+            // the named volume, or the folder beside the database when that was asked.
+            mount: (!options.storage.uses_volumes()).then(|| MINIO_FOLDER_MOUNT.into()),
             root_password: generate_alpha_numeric_string(40),
             root_user: generate_name(),
             secret_key: generate_alpha_numeric_string(40),

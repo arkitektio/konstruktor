@@ -91,6 +91,19 @@ pub async fn deployment_images(path: String) -> Result<Vec<docker::ImageState>, 
     docker::image_states(&profile.config.stack_images()).await
 }
 
+/// Asks each image's registry whether its tag has moved on since the last pull.
+///
+/// Network, not the engine — see `konstruktor_core::updates`. The dashboard runs it once
+/// when it opens, off to the side, and only says "update" when the answer is yes.
+#[command]
+pub async fn check_updates(
+    path: String,
+) -> Result<Vec<konstruktor_core::updates::UpstreamCheck>, String> {
+    let profile = profile::read_profile(&PathBuf::from(path)).map_err(|e| e.to_string())?;
+    let images = docker::image_states(&profile.config.stack_images()).await?;
+    Ok(konstruktor_core::updates::check(&images).await)
+}
+
 #[command]
 pub async fn restart_container(container_id: String) -> Result<(), String> {
     docker::restart_container(&container_id).await
@@ -213,7 +226,7 @@ use konstruktor_core::connect::wellknown::{self, WellKnownFakts};
 use konstruktor_core::create::{self, CreateEvent, HubAnswers};
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::registry::{self, DeploymentRecord};
-use konstruktor_core::{compose, config, credentials, profile};
+use konstruktor_core::{backup, compose, compose_file, config, credentials, profile, restore};
 use std::path::PathBuf;
 use tauri::ipc::Channel;
 
@@ -223,6 +236,7 @@ use tauri::ipc::Channel;
 /// which is why this can be one call rather than a wizard step that can go stale.
 #[command]
 pub async fn create_hub(
+    app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     answers: HubAnswers,
     on_event: Channel<CreateEvent>,
@@ -242,6 +256,7 @@ pub async fn create_hub(
     if answers.start {
         started.started(&path);
     }
+    crate::tray::poke(&app);
 
     Ok(path)
 }
@@ -254,6 +269,7 @@ pub async fn create_hub(
 /// progress dialog is shared.
 #[command]
 pub async fn create_engine(
+    app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     answers: konstruktor_core::engine::EngineAnswers,
     on_event: Channel<CreateEvent>,
@@ -270,6 +286,7 @@ pub async fn create_engine(
     if start {
         started.started(&path);
     }
+    crate::tray::poke(&app);
     Ok(path)
 }
 
@@ -290,6 +307,7 @@ pub fn preview_hub_files(answers: HubAnswers) -> Vec<String> {
         // preview only tells the truth if it knows which services asked for one.
         dev_hub: answers.dev_hub,
         service_options: answers.service_options.clone(),
+        storage: answers.storage,
         ..Default::default()
     });
     generate_hub_files(&config, &IssuedIdentity::default())
@@ -357,10 +375,12 @@ pub fn list_deployments() -> Vec<DeploymentRecord> {
 }
 
 #[command]
-pub fn forget_deployment(id: String) -> Result<(), String> {
+pub fn forget_deployment(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let mut store = registry::load();
     store.deployments.retain(|d| d.id != id);
-    registry::save(&store).map_err(|e| e.to_string())
+    registry::save(&store).map_err(|e| e.to_string())?;
+    crate::tray::poke(&app);
+    Ok(())
 }
 
 /// What deleting a deployment would take with it, so the dialog can say so before asking.
@@ -391,6 +411,7 @@ pub fn plan_deletion(id: String) -> Result<DeletionPlan, String> {
 /// froze for the duration and looked like a hang.
 #[command]
 pub async fn delete_deployment(
+    app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     id: String,
 ) -> Result<Deletion, String> {
@@ -399,6 +420,7 @@ pub async fn delete_deployment(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
     started.stopped(&deleted.path);
+    crate::tray::poke(&app);
     Ok(deleted)
 }
 
@@ -484,6 +506,8 @@ pub struct HubStatus {
     advertised_hosts: Vec<konstruktor_core::connect::manifest::AdvertisedHost>,
     /// The release channel the enabled services are pinned to.
     channel: ChannelView,
+    /// Where the database and object storage live: the engine's volumes or the folder.
+    storage: config::hub::StorageMode,
 }
 
 #[command]
@@ -547,6 +571,7 @@ pub fn hub_status(path: String) -> Result<HubStatus, String> {
         admin_password: config.global_admin_password.clone(),
         services,
         channel,
+        storage: config::hub::storage_mode_of(config),
         mesh_hostname: config
             .mesh
             .as_ref()
@@ -655,24 +680,129 @@ pub async fn create_superuser(
     }
 }
 
+/// One line of a compose command's output, as it is written.
+///
+/// Compose narrates on stderr — `Container hub-db-1  Starting`, then `Started` — and that
+/// narration is what a button can turn into progress. Sent with the ANSI stripped, and
+/// with `--ansi never` asked for too, since one of the two is not always enough.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeLine {
+    pub line: String,
+    pub stderr: bool,
+}
+
+/// `compose_command`, streaming its output over `on_line` while it runs.
+///
+/// The same bookkeeping as the buffered one: the started set and the tray are updated on
+/// success, and a failure carries compose's own explanation. Callers that want to *show*
+/// what is happening use this; the buffered one stays for `ps` and `logs`, whose whole
+/// output is the answer.
+#[command]
+pub async fn compose_command_streamed(
+    app: tauri::AppHandle,
+    started: tauri::State<'_, StartedStacks>,
+    path: String,
+    action: String,
+    on_line: Channel<ComposeLine>,
+) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut args = compose_args(&action, None, None)?;
+    // Plain, line-by-line narration. Without a TTY compose already avoids the redrawing
+    // progress UI; `--ansi never` also keeps colour codes out of the lines.
+    args.splice(1..1, ["--ansi".to_string(), "never".to_string()]);
+
+    let engine = konstruktor_core::engine_probe::engine();
+    let mut child = engine
+        .async_command()
+        .args(&args)
+        .current_dir(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    let out_channel = on_line.clone();
+    let out_task = tauri::async_runtime::spawn(async move {
+        let mut collected = String::new();
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(raw)) = lines.next_line().await {
+            let line = clean(&raw);
+            collected.push_str(&line);
+            collected.push('\n');
+            let _ = out_channel.send(ComposeLine { line, stderr: false });
+        }
+        collected
+    });
+    let err_task = tauri::async_runtime::spawn(async move {
+        let mut collected = String::new();
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(raw)) = lines.next_line().await {
+            let line = clean(&raw);
+            if line.trim().is_empty() {
+                continue;
+            }
+            collected.push_str(&line);
+            collected.push('\n');
+            let _ = on_line.send(ComposeLine { line, stderr: true });
+        }
+        collected
+    });
+
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let stdout = out_task.await.unwrap_or_default();
+    let stderr = err_task.await.unwrap_or_default();
+
+    if status.success() {
+        match action.as_str() {
+            "up" => started.started(&path),
+            "stop" | "down" => started.stopped(&path),
+            _ => {}
+        }
+        crate::tray::poke(&app);
+        Ok(stdout)
+    } else {
+        Err(format!("{stdout}{stderr}"))
+    }
+}
+
+fn clean(raw: &str) -> String {
+    String::from_utf8_lossy(&strip_ansi_escapes::strip(raw)).into_owned()
+}
+
+fn compose_args(
+    action: &str,
+    service: Option<&str>,
+    tail: Option<u32>,
+) -> Result<Vec<String>, String> {
+    Ok(match action {
+        "up" => compose::up().into_iter().map(String::from).collect(),
+        "stop" => compose::stop().into_iter().map(String::from).collect(),
+        "down" => compose::down().into_iter().map(String::from).collect(),
+        "pull" => compose::pull().into_iter().map(String::from).collect(),
+        "ps" => compose::ps().into_iter().map(String::from).collect(),
+        "logs" => compose::logs(service, tail.unwrap_or(200)),
+        other => return Err(format!("unknown compose action `{other}`")),
+    })
+}
+
 /// Runs one `docker compose` subcommand in a deployment folder.
 #[command]
 pub async fn compose_command(
+    app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     path: String,
     action: String,
     service: Option<String>,
     tail: Option<u32>,
 ) -> Result<String, String> {
-    let args: Vec<String> = match action.as_str() {
-        "up" => compose::up().into_iter().map(String::from).collect(),
-        "stop" => compose::stop().into_iter().map(String::from).collect(),
-        "down" => compose::down().into_iter().map(String::from).collect(),
-        "pull" => compose::pull().into_iter().map(String::from).collect(),
-        "ps" => compose::ps().into_iter().map(String::from).collect(),
-        "logs" => compose::logs(service.as_deref(), tail.unwrap_or(200)),
-        other => return Err(format!("unknown compose action `{other}`")),
-    };
+    let args = compose_args(&action, service.as_deref(), tail)?;
 
     let output = konstruktor_core::docker::command()
         .args(&args)
@@ -689,6 +819,7 @@ pub async fn compose_command(
             "stop" | "down" => started.stopped(&path),
             _ => {}
         }
+        crate::tray::poke(&app);
         Ok(stdout)
     } else {
         // Compose writes its progress to stderr, so a failure's explanation is there.
@@ -732,4 +863,497 @@ pub async fn reauthorize_hub(
     .await
     .map(|_| ())
     .map_err(|e| e.to_string())
+}
+
+
+// --- the compose file, by hand ---------------------------------------------
+
+/// The compose file and whether a previous version is there to go back to.
+#[derive(Debug, Serialize)]
+pub struct ComposeFileView {
+    contents: String,
+    /// What the generator would write from the profile today — the "reset" target.
+    generated: String,
+    has_backup: bool,
+}
+
+#[command]
+pub fn read_compose_file(path: String) -> Result<ComposeFileView, String> {
+    let dir = PathBuf::from(path);
+    Ok(ComposeFileView {
+        contents: compose_file::read(&dir).map_err(|e| e.to_string())?,
+        // An engine has no profile; its editor simply has nothing to reset to.
+        generated: compose_file::regenerate(&dir).unwrap_or_default(),
+        has_backup: compose_file::has_backup(&dir),
+    })
+}
+
+#[command]
+pub fn read_compose_backup(path: String) -> Result<Option<String>, String> {
+    compose_file::read_backup(&PathBuf::from(path)).map_err(|e| e.to_string())
+}
+
+/// Writes the file, keeping the previous one as `docker-compose.yaml.bak`. Refuses
+/// anything that is not YAML with a `services:` mapping — see the core for why.
+#[command]
+pub fn write_compose_file(path: String, contents: String) -> Result<(), String> {
+    compose_file::write(&PathBuf::from(path), &contents).map_err(|e| e.to_string())
+}
+
+/// Docker's own verdict on the file on disk: `None` when it accepts it, otherwise what
+/// it printed. An `Err` means the engine could not be asked at all.
+#[command]
+pub async fn validate_compose_file(path: String) -> Result<Option<String>, String> {
+    match compose_file::validate(&PathBuf::from(path)).await {
+        Ok(()) => Ok(None),
+        Err(problem) if problem.contains("executable file not found") => Err(problem),
+        Err(problem) => Ok(Some(problem)),
+    }
+}
+
+// --- backups -------------------------------------------------------------------
+
+/// Where a backup started now would land, for the dialog to show before it starts.
+#[command]
+pub fn backup_folder(path: String, target: String) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    backup::backup_folder(
+        &backup::BackupRequest {
+            dir: PathBuf::from(path),
+            target: PathBuf::from(target),
+        },
+        now,
+    )
+    .display()
+    .to_string()
+}
+
+/// Backs the hub's data up into `target`, narrating over `on_event`.
+///
+/// The dump needs the database up; the core starts it for the dump and stops it again
+/// if it was down, so the started set is left alone — nothing the user did not start
+/// stays running afterwards.
+#[command]
+pub async fn backup_deployment(
+    app: tauri::AppHandle,
+    path: String,
+    target: String,
+    on_event: Channel<backup::BackupEvent>,
+) -> Result<backup::BackupReport, String> {
+    let request = backup::BackupRequest {
+        dir: PathBuf::from(path),
+        target: PathBuf::from(target),
+    };
+    let result = backup::run(&request, &move |event| {
+        let _ = on_event.send(event);
+    })
+    .await
+    .map_err(|e| e.to_string());
+    crate::tray::poke(&app);
+    result
+}
+
+// --- installing and starting an engine ----------------------------------------------
+
+use konstruktor_core::engine_probe::find_tool;
+use konstruktor_core::remedy::{InstallAction, InstallerId, Platform, StartTarget};
+use tokio_util::sync::CancellationToken;
+
+/// The installer that is running, if one is, so a Cancel button has something to pull.
+///
+/// One at a time: two `brew install`s racing for the same lock would only report a lock
+/// error, and there is nothing sensible to show for that.
+#[derive(Default)]
+pub struct InstallState(Mutex<Option<CancellationToken>>);
+
+impl InstallState {
+    fn begin(&self) -> Result<CancellationToken, String> {
+        let mut slot = self.0.lock().map_err(|e| e.to_string())?;
+        if slot.is_some() {
+            return Err("an install is already running".into());
+        }
+        let token = CancellationToken::new();
+        *slot = Some(token.clone());
+        Ok(token)
+    }
+
+    fn end(&self) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = None;
+        }
+    }
+
+    fn cancel(&self) {
+        if let Ok(slot) = self.0.lock() {
+            if let Some(token) = slot.as_ref() {
+                token.cancel();
+            }
+        }
+    }
+}
+
+/// One line of an installer's output, as it is written, plus the stage markers the panel
+/// uses as headings.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallLine {
+    pub line: String,
+    pub stderr: bool,
+    /// Set on the line that opens a new stage — "Installing Colima…" — and on nothing
+    /// else, so the panel can render those as headings rather than as output.
+    pub stage: bool,
+}
+
+/// How the installer ended. A failure is an *outcome*, not an `Err`: the output it
+/// streamed is the explanation, and an `Err` would only repeat the last line of it.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallOutcome {
+    pub ok: bool,
+    /// The installer said Windows has to restart before the engine can start. Surfaced,
+    /// never hidden: the next probe would otherwise keep failing without saying why.
+    pub needs_reboot: bool,
+    pub cancelled: bool,
+    pub message: Option<String>,
+}
+
+/// Runs one of the fixed installers from `konstruktor_core::remedy`, streaming its
+/// output over `on_line`.
+///
+/// Everything it executes is a literal in the core — `installer` selects a plan, it does
+/// not describe one — and the program is resolved the same way the engine binary is, so
+/// a Homebrew that a Finder-launched app cannot see on `PATH` is still found.
+#[command]
+pub async fn install_engine(
+    state: tauri::State<'_, InstallState>,
+    installer: InstallerId,
+    on_line: Channel<InstallLine>,
+) -> Result<InstallOutcome, String> {
+    let platform = Platform::current();
+    let allowed = match installer {
+        InstallerId::BrewColima | InstallerId::BrewComposePlugin => platform == Platform::Macos,
+        InstallerId::WingetRancherDesktop => platform == Platform::Windows,
+    };
+    if !allowed {
+        return Err(format!("{installer:?} is not an installer for this platform"));
+    }
+
+    let token = state.begin()?;
+    let outcome = run_plan(installer.plan(), platform, &token, &on_line).await;
+    state.end();
+    outcome
+}
+
+#[command]
+pub async fn cancel_install(state: tauri::State<'_, InstallState>) -> Result<(), String> {
+    state.cancel();
+    Ok(())
+}
+
+/// Launches the product behind a stopped daemon — Colima, OrbStack, Docker Desktop… —
+/// and returns without waiting for it. The probe's polling notices when it is up.
+#[command]
+pub async fn start_engine(target: StartTarget) -> Result<(), String> {
+    let (program, args) = target
+        .launch(Platform::current())
+        .ok_or_else(|| format!("{} cannot be started from here", target.label()))?;
+    let program = resolve_program(&program)?;
+    tokio::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A program name from a plan, as something that can be spawned. Bare names are looked
+/// up the way the engine binary is; `open` and `explorer.exe` are always on `PATH`.
+fn resolve_program(program: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(program);
+    if path.is_absolute() || matches!(program, "open" | "explorer.exe") {
+        return Ok(path);
+    }
+    find_tool(program).ok_or_else(|| format!("`{program}` was not found on this machine"))
+}
+
+async fn run_plan(
+    plan: Vec<InstallAction>,
+    platform: Platform,
+    token: &CancellationToken,
+    on_line: &Channel<InstallLine>,
+) -> Result<InstallOutcome, String> {
+    let stage = |text: &str| {
+        let _ = on_line.send(InstallLine {
+            line: text.to_string(),
+            stderr: false,
+            stage: true,
+        });
+    };
+    let mut needs_reboot = false;
+
+    for action in plan {
+        if token.is_cancelled() {
+            return Ok(cancelled());
+        }
+        match action {
+            InstallAction::Run {
+                title,
+                program,
+                args,
+            } => {
+                stage(title);
+                let program = resolve_program(program)?;
+                let mut cmd = tokio::process::Command::new(&program);
+                cmd.args(&args);
+                // Homebrew: no prompts, no hints, and no minutes-long `brew update` before
+                // the install the user asked for.
+                cmd.env("NONINTERACTIVE", "1")
+                    .env("HOMEBREW_NO_ENV_HINTS", "1")
+                    .env("HOMEBREW_NO_AUTO_UPDATE", "1");
+                let (status, output) = stream(cmd, token, on_line).await?;
+                let Some(status) = status else {
+                    return Ok(cancelled());
+                };
+                let code = status.code().unwrap_or(-1);
+                // winget's "installed, restart to finish" codes, and the word itself.
+                let restart_hinted = program.to_string_lossy().contains("winget")
+                    && (code == 3010 || code == 1641 || output.to_ascii_lowercase().contains("restart"));
+                needs_reboot |= restart_hinted;
+                if !status.success() && !(restart_hinted && (code == 3010 || code == 1641)) {
+                    return Ok(InstallOutcome {
+                        ok: false,
+                        needs_reboot,
+                        cancelled: false,
+                        message: Some(format!("{title} failed (exit code {code})")),
+                    });
+                }
+            }
+            InstallAction::LinkComposePlugin => {
+                stage("Linking Compose where the Docker CLI looks for plugins");
+                link_compose_plugin(on_line).await?;
+            }
+            InstallAction::Launch(target) => {
+                stage(&format!("Starting {}", target.label()));
+                let Some((program, args)) = target.launch(platform) else {
+                    continue;
+                };
+                let program = resolve_program(&program)?;
+                if target == StartTarget::Colima {
+                    // `colima start` is the install's last, and longest, step: it
+                    // downloads a VM image the first time. Worth watching.
+                    let mut cmd = tokio::process::Command::new(&program);
+                    cmd.args(&args);
+                    let (status, _) = stream(cmd, token, on_line).await?;
+                    match status {
+                        None => return Ok(cancelled()),
+                        Some(s) if !s.success() => {
+                            return Ok(InstallOutcome {
+                                ok: false,
+                                needs_reboot,
+                                cancelled: false,
+                                message: Some("Colima did not start".into()),
+                            })
+                        }
+                        Some(_) => {}
+                    }
+                } else {
+                    tokio::process::Command::new(program)
+                        .args(args)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+
+    Ok(InstallOutcome {
+        ok: true,
+        needs_reboot,
+        cancelled: false,
+        message: None,
+    })
+}
+
+fn cancelled() -> InstallOutcome {
+    InstallOutcome {
+        ok: false,
+        needs_reboot: false,
+        cancelled: true,
+        message: Some("cancelled".into()),
+    }
+}
+
+/// Runs a command, forwarding every line, until it exits or `token` fires. `None` for the
+/// status means it was cancelled — and killed, not abandoned.
+async fn stream(
+    mut cmd: tokio::process::Command,
+    token: &CancellationToken,
+    on_line: &Channel<InstallLine>,
+) -> Result<(Option<std::process::ExitStatus>, String), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    let out_channel = on_line.clone();
+    let out_task = tauri::async_runtime::spawn(async move {
+        let mut collected = String::new();
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(raw)) = lines.next_line().await {
+            let line = clean(&raw);
+            collected.push_str(&line);
+            collected.push('\n');
+            let _ = out_channel.send(InstallLine {
+                line,
+                stderr: false,
+                stage: false,
+            });
+        }
+        collected
+    });
+    let err_channel = on_line.clone();
+    let err_task = tauri::async_runtime::spawn(async move {
+        let mut collected = String::new();
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(raw)) = lines.next_line().await {
+            let line = clean(&raw);
+            if line.trim().is_empty() {
+                continue;
+            }
+            collected.push_str(&line);
+            collected.push('\n');
+            let _ = err_channel.send(InstallLine {
+                line,
+                stderr: true,
+                stage: false,
+            });
+        }
+        collected
+    });
+
+    let status = tokio::select! {
+        status = child.wait() => Some(status.map_err(|e| e.to_string())?),
+        _ = token.cancelled() => {
+            let _ = child.kill().await;
+            None
+        }
+    };
+    let mut output = out_task.await.unwrap_or_default();
+    output.push_str(&err_task.await.unwrap_or_default());
+    Ok((status, output))
+}
+
+/// Homebrew installs `docker-compose` as a standalone binary; the `docker` CLI only finds
+/// it as `docker compose` through `~/.docker/cli-plugins`. Done here rather than by a
+/// shell one-liner so there is no shell, and no quoting, between us and the path.
+async fn link_compose_plugin(on_line: &Channel<InstallLine>) -> Result<(), String> {
+    let brew = resolve_program("brew")?;
+    let output = tokio::process::Command::new(brew)
+        .args(["--prefix", "docker-compose"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("`brew --prefix docker-compose` failed — is docker-compose installed?".into());
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let binary = PathBuf::from(prefix).join("bin").join("docker-compose");
+    if !binary.is_file() {
+        return Err(format!("{} is not there", binary.display()));
+    }
+
+    let home = dirs::home_dir().ok_or("no home directory")?;
+    let plugins = home.join(".docker").join("cli-plugins");
+    std::fs::create_dir_all(&plugins).map_err(|e| e.to_string())?;
+    let link = plugins.join("docker-compose");
+    if link.exists() || link.symlink_metadata().is_ok() {
+        std::fs::remove_file(&link).map_err(|e| e.to_string())?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&binary, &link).map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    std::fs::copy(&binary, &link).map_err(|e| e.to_string())?;
+
+    let _ = on_line.send(InstallLine {
+        line: format!("{} -> {}", link.display(), binary.display()),
+        stderr: false,
+        stage: false,
+    });
+    Ok(())
+}
+
+// --- restore -----------------------------------------------------------------------
+
+#[command]
+pub fn read_backup_manifest(backup: String) -> Result<backup::BackupManifest, String> {
+    restore::read_manifest(&PathBuf::from(backup)).map_err(|e| e.to_string())
+}
+
+/// What restoring `backup` into the hub at `path` would mean — the comparison the dialog
+/// shows before asking for the hub's name. Never touches anything.
+#[command]
+pub async fn restore_plan(
+    path: String,
+    backup: String,
+    method: restore::DbMethod,
+    restore_postgres: bool,
+    restore_minio: bool,
+) -> Result<restore::RestorePlan, String> {
+    restore::plan(&restore::RestoreRequest {
+        dir: PathBuf::from(path),
+        backup: PathBuf::from(backup),
+        method,
+        restore_postgres,
+        restore_minio,
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The restore itself. Leaves the stack running — the health check needs it up — so
+/// it is counted as started by this app, the way pressing Start would be.
+#[command]
+pub async fn restore_deployment(
+    app: tauri::AppHandle,
+    started: tauri::State<'_, StartedStacks>,
+    path: String,
+    backup: String,
+    method: restore::DbMethod,
+    restore_postgres: bool,
+    restore_minio: bool,
+    on_event: Channel<restore::RestoreEvent>,
+) -> Result<restore::RestoreReport, String> {
+    let request = restore::RestoreRequest {
+        dir: PathBuf::from(&path),
+        backup: PathBuf::from(backup),
+        method,
+        restore_postgres,
+        restore_minio,
+    };
+    let result = restore::run(&request, &move |event| {
+        let _ = on_event.send(event);
+    })
+    .await
+    .map_err(|e| e.to_string());
+    if result.is_ok() {
+        started.started(&path);
+    }
+    crate::tray::poke(&app);
+    result
 }

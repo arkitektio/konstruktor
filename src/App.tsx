@@ -4,6 +4,7 @@ import { CommunicationProvider } from "./communication/communication-provider";
 import { DashboardScreen } from "./screens/Dashboard";
 import { Home } from "./screens/Home";
 import { LogScreen } from "./screens/LogScreen";
+import { ComposeEditorScreen } from "./screens/ComposeEditor";
 import { Settings } from "./screens/Settings";
 import { SettingsProvider } from "./settings/settings-provider";
 import { RegistryProvider } from "./registry/registry-provider";
@@ -14,6 +15,13 @@ import { EngineWizard } from "./screens/deploy/EngineWizard";
 import { NewDeployment } from "./screens/deploy/NewDeployment";
 import { HubWizard } from "./screens/deploy/HubWizard";
 import { ConnectScreen } from "./screens/deploy/ConnectScreen";
+import { useTrayNavigation } from "./hooks/use-tray-navigation";
+
+/** Lives inside the registry provider so it can refresh it; renders nothing. */
+const TrayBridge = () => {
+  useTrayNavigation();
+  return null;
+};
 
 function App() {
   const location = useLocation();
@@ -25,6 +33,7 @@ function App() {
           <TooltipProvider>
             <SettingsProvider>
               <RegistryProvider>
+                <TrayBridge />
                 <Routes location={location} key={location.pathname}>
                   <Route path="/" element={<Home />} />
                   <Route path="/settings" element={<Settings />} />
@@ -34,6 +43,7 @@ function App() {
                   <Route path="/dashboard/:id" element={<DashboardScreen />} />
                   <Route path="/connect/:id" element={<ConnectScreen />} />
                   <Route path="/logs/:id" element={<LogScreen />} />
+                  <Route path="/compose/:id" element={<ComposeEditorScreen />} />
                   <Route
                     path="/logs/:id/service/:service"
                     element={<LogScreen />}

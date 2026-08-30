@@ -1,6 +1,9 @@
 import { ArrowLeft, Cog } from "lucide-react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { engineName } from "../api";
 import { useCommunication } from "../communication/communication-context";
+import { EngineSetupDialog } from "./engine/EngineSetupDialog";
 import { Logo } from "../layout/Logo";
 import { cn } from "../utils";
 import { Button } from "./ui/button";
@@ -14,40 +17,59 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
  * wizard's header — logo, where you are, a small right-hand side.
  */
 
-/** What the Docker dot means, when it is not green. */
-const DOCKER_SUMMARY: Record<string, string> = {
-  checking: "Looking for Docker…",
-  ready: "Docker is ready",
-  missing: "Docker is not installed",
-  "no-compose": "Docker is here, but the compose plugin is missing",
-  "no-daemon": "Docker is installed, but not running",
+/** What the engine dot means, when it is not green. */
+const DOCKER_SUMMARY: Record<string, (name: string) => string> = {
+  checking: () => "Looking for a container engine…",
+  ready: (name) => `${name} is ready`,
+  missing: () => "No container engine is installed — click to fix",
+  "no-compose": (name) => `${name} is here, but the compose plugin is missing — click to fix`,
+  "no-daemon": (name) => `${name} is installed, but not running — click to fix`,
+  "too-old": (name) => `${name} is too old — click to fix`,
 };
 
+/**
+ * The engine's status, as a dot. A button rather than a label: when it is not green
+ * there is something to do, and the panel behind it knows what.
+ */
 export const DockerDot = () => {
   const { state, probe } = useCommunication();
+  const [setup, setSetup] = useState(false);
+  const name = engineName(probe?.engine);
+  const attention = state !== "ready" && state !== "checking";
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div className="flex items-center gap-1.5 px-1.5 cursor-default">
-          <span
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => setSetup(true)}
             className={cn(
-              "size-2 rounded-full",
-              state === "ready"
-                ? "bg-primary"
-                : state === "checking"
-                  ? "bg-muted-foreground/40 animate-pulse"
-                  : "bg-warning"
+              "flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent/50",
+              attention ? "cursor-pointer" : "cursor-default"
             )}
-          />
-          <span className="text-xs text-muted-foreground">Docker</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent>
-        {DOCKER_SUMMARY[state]}
-        {probe?.cli_version ? ` · ${probe.cli_version}` : ""}
-      </TooltipContent>
-    </Tooltip>
+            aria-label="Container engine"
+          >
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                state === "ready"
+                  ? "bg-primary"
+                  : state === "checking"
+                    ? "bg-muted-foreground/40 animate-pulse"
+                    : "bg-warning"
+              )}
+            />
+            <span className="text-xs text-muted-foreground">{name}</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {DOCKER_SUMMARY[state]?.(name)}
+          {probe?.cli_version ? ` · ${probe.cli_version}` : ""}
+        </TooltipContent>
+      </Tooltip>
+      <EngineSetupDialog open={setup} onOpenChange={setSetup} />
+    </>
   );
 };
 

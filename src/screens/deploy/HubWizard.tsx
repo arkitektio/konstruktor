@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Boxes,
   Container,
+  Database,
   FolderOpen,
   Globe,
   Plug,
@@ -23,6 +24,7 @@ import { FolderStep } from "./steps/FolderStep";
 import { CoordinationStep } from "./steps/CoordinationStep";
 import { ServicesStep } from "./steps/ServicesStep";
 import { PortsStep } from "./steps/PortsStep";
+import { StorageStep } from "./steps/StorageStep";
 import { HostsStep } from "./steps/HostsStep";
 import { SummaryStep } from "./steps/SummaryStep";
 import {
@@ -107,6 +109,7 @@ const HubSummary = () => {
         },
         { label: "Services", value: (values.services ?? []).join(", ") || "none" },
         { label: "Ports", value: `${values.httpPort} / ${values.httpsPort}` },
+        { label: "Storage", value: storageSummary(values.storage) },
         {
           label: "Advertised at",
           value: advertisedAt(values.hosts ?? []),
@@ -211,6 +214,15 @@ const advertisedAt = (hosts: AdvertisedHost[]): string => {
   return hosts.map((host) => host.host).join(", ");
 };
 
+/**
+ * Where the data goes, for the review step. The slow choice is named as such one last
+ * time — the step's warning is behind a Previous button by now.
+ */
+const storageSummary = (storage: HubForm["storage"]): string =>
+  storage === "deployment-folder"
+    ? "folders inside the deployment (slow on Docker Desktop)"
+    : "Docker volumes";
+
 /** The form, as the core wants it: flat, snake_case, and already trimmed. */
 const toAnswers = (values: HubForm): HubAnswers => ({
   dir: values.path,
@@ -252,6 +264,7 @@ const toAnswers = (values: HubForm): HubAnswers => ({
       .map(([id, asked]) => [id, asked && serviceAnswer(asked)] as const)
       .filter(([, answer]) => answer !== undefined)
   ),
+  storage: values.storage ?? "docker-volumes",
 });
 
 export const HubWizard = () => {
@@ -284,6 +297,7 @@ export const HubWizard = () => {
     meshAuthKey: "",
     meshCoordUrl: "",
     serviceOptions: {},
+    storage: "docker-volumes",
   };
 
   const steps: WizardStep[] = useMemo(
@@ -397,6 +411,13 @@ export const HubWizard = () => {
             error: "The two ports must differ",
             path: ["httpsPort"],
           }),
+      },
+      {
+        component: StorageStep,
+        meta: { label: "Storage", title: "Storage", icon: Database },
+        validationSchema: z.looseObject({
+          storage: z.enum(["docker-volumes", "deployment-folder"]),
+        }),
       },
       {
         component: HostsStep,

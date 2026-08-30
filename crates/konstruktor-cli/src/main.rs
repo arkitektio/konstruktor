@@ -52,6 +52,10 @@ enum Command {
     Checkout(manage::CheckoutArgs),
     /// Create an admin account in one running service.
     Superuser(manage::SuperuserArgs),
+    /// Back a hub's database and object storage up into a folder.
+    Backup(manage::BackupArgs),
+    /// Restore a backup into a hub, then check that its services still answer.
+    Restore(manage::RestoreArgs),
     /// Check whether Docker is ready.
     Doctor,
 }
@@ -139,6 +143,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Ps(target) => manage::ps(&target).await,
         Command::Logs(args) => manage::logs(args),
         Command::Superuser(args) => manage::superuser(args),
+        Command::Backup(args) => manage::backup(args).await,
+        Command::Restore(args) => manage::restore(args).await,
     }
 }
 
