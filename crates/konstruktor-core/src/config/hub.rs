@@ -273,6 +273,7 @@ impl HubConfig {
         }
     }
 
+    /// The mutable half of [`Self::service`], used by [`Self::set_service_image`].
     fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
         match id {
             ServiceId::Rekuest => &mut self.rekuest,
@@ -335,6 +336,54 @@ impl HubConfig {
             images.push((ollama.host.clone(), ollama.image.clone()));
         }
         images
+    }
+
+    /// Points one compose service at an image, by the same names [`Self::stack_images`]
+    /// reports.
+    ///
+    /// The inverse of that method, and it has to stay its inverse: two paths write an
+    /// image back into a profile — `rollback`, putting an older one back, and `update
+    /// --infra`, advancing a pin — and a service missing from here would be reported as
+    /// moved without being moved. `every_service_in_the_stack_can_be_written_back` in
+    /// `rollback` walks `stack_images` through this and fails if one is unreachable.
+    ///
+    /// Written as a chain of comparisons rather than a lookup because the profile is a
+    /// struct: there is no map to write into.
+    pub fn set_service_image(&mut self, service: &str, image: &str) {
+        if service == DB_COMPOSE_SERVICE {
+            self.db.image = image.to_string();
+            return;
+        }
+        if service == self.gateway.host {
+            self.gateway.image = image.to_string();
+            return;
+        }
+        if service == self.local_redis.host {
+            self.local_redis.image = image.to_string();
+            return;
+        }
+        if service == self.minio.host {
+            self.minio.image = image.to_string();
+            return;
+        }
+        if service == self.minio.init_container_host {
+            self.minio.init_container_image = image.to_string();
+            return;
+        }
+        if let Some(mesh) = self.mesh.as_mut().filter(|m| m.host == service) {
+            mesh.image = image.to_string();
+            return;
+        }
+        if let Some(ollama) = self.local_ollama.as_mut().filter(|o| o.host == service) {
+            ollama.image = image.to_string();
+            return;
+        }
+        for id in self.enabled_services() {
+            if self.service(id).host == service {
+                self.service_mut(id).image = Some(image.to_string());
+                return;
+            }
+        }
     }
 }
 
@@ -489,6 +538,38 @@ impl StorageMode {
         matches!(self, StorageMode::DockerVolumes)
     }
 }
+
+// --- what the infrastructure is pinned to ----------------------------------------------
+//
+// The services float on a channel tag on purpose — `next`, `dev` — because that is what a
+// channel *is* here: there is no version field in the profile, so the set of tags is the
+// only statement of what a hub follows. The infrastructure underneath them is a different
+// question. Nobody chooses a Postgres major by following a channel, and a `db` image that
+// moves from 16 to 17 under a running hub leaves a cluster the new binary refuses to open.
+// MinIO has been pinned to an exact release since the beginning; these are the rest,
+// resolved from what each reference actually pointed at when they were written.
+//
+// Two of the four could only be pinned by digest. `caddy` and `redis` publish version
+// tags, so they say their version in `status` and can be read at a glance. `jhnnsrs/daten`
+// and `jhnnsrs/init` publish *only* channel tags — `dev`, `next`, `release`, `prod` — so
+// there is no version to name and the digest is the only immutable reference. Both are
+// written `tag@sha256:…`, which keeps the channel readable while the digest decides what
+// is pulled; `status::image_tag` and `updates::parse` both know to look past the pin.
+//
+// This is a default, so it changes new hubs only. Every generator path afterwards reads
+// `config.<service>.image` back out of the stored profile, so hubs created before this
+// keep their floating tags — which is exactly why `updates::guard` exists as well.
+
+/// Postgres 16.13, the version `jhnnsrs/daten:dev` resolved to when this was pinned.
+pub const DB_IMAGE: &str = "jhnnsrs/daten:dev@sha256:c692f316fcaa17f2ceb47bc9ad915925af5063fe274004cd16ca98e1146228d1";
+/// Caddy 2.11.4.
+pub const GATEWAY_IMAGE: &str = "caddy:2.11.4";
+/// Redis 8.10.1.
+pub const REDIS_IMAGE: &str = "redis:8.10.1";
+/// The bucket-creating run-once container; Python 3.11, no version tag published.
+pub const MINIO_INIT_IMAGE: &str = "jhnnsrs/init:dev@sha256:a075356076c0980782b2d36cedad87f35c2a517631ffedd9140037950b74c3a1";
+/// The one image that was already pinned, kept here with the others.
+pub const MINIO_IMAGE: &str = "minio/minio:RELEASE.2025-02-18T16-25-55Z";
 
 /// The bind mount the database uses when the data lives in the deployment folder.
 pub const DB_FOLDER_MOUNT: &str = "./db_data";
@@ -713,7 +794,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             enabled: true,
             github_repo: "https://github.com/arkitektio/daten-server".into(),
             host: "daten".into(),
-            image: "jhnnsrs/daten:dev".into(),
+            image: DB_IMAGE.into(),
             // A named volume by default — see `StorageMode` for why the bind mount
             // into the folder is the opt-out rather than the rule. Either way erasing
             // the data is a separate, confirmed act: `destroy::purge_data`.
@@ -731,7 +812,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             exposed_http_port: options.http_port,
             exposed_https_port: options.https_port,
             host: "gateway".into(),
-            image: "caddy:latest".into(),
+            image: GATEWAY_IMAGE.into(),
             internal_port: 80,
             ssl: options.ssl,
             ssl_cert: None,
@@ -748,7 +829,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         local_redis: RedisBlock {
             enabled: true,
             host: "redis".into(),
-            image: "redis:latest".into(),
+            image: REDIS_IMAGE.into(),
             internal_port: 6379,
         },
         mesh: options.mesh.as_ref().map(build_mesh_block),
@@ -758,11 +839,11 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             enabled: true,
             exposed_console_port: None,
             host: "minio".into(),
-            image: "minio/minio:RELEASE.2025-02-18T16-25-55Z".into(),
+            image: MINIO_IMAGE.into(),
             // The dashboard mirrors this name to recognise a run-once container, where
             // "exited" is success rather than a failure — see `isInitContainer`.
             init_container_host: "minio_init".into(),
-            init_container_image: "jhnnsrs/init:dev".into(),
+            init_container_image: MINIO_INIT_IMAGE.into(),
             internal_port: 9000,
             // Upstream's default is the container-absolute `/data`, which docker turns
             // into an *anonymous* volume — nothing to find again after `down`. Ours is

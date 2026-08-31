@@ -1,4 +1,5 @@
 mod authorize;
+mod coord;
 mod create;
 mod engine;
 mod manage;
@@ -8,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use konstruktor_core::create::MeshMode;
 
-/// Create and manage Arkitekt hub deployments from a terminal.
+/// Create and manage Arkitekt deployments from a terminal.
 ///
 /// Every command is a thin shell over `konstruktor-core`, which the desktop app links
 /// against too — the two front ends run the same code, not merely equivalent code.
@@ -16,9 +17,10 @@ use konstruktor_core::create::MeshMode;
 #[command(
     name = "konstruktor",
     version,
-    about = "Create and manage Arkitekt hub deployments.",
+    about = "Create and manage Arkitekt deployments.",
     long_about = None,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    after_help = AFTER_HELP,
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,22 +28,48 @@ struct Cli {
     /// Emit the answer as JSON on stdout, with no narration mixed into it.
     ///
     /// Global, but only the reporting commands have a document to emit — `status`,
-    /// `list`, `ps`, `doctor` and `update --check`.
+    /// `list`, `ps`, `doctor`, `update --check` and `rollback`.
     #[arg(long, global = true)]
     json: bool,
 }
 
+/// Konstruktor deploys three things, and the rest of the commands work on all of them.
+///
+/// Spelling that out here rather than leaving it to be inferred from an alphabetical list:
+/// which of the three you have decides only how you *create* it. Once it exists it is a
+/// deployment like any other, and `up`, `logs` and `destroy` do not care which kind it is.
+const AFTER_HELP: &str = "\
+What you can create:
+  hub      the services — rekuest, mikro, fluss and the rest — behind a gateway
+  engine   a plugin engine: one deployer container running an organization's plugins
+  coord    a coordination server: where users, organizations and permissions live,
+           and what a hub or an engine authorizes against
+
+Everything else takes any of the three. `[target]` is a path or a registered name;
+left out, it is the deployment you are standing in.
+
+  konstruktor hub create ~/MyHub
+  konstruktor up ~/MyHub
+  konstruktor status --json | jq .
+";
+
 #[derive(Subcommand)]
 enum Command {
+    // --- creating a deployment ---------------------------------------------------
     /// Create a hub: generate it, authorize it, write it, start it.
     #[command(subcommand)]
     Hub(HubCommand),
     /// A plugin engine: one deployer container that runs an organization's plugins.
     #[command(subcommand)]
     Engine(EngineCommand),
+    /// A coordination server: what hubs and engines authorize against.
+    #[command(subcommand)]
+    Coord(CoordCommand),
+
+    // --- everything else, on any of the three ------------------------------------
     /// Re-authorize an existing hub: change what it advertises, or claim a mesh key.
     Authorize(Box<authorize::AuthorizeArgs>),
-    /// Report what this hub is and what is running.
+    /// Report what a deployment is and what is running.
     Status(manage::Target),
     /// The deployments this machine knows about.
     List,
@@ -55,6 +83,8 @@ enum Command {
     Pull(manage::Target),
     /// Update the services whose images have actually moved upstream.
     Update(manage::UpdateArgs),
+    /// Put a hub back on the images it was running before its last update.
+    Rollback(manage::RollbackArgs),
     /// The containers of a deployment.
     Ps(manage::Target),
     /// A deployment's logs.
@@ -87,6 +117,12 @@ enum Command {
 enum HubCommand {
     /// Create a hub.
     Create(Box<create::CreateArgs>),
+}
+
+#[derive(Subcommand)]
+enum CoordCommand {
+    /// Create a coordination server.
+    Create(Box<coord::CoordCreateArgs>),
 }
 
 #[derive(Subcommand)]
@@ -150,14 +186,13 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
+        Command::Coord(CoordCommand::Create(args)) => coord::run(*args).await,
         Command::Authorize(args) => authorize::run(*args).await,
         Command::Checkout(args) => manage::checkout(&args),
         Command::Doctor(args) => manage::doctor(json, args.fix, args.yes).await,
         Command::List => manage::list(json),
         Command::Status(target) => manage::status(&target, json).await,
-        Command::Up(target) => {
-            manage::compose(&target, konstruktor_core::compose::up(), "Starting")
-        }
+        Command::Up(target) => manage::up(&target).await,
         Command::Stop(target) => {
             manage::compose(&target, konstruktor_core::compose::stop(), "Stopping")
         }
@@ -166,6 +201,7 @@ async fn run(cli: Cli) -> Result<()> {
             manage::compose(&target, konstruktor_core::compose::pull(), "Pulling")
         }
         Command::Update(args) => manage::update(args, json).await,
+        Command::Rollback(args) => manage::rollback(args, json).await,
         Command::Ps(target) => manage::ps(&target, json).await,
         Command::Logs(args) => manage::logs(args),
         Command::Superuser(args) => manage::superuser(args),

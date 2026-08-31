@@ -207,3 +207,54 @@ fn a_skipped_answer_becomes_null_not_an_empty_string() {
     assert_eq!(config.domain, None);
     assert_eq!(config.global_description, None);
 }
+
+/// The infrastructure a new hub gets must not float on a mutable tag.
+///
+/// The services follow a channel on purpose — that is what a channel is here. The four
+/// underneath them do not: a `db` image that silently became the next Postgres major
+/// leaves a cluster the new binary refuses to open, and no amount of rolling the image
+/// back undoes what a migration did on the way. Immutable means one of two things, both
+/// allowed: a digest, for `jhnnsrs/daten` and `jhnnsrs/init`, which publish only channel
+/// tags and so have no version to name; or an exact version tag, for the images that
+/// publish one.
+#[test]
+fn the_infrastructure_is_pinned_to_something_immutable() {
+    let config = built();
+    let infrastructure = [
+        ("db", config.db.image.clone()),
+        ("gateway", config.gateway.image.clone()),
+        ("redis", config.local_redis.image.clone()),
+        ("minio", config.minio.image.clone()),
+        ("minio_init", config.minio.init_container_image.clone()),
+    ];
+
+    for (service, image) in infrastructure {
+        if image.contains("@sha256:") {
+            continue;
+        }
+        let tag = konstruktor_core::status::image_tag(&image)
+            .unwrap_or_else(|| panic!("{service} is `{image}` — no tag and no digest at all"));
+        assert!(
+            !["latest", "dev", "next", "prod", "prodx", "release", "nightly"]
+                .contains(&tag.as_str()),
+            "{service} is pinned to `{image}`, and `{tag}` is a channel that moves — \
+             pin it to a version or a digest"
+        );
+        assert!(
+            tag.chars().any(|c| c.is_ascii_digit()),
+            "{service} is pinned to `{image}`, whose tag names no version"
+        );
+    }
+}
+
+/// A digest pin is only a pin if the tag beside it is still readable, because that tag is
+/// what `status` reports as the hub's channel.
+#[test]
+fn a_digest_pinned_image_still_says_which_channel_it_came_from() {
+    let config = built();
+    assert_eq!(
+        konstruktor_core::status::image_tag(&config.db.image).as_deref(),
+        Some("dev"),
+        "the database pin dropped its tag, so `status` can no longer say what it follows"
+    );
+}

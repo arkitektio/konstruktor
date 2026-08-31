@@ -37,7 +37,7 @@ pub const DEPLOYER_SERVICE: &str = "deployer";
 /// hardcoded, and passed down explicitly so the generators stay pure.
 
 /// The engine's own config, in the deployment folder and inside the container.
-const CONFIG_FILE: &str = "configs/deployer.yaml";
+pub const CONFIG_FILE: &str = "configs/deployer.yaml";
 const CONFIG_MOUNT: &str = "/workspace/config.yaml";
 
 /// What an engine asks to be, when it asks. Reverse-DNS like every Arkitekt manifest.

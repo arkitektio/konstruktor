@@ -429,7 +429,7 @@ export const restartContainer = (containerId: string) =>
  *
  * Paired with the containers' `image_id`, this separates "never pulled" from "pulled and
  * running" from "pulled but still waiting for a restart". It says nothing about the
- * registry: whether something newer exists upstream is a question nothing here asks.
+ * registry — that is `checkUpdates` below, which the dashboard runs beside this one.
  */
 export const deploymentImages = (path: string) =>
   invoke<ImageState[]>("deployment_images", { path });

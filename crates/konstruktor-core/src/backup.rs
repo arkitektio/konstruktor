@@ -51,6 +51,8 @@ const DB_READY_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DUMP_FILE: &str = "postgres/dump.sql";
 pub const POSTGRES_DATA_DIR: &str = "postgres/data";
 pub const MINIO_DATA_DIR: &str = "minio/data";
+/// The tailnet node identity, when the hub is on a mesh.
+pub const MESH_DATA_DIR: &str = "mesh/state";
 pub const DEPLOYMENT_DIR: &str = "deployment";
 pub const MANIFEST_FILE: &str = "manifest.json";
 /// Bumped when the manifest's shape changes in a way an older restore could misread.
@@ -161,6 +163,10 @@ pub struct BackupContents {
     pub dumped: bool,
     pub postgres_copied: bool,
     pub minio_copied: bool,
+    /// `mesh/state` holds the tailnet identity. Absent on a hub with no mesh, and
+    /// defaulted so a manifest written before this existed still reads.
+    #[serde(default)]
+    pub mesh_copied: bool,
     pub deployment_files: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -171,6 +177,97 @@ pub fn postgres_major(version: &str) -> Option<u32> {
         .split_whitespace()
         .filter_map(|word| word.split('.').next())
         .find_map(|word| word.trim_start_matches('(').parse::<u32>().ok())
+}
+
+/// The major that wrote a `PGDATA` directory, from the `PG_VERSION` file inside it.
+///
+/// Postgres writes this file at initdb and refuses to start against a directory whose
+/// `PG_VERSION` does not match the server — so it is exactly the number that decides
+/// whether a raw copy can be started, and it is readable without starting anything.
+///
+/// [`super::restore::available_in`] already stats this file to decide whether a raw copy
+/// is present at all; this reads the one line it contains.
+pub fn pgdata_major(pgdata: &Path) -> Option<u32> {
+    major_of_pg_version(&std::fs::read_to_string(pgdata.join("PG_VERSION")).ok()?)
+}
+
+/// The one line a `PG_VERSION` file holds — `16`, or `9.6` on an old enough cluster.
+fn major_of_pg_version(text: &str) -> Option<u32> {
+    text.trim().split('.').next()?.parse::<u32>().ok()
+}
+
+/// The Postgres major inside a backup folder, if it holds a raw copy.
+pub fn backup_pgdata_major(backup: &Path) -> Option<u32> {
+    pgdata_major(&backup.join(POSTGRES_DATA_DIR))
+}
+
+/// The Postgres major that wrote the data a hub is sitting on *right now*, in either
+/// storage mode and without starting the database.
+///
+/// In folder storage the cluster is a directory in the deployment and [`pgdata_major`]
+/// reads it. In volume storage it is inside a Docker volume the host cannot see, so one
+/// throwaway container reads the single line — the same read-only mount `rsync` already
+/// makes of that volume during a backup, using the same image, so nothing new is pulled.
+///
+/// `None` means unread, not "matches": no volume yet (a hub that never started), an
+/// engine that would not run, or a directory with no `PG_VERSION`. Callers warn on it
+/// rather than proceeding as if the versions agreed.
+pub async fn live_pgdata_major(dir: &Path, config: &HubConfig) -> Option<u32> {
+    let source = source_of(dir, config.db.mount.as_deref(), &config.db.volume_name);
+    if let DataSource::Bind(path) = &source {
+        return pgdata_major(path);
+    }
+    let mount = resolve_source(dir, &source).await.ok().flatten()?;
+    let output = engine()
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            &format!("{mount}:/pgdata:ro"),
+            "--entrypoint",
+            "cat",
+            RSYNC_IMAGE,
+            "/pgdata/PG_VERSION",
+        ])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    major_of_pg_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// What a given Postgres server would do with a given cluster directory.
+///
+/// Postgres refuses to start against a `PGDATA` whose major is not its own — there is no
+/// in-place upgrade, only `pg_upgrade` or a dump. Two places have to know this: a raw
+/// restore, which would otherwise `rsync --delete` over the target's data before the
+/// server could object, and an update, which would otherwise pull a new major and leave
+/// the database crash-looping. Both classify the situation the same way; only the
+/// sentence they say about it differs, so the classification is what is shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MajorMove {
+    /// Both sides read, and they agree.
+    Same(u32),
+    /// Both sides read, and the server will refuse the directory.
+    Across { data: u32, server: u32 },
+    /// At least one side could not be read. Possible — an image that declares no
+    /// `PG_MAJOR`, a cluster with no `PG_VERSION` — and worth saying so.
+    Unknown,
+}
+
+/// Classifies the major of some existing data against the major of the server that would
+/// mount it.
+pub fn major_move(data: Option<u32>, server: Option<u32>) -> MajorMove {
+    match (data, server) {
+        (Some(data), Some(server)) if data != server => MajorMove::Across { data, server },
+        (Some(data), Some(_)) => MajorMove::Same(data),
+        _ => MajorMove::Unknown,
+    }
 }
 
 /// What the backup folder holds when it is done.
@@ -190,6 +287,9 @@ pub struct BackupReport {
     pub postgres_copied: bool,
     /// `minio/data` holds a copy of the buckets.
     pub minio_copied: bool,
+    /// `mesh/state` holds the tailnet identity, when the hub is on a mesh.
+    #[serde(default)]
+    pub mesh_copied: bool,
     /// The files copied into `deployment/`.
     pub deployment_files: Vec<String>,
     /// Anything that did not happen and should be known about.
@@ -257,6 +357,7 @@ pub async fn run(
         dumped: false,
         postgres_copied: false,
         minio_copied: false,
+        mesh_copied: false,
         deployment_files: Vec::new(),
         warnings: Vec::new(),
     };
@@ -327,6 +428,7 @@ pub async fn run(
                 match data.step {
                     "postgres" => report.postgres_copied = true,
                     "minio" => report.minio_copied = true,
+                    "mesh" => report.mesh_copied = true,
                     _ => {}
                 }
             }
@@ -464,6 +566,7 @@ async fn build_manifest(
             dumped: report.dumped,
             postgres_copied: report.postgres_copied,
             minio_copied: report.minio_copied,
+            mesh_copied: report.mesh_copied,
             deployment_files: report.deployment_files.clone(),
             warnings: report.warnings.clone(),
         },
@@ -568,7 +671,7 @@ pub(crate) fn source_of(dir: &Path, mount: Option<&str>, volume_name: &str) -> D
 }
 
 pub(crate) fn data_sources(dir: &Path, config: &HubConfig) -> Vec<DataPart> {
-    vec![
+    let mut parts = vec![
         DataPart {
             step: "postgres",
             title: "Copying the database files",
@@ -581,7 +684,23 @@ pub(crate) fn data_sources(dir: &Path, config: &HubConfig) -> Vec<DataPart> {
             destination: MINIO_DATA_DIR,
             source: source_of(dir, config.minio.mount.as_deref(), &config.minio.volume_name),
         },
-    ]
+    ];
+
+    // The tailnet state, which is the hub's identity on the mesh rather than its data.
+    // Worth capturing because the key that joined the mesh was single-use, so a hub that
+    // loses this volume — `down --volumes`, `purge`, `destroy` — cannot simply rejoin.
+    // Captured, not restored: putting a node identity back on a *different* machine is a
+    // question about the tailnet, not about this backup, so `restore` leaves it alone and
+    // says so.
+    if let Some(mesh) = config.mesh.as_ref().filter(|m| m.enabled) {
+        parts.push(DataPart {
+            step: "mesh",
+            title: "Copying the mesh identity",
+            destination: MESH_DATA_DIR,
+            source: source_of(dir, None, &mesh.volume_name),
+        });
+    }
+    parts
 }
 
 /// The `-v` source for the rsync container: an absolute host path, or the engine's name
@@ -1019,6 +1138,40 @@ mod tests {
             Some(15)
         );
         assert_eq!(postgres_major(""), None);
+    }
+
+    /// The classification both the raw restore and the update path decide on. Neither may
+    /// treat "could not read" as "they agree" — that is the shape of the bug that let a
+    /// raw restore rsync over a live cluster.
+    #[test]
+    fn a_major_that_could_not_be_read_is_not_a_match() {
+        assert_eq!(major_move(Some(16), Some(16)), MajorMove::Same(16));
+        assert_eq!(
+            major_move(Some(16), Some(17)),
+            MajorMove::Across { data: 16, server: 17 }
+        );
+        assert_eq!(major_move(None, Some(17)), MajorMove::Unknown);
+        assert_eq!(major_move(Some(16), None), MajorMove::Unknown);
+        assert_eq!(major_move(None, None), MajorMove::Unknown);
+    }
+
+    #[test]
+    fn reads_the_major_out_of_a_pgdata_directory() {
+        let dir = std::env::temp_dir().join(format!("konstruktor-pgdata-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(pgdata_major(&dir), None, "no PG_VERSION is not a version");
+
+        // Postgres writes the bare major, with a trailing newline.
+        std::fs::write(dir.join("PG_VERSION"), "16\n").unwrap();
+        assert_eq!(pgdata_major(&dir), Some(16));
+
+        // Older servers wrote major.minor.
+        std::fs::write(dir.join("PG_VERSION"), "9.6\n").unwrap();
+        assert_eq!(pgdata_major(&dir), Some(9));
+
+        std::fs::write(dir.join("PG_VERSION"), "not a version").unwrap();
+        assert_eq!(pgdata_major(&dir), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

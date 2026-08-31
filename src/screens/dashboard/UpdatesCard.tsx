@@ -20,8 +20,9 @@ import { PENDING_BADGE } from "./tone";
  * container started is already on disk and needs the stack recreated to take effect —
  * `compose up` does that, which is why "Start" is the remedy rather than a restart.
  *
- * What this card cannot tell you is whether something newer exists in the registry:
- * answering that means querying the registry, which nothing here does.
+ * What this card shows is what is on this machine. Whether something *newer* exists
+ * upstream is a separate question, asked over the network by `api.checkUpdates` and
+ * answered elsewhere on the dashboard — not by anything on this card.
  */
 export const UpdatesCard = ({
   updates,

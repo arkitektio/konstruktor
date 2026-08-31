@@ -76,17 +76,47 @@ pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> 
     Ok(())
 }
 
+/// Points services at different images, and regenerates the deployment from the result.
+///
+/// The only way to move a running container onto another image: generation reads
+/// `config.<service>.image` out of the profile, so nothing changes until the profile does.
+/// Two callers need it — `rollback`, putting older images back, and `update --infra`,
+/// advancing a pin — and they must not each grow their own copy of the sequence.
+///
+/// Generation happens before anything is written, as everywhere else that touches a
+/// deployment folder: a profile this build cannot generate from has to leave the folder
+/// unchanged rather than half rewritten.
+pub fn rewrite_images(dir: &Path, images: &[(String, String)]) -> Result<(), ProfileError> {
+    let mut config = read_profile(dir)?.config;
+    for (service, image) in images {
+        config.set_service_image(service, image);
+    }
+
+    // The identity the last authorization issued. Absent on a hub that was never
+    // authorized, where the default is what generation already used.
+    let identity = crate::credentials::read_credentials(dir)
+        .map(|credentials| credentials.issued_identity())
+        .unwrap_or_default();
+    let files = crate::generate::generate_hub_files(&config, &identity);
+
+    write_profile(dir, &hub_profile(config))?;
+    crate::generate::write::write_generated_files(dir, &files)?;
+    Ok(())
+}
+
 /// Whether a directory already holds a hub deployment.
 pub fn holds_a_hub(dir: &Path) -> bool {
     profile_path(dir).exists()
 }
 
-/// The two shapes a deployment folder comes in.
+/// The three shapes a deployment folder comes in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DeploymentKind {
     Hub,
     Engine,
+    /// A coordination server — the thing the other two authorize against.
+    Coord,
 }
 
 impl DeploymentKind {
@@ -94,15 +124,27 @@ impl DeploymentKind {
         match self {
             DeploymentKind::Hub => "hub",
             DeploymentKind::Engine => "plugin engine",
+            DeploymentKind::Coord => "coordination server",
+        }
+    }
+
+    /// The registry's `kind` string, which predates this enum and is what is on disk.
+    pub fn as_kind(self) -> &'static str {
+        match self {
+            DeploymentKind::Hub => "hub",
+            DeploymentKind::Engine => "engine",
+            DeploymentKind::Coord => crate::coord::COORD_KIND,
         }
     }
 }
 
 /// What kind of deployment a folder holds, if it holds one at all.
 ///
-/// A hub is recognised by its profile. A plugin engine has none — it is one deployer
-/// container — so the compose file Konstruktor wrote is what stands in: a folder with
-/// neither is not something this ever created.
+/// A hub is recognised by its profile. Neither of the other two has one — a plugin engine
+/// is a single deployer container and a coordination server runs Lok — so each is known by
+/// its own config file, and a bare compose project with neither is taken for an engine,
+/// which is what every engine written before coordination servers existed looks like.
+/// A folder with none of these is not something this ever created.
 ///
 /// This is the rule `destroy::plan` has always applied before deleting anything; it lives
 /// here so that resolving a deployment and deleting one cannot disagree about what counts.
@@ -110,7 +152,12 @@ pub fn holds_a_deployment(dir: &Path) -> Option<DeploymentKind> {
     if holds_a_hub(dir) {
         return Some(DeploymentKind::Hub);
     }
-    if dir.join(crate::compose_file::COMPOSE_FILENAME).is_file() {
+    if crate::coord::holds_a_coord(dir) {
+        return Some(DeploymentKind::Coord);
+    }
+    if dir.join(crate::engine::CONFIG_FILE).is_file()
+        || dir.join(crate::compose_file::COMPOSE_FILENAME).is_file()
+    {
         return Some(DeploymentKind::Engine);
     }
     None
@@ -148,6 +195,30 @@ mod tests {
         std::fs::write(profile_path(&dir), "version: '1.0'").unwrap();
         std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
         assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Hub));
+    }
+
+    #[test]
+    fn a_lok_config_makes_it_a_coordination_server() {
+        let dir = tmpdir();
+        std::fs::create_dir_all(dir.join("configs")).unwrap();
+        std::fs::write(dir.join(crate::coord::COORD_CONFIG_FILE), "lok: {}").unwrap();
+        // It has a compose file too, as every deployment does. The marker has to win, or
+        // a coordination server would resolve as a plugin engine.
+        std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Coord));
+    }
+
+    /// Engines written before coordination servers existed have only a compose file.
+    #[test]
+    fn a_deployer_config_and_a_bare_compose_are_both_engines() {
+        let dir = tmpdir();
+        std::fs::create_dir_all(dir.join("configs")).unwrap();
+        std::fs::write(dir.join(crate::engine::CONFIG_FILE), "deployer: {}").unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Engine));
+
+        let legacy = tmpdir();
+        std::fs::write(legacy.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        assert_eq!(holds_a_deployment(&legacy), Some(DeploymentKind::Engine));
     }
 
     #[test]

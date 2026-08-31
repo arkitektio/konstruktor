@@ -45,10 +45,13 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
     std::fs::create_dir_all(requested).with_context(|| format!("creating {requested}"))?;
     let dir = std::fs::canonicalize(requested).with_context(|| format!("resolving {requested}"))?;
 
-    if dir.join("docker-compose.yaml").exists() {
+    // The shared discriminator, not a raw file check — so this names what is actually
+    // there rather than calling a hub or a coordination server "a compose project".
+    if let Some(kind) = konstruktor_core::profile::holds_a_deployment(&dir) {
         bail!(
-            "{} already holds a compose project. Create the engine in an empty folder.",
-            dir.display()
+            "{} already holds a {}. Create the engine in an empty folder.",
+            dir.display(),
+            kind.label()
         );
     }
 

@@ -3,24 +3,23 @@
 This is the repository for the Konstruktor project, which primarily serves as an entrypoint and installer for
 the [Arkitekt](http://arkitekt.live) platform.
 
-![Screenshots of the Konstruktor Platform](demo.gif)
+Konstruktor is one product with two front ends: a desktop app and a `konstruktor` command
+line. Both link the same core, so neither can drift from the other.
+
+![Screenshots of the Konstruktor desktop app](demo.gif)
+
+<sub>The desktop screenshots above are from an older build; the wizard has since been
+rebuilt. The terminal below is current.</sub>
+
+![The konstruktor command line](demo-cli.gif)
 
 
 # About Docker!
 
 Konstruktor writes the deployment itself and hands it to Docker Compose to run, so a
-Docker-compatible container engine has to be on the machine — but nothing else does. There is no
-Python, no `arkitekt-next` CLI and no helper container involved.
+Docker-compatible container engine has to be on the machine, in any form.
 
-The check runs as the app starts, again as the first step of the wizard, and keeps running on its
-own until the engine is ready. It answers the questions separately, because each "no" has its own
-remedy: no engine binary at all, a `docker` CLI without its `compose` plugin, a daemon that is not
-answering, or an engine too old for the generated stacks (Compose < 2.20, Engine API < 1.41). The
-wizard will not go past that step until all are satisfied.
-
-When something is wrong the app shows what to do for **your** OS and, where it can tell, for the
-product you already have — "start Colima" rather than "start Docker". Open-source engines come
-first:
+If you don't have one, the wizard can install one for you. The recommended engines are:
 
 | OS      | Recommended                                  | Also works                                    |
 | ------- | -------------------------------------------- | --------------------------------------------- |
@@ -29,11 +28,8 @@ first:
 | Linux   | **Docker Engine** from your distribution     | Podman (`podman-docker` + `podman-compose`)   |
 
 On macOS and Windows the app can run the installer for you and shows its output as it goes. On
-Linux it gives you the commands to paste — they need `sudo`, and that stays yours. The same advice
-is printed by `konstruktor doctor`.
+Linux it gives you the commands to paste — they need `sudo`.
 
-Podman is driven through the same commands as Docker. `KONSTRUKTOR_ENGINE=podman` picks it on a
-machine that has both.
 
 ## Installation
 
@@ -53,25 +49,74 @@ can live wherever you want it — `hub create` takes a directory, the way `git i
 and defaults to the one you are standing in. Wherever hubs land, konstruktor keeps its own
 index of them, so `konstruktor list` finds them all and every command takes a name:
 
+Konstruktor deploys three things, and which one you have decides only how you *create* it.
+Once it exists it is a deployment like any other, and the rest of the commands take any of
+them:
+
+| | what it is |
+|---|---|
+| `hub` | the services — rekuest, mikro, fluss and the rest — behind a gateway |
+| `engine` | a plugin engine: one deployer container running an organization's plugins |
+| `coord` | a coordination server: where users, organizations and permissions live, and what a hub or an engine authorizes against |
+
 ```
 konstruktor hub create          # the wizard, here
 konstruktor hub create /mnt/data/lab-hub
+konstruktor engine create ~/plugins
+konstruktor coord create ~/lab-coord
 konstruktor list                # what this machine knows about
-konstruktor status [target]     # what a hub is, and what is running
+konstruktor status [target]     # what a deployment is, and what is running
 konstruktor up|stop|down|pull|ps|logs [target]
 konstruktor logs -f [target]    # stay attached; Ctrl-C stops it
 konstruktor restart [service]   # bounce a container that has wedged
 konstruktor open [target]       # the hub in a browser
 konstruktor update [target]     # only what has actually moved upstream
+konstruktor rollback [target]   # back onto the images it ran before that
 konstruktor authorize [target]  # re-authorize: new addresses, or a mesh key
 konstruktor report <service>    # a bug report, with the log's secrets removed
 konstruktor doctor [--fix]      # is Docker ready — and make it so
 konstruktor destroy|purge|forget <target>
 ```
 
+> **`coord create` is not finished.** A coordination server is a first-class deployment —
+> it is recognised on disk, listed, and driven by every lifecycle command above — but
+> Konstruktor cannot generate the stack yet: nothing here pins a Lok image or knows its
+> config schema. `coord create` says so and writes nothing. Until it lands, point hubs at a
+> coordination server you already run with `hub create --server <address>`.
+
 `pull` fetches every image whether anything changed or not; **`update`** asks each registry
 whether the tag has moved and recreates only those services. `--check` reports without
 touching anything.
+
+Updating is the operation that can lose data, so `update` does four things before it
+touches a container. It **backs the hub up first** (`--no-backup` opts out), because every
+service migrates its own database forward when it starts and no image can be moved back
+far enough to undo that. It **holds the infrastructure back** — the database, the cache,
+the gateway, the object store — unless asked with `--infra`, since those are where a moved
+image means a store the new binary will not open. It **refuses to move Postgres across a
+major**, comparing what the pulled image declares against what wrote the data on disk, so
+the alternative is a crash loop rather than a question — and `konstruktor up` refuses the
+same thing, because a `compose up` applies whatever the tag resolves to by then. And it **checks the services still
+answer** afterwards, so a failed migration is a failed update rather than a red dot
+somebody notices next week.
+
+It also writes `hub_lock.json` beside the profile: what every service was running, and the
+digest it resolved to, before and after. **`rollback`** reads that and puts the images
+back. It says at the prompt what it cannot do — a migration is one-way, so the older code
+comes back to the newer schema, and the backup taken before the update is the rest of the
+answer.
+
+New hubs pin their infrastructure to something immutable. `caddy` and `redis` get exact
+version tags; `jhnnsrs/daten` (Postgres) and `jhnnsrs/init` publish only channel tags, so
+they are pinned by digest with the channel kept beside it. The services go on following
+their channel, which is what a channel is for. Hubs created before this keep the tags they
+have — which is why the guard above exists as well as the pin.
+
+A pin never moves on its own; that is the point of it. So **`update --infra` also advances
+pins**: it asks each infrastructure image's registry what versions it publishes, offers the
+newest of the *same major and the same variant*, and on approval rewrites the profile,
+regenerates and recreates. Crossing a major is never offered — that is a migration, and the
+guard exists to make it a decision. `rollback` puts the previous version back.
 
 The three ways to remove a deployment are separate commands because they are three
 different amounts of destruction: **`forget`** stops listing it and touches no files,
@@ -87,8 +132,8 @@ konstruktor hub create ~/MyHubs/lab-hub --server go.arkitekt.live \
 ```
 
 `--dry-run` prints the files it would write and stops, so an unattended invocation can be
-rehearsed before it is trusted. `--json` on `status`, `list`, `ps`, `doctor` and
-`update --check` puts a document on stdout and nothing else — the narration is on stderr,
+rehearsed before it is trusted. `--json` on `status`, `list`, `ps`, `doctor`,
+`update --check` and `rollback` puts a document on stdout and nothing else — the narration is on stderr,
 so `konstruktor status --json | jq .` works in a pipe.
 
 Addresses work the same way as in the wizard: `--reach local-only|this-network|public`

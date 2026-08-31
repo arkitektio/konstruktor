@@ -179,18 +179,19 @@ impl Target {
 
     /// A hub specifically, for the commands that read its profile.
     ///
-    /// An engine is refused by name rather than by a missing file, and the refusal says
-    /// what *does* work on one — the alternative is a user concluding their engine is
-    /// corrupt.
+    /// The other two kinds are refused by name rather than by a missing file, and the
+    /// refusal says what *does* work on them — the alternative is a user concluding their
+    /// engine is corrupt.
     pub fn resolve(&self) -> Result<PathBuf> {
         let resolved = self.resolve_any()?;
         match resolved.kind {
             profile::DeploymentKind::Hub => Ok(resolved.dir),
-            profile::DeploymentKind::Engine => bail!(
-                "{} is a plugin engine, which has no hub profile. `up`, `stop`, `down`, \
-                 `pull`, `ps`, `logs`, `restart` and `status` work on it; this command \
-                 does not.",
-                resolved.dir.display()
+            other => bail!(
+                "{} is a {}, which has no hub profile. `up`, `stop`, `down`, `pull`, \
+                 `ps`, `logs`, `restart`, `status`, `destroy`, `purge` and `forget` work \
+                 on it; this command does not.",
+                resolved.dir.display(),
+                other.label()
             ),
         }
     }
@@ -579,13 +580,17 @@ pub fn list(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// What a plugin engine can say about itself: the registry knows its coordination
-/// server, and the daemon knows whether its container is up. There is no profile.
-async fn engine_status(resolved: &Resolved) -> Result<()> {
+/// What a deployment without a hub profile can say about itself: the registry knows its
+/// coordination server, and the daemon knows whether its containers are up.
+///
+/// A plugin engine and a coordination server are both compose projects with no profile to
+/// describe, so they get the part of `status` that is true for anything — where it is and
+/// what is running.
+async fn other_status(resolved: &Resolved) -> Result<()> {
     ui::say("");
     let mut rows = vec![
         ("folder".into(), resolved.dir.to_string_lossy().to_string()),
-        ("kind".into(), "plugin engine".to_string()),
+        ("kind".into(), resolved.kind.label().to_string()),
     ];
     if let Some(record) = &resolved.record {
         rows.push(("name".into(), record.name.clone()));
@@ -641,11 +646,11 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
         let containers = docker::list_deployment_containers(&dir.to_string_lossy())
             .await
             .unwrap_or_default();
-        // The hub view is the dashboard's own model; an engine has none, and says so
-        // with a null rather than by failing.
+        // The hub view is the dashboard's own model; the other two kinds have none, and
+        // say so with a null rather than by failing.
         let hub = match resolved.kind {
             profile::DeploymentKind::Hub => Some(status::hub_view(&dir)?),
-            profile::DeploymentKind::Engine => None,
+            _ => None,
         };
         return ui::emit_json(&serde_json::json!({
             "path": dir,
@@ -659,8 +664,8 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
 
     // An engine has no hub profile to describe — one deployer container is the whole of
     // it — so it gets the part of this that is true for both: where it is and what is up.
-    if resolved.kind == profile::DeploymentKind::Engine {
-        return engine_status(&resolved).await;
+    if resolved.kind != profile::DeploymentKind::Hub {
+        return other_status(&resolved).await;
     }
 
     // The same view the dashboard renders, derived in the core — so the two front ends
@@ -751,6 +756,31 @@ pub fn compose(target: &Target, args: Vec<&str>, verb: &str) -> Result<()> {
     } else {
         bail!("docker {} exited with {}", args.join(" "), status)
     }
+}
+
+/// `konstruktor up`: the stack, with the one check that has to happen before it.
+///
+/// `compose up` recreates any container whose image reference now resolves to something
+/// else on this machine — so a `db` image that was pulled at some point, by an update that
+/// then refused to apply it or by a plain `konstruktor pull`, is applied *here*, with
+/// nothing in the way. Postgres will not open a cluster from another major, so that is a
+/// crash loop rather than a start. The same guard the update path asks, asked in the other
+/// place that can move a running database.
+pub async fn up(target: &Target) -> Result<()> {
+    let dir = target.resolve_any()?.dir;
+    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
+        use konstruktor_core::updates::{guard, Guard};
+        match guard(&dir, &profile.config, konstruktor_core::config::hub::DB_COMPOSE_SERVICE).await
+        {
+            Guard::Refuse(reason) => {
+                ui::say("");
+                bail!("{reason}");
+            }
+            Guard::Warn(detail) => ui::warn(&detail),
+            Guard::Clear => {}
+        }
+    }
+    compose(target, konstruktor_core::compose::up(), "Starting")
 }
 
 pub fn down(args: DownArgs) -> Result<()> {
@@ -1038,7 +1068,12 @@ pub async fn restore(args: RestoreArgs) -> Result<()> {
         })
         .collect();
     for extra in &plan.extra_in_target {
-        rows.push((extra.as_str().into(), "runs here, nothing in the backup".into()));
+        // Not "nothing to restore": on a hub that has been used this service keeps the
+        // data it has now while every other one is replaced.
+        rows.push((
+            extra.as_str().into(),
+            "runs here — keeps its current data".into(),
+        ));
     }
     rows.push((
         "db".into(),
@@ -1122,10 +1157,13 @@ pub struct DestroyArgs {
 /// `destroy` and `purge` take an id rather than a path on purpose — the id is what proves
 /// Konstruktor created this folder, and a bare path would let either be pointed at
 /// anything. So an unregistered folder is refused here rather than deep inside the core.
-fn record_for(target: &Target) -> Result<(PathBuf, registry::DeploymentRecord)> {
+fn record_for(
+    target: &Target,
+) -> Result<(PathBuf, registry::DeploymentRecord, profile::DeploymentKind)> {
     let resolved = target.resolve_any()?;
+    let kind = resolved.kind;
     match resolved.record {
-        Some(record) => Ok((resolved.dir, record)),
+        Some(record) => Ok((resolved.dir, record, kind)),
         None => bail!(
             "{} is not a registered deployment, so Konstruktor will not delete it. \
              `konstruktor list` shows what is registered.",
@@ -1135,7 +1173,11 @@ fn record_for(target: &Target) -> Result<(PathBuf, registry::DeploymentRecord)> 
 }
 
 /// Prints what an action is about to take, and everything it deliberately will not.
-fn show_plan(plan: &konstruktor_core::destroy::DeletionPlan, whole_folder: bool) {
+fn show_plan(
+    plan: &konstruktor_core::destroy::DeletionPlan,
+    whole_folder: bool,
+    kind: profile::DeploymentKind,
+) {
     ui::say("");
     if whole_folder {
         ui::warn(&format!("This deletes {} and everything in it.", plan.path));
@@ -1143,7 +1185,10 @@ fn show_plan(plan: &konstruktor_core::destroy::DeletionPlan, whole_folder: bool)
         ui::warn(&format!("This deletes the data in {}.", plan.path));
     }
 
-    if plan.storage.uses_volumes() {
+    // Only a hub has a profile saying where its data lives. For the other two kinds
+    // `DeletionPlan::storage` is the default rather than anything that was determined, so
+    // saying it would be a confident sentence about something nothing looked up.
+    if kind == profile::DeploymentKind::Hub && plan.storage.uses_volumes() {
         ui::step(&ui::dim("The database and object storage are in docker volumes."));
     }
     for dir in &plan.data_dirs {
@@ -1207,9 +1252,9 @@ fn confirm_destruction(name: &str, yes: bool, by_name: bool, what: &str) -> Resu
 pub fn destroy(args: DestroyArgs) -> Result<()> {
     use konstruktor_core::destroy;
 
-    let (_, record) = record_for(&args.target)?;
+    let (_, record, kind) = record_for(&args.target)?;
     let (_, plan) = destroy::plan(&record)?;
-    show_plan(&plan, true);
+    show_plan(&plan, true, kind);
 
     if !confirm_destruction(&plan.name, args.yes, true, "Deleting this deployment")? {
         ui::step("Left alone.");
@@ -1241,9 +1286,9 @@ pub fn destroy(args: DestroyArgs) -> Result<()> {
 pub fn purge(args: DestroyArgs) -> Result<()> {
     use konstruktor_core::destroy;
 
-    let (_, record) = record_for(&args.target)?;
+    let (_, record, kind) = record_for(&args.target)?;
     let (_, plan) = destroy::plan(&record)?;
-    show_plan(&plan, false);
+    show_plan(&plan, false, kind);
 
     if !confirm_destruction(&plan.name, args.yes, false, "Delete the data?")? {
         ui::step("Left alone.");
@@ -1274,7 +1319,7 @@ pub fn purge(args: DestroyArgs) -> Result<()> {
 
 /// `konstruktor forget`: stop listing it. Nothing on disk is touched.
 pub fn forget(target: &Target) -> Result<()> {
-    let (dir, record) = record_for(target)?;
+    let (dir, record, _) = record_for(target)?;
     let mut store = registry::load();
     store.deployments.retain(|d| d.id != record.id);
     registry::save(&store).context("writing the registry")?;
@@ -1415,6 +1460,19 @@ pub struct UpdateArgs {
     /// Only this service. By default every service with something newer is updated.
     #[arg(long)]
     pub service: Option<String>,
+    /// Also move the infrastructure — database, cache, gateway, object storage. Left out,
+    /// only the hub's own services are updated. Where the infrastructure is pinned to a
+    /// version, this also offers the newer versions its registry publishes.
+    #[arg(long)]
+    pub infra: bool,
+    /// Do not back the hub up first. Migrations run on start and are one-way, so this
+    /// gives up the only way back.
+    #[arg(long)]
+    pub no_backup: bool,
+    /// Where the backup taken first goes. Defaults to a `konstruktor-backups` folder
+    /// beside the deployment.
+    #[arg(long, value_name = "FOLDER")]
+    pub backup_into: Option<PathBuf>,
     /// Skip the confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
@@ -1463,6 +1521,28 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         bail!("this hub runs no service called `{service}`");
     }
 
+    // The profile decides two things below: which services count as infrastructure, and
+    // what versions their pins could move to.
+    let config = konstruktor_core::profile::read_profile(&dir)
+        .map(|p| p.config)
+        .map_err(|e| anyhow!("{e}"))?;
+    // With `--infra`, the infrastructure's *pins* are in play as well as its tags. A
+    // pinned image never moves on its own — that is what pinning is — so the only way a
+    // hub gets a newer Postgres or gateway is by being told which version to move to.
+    let advances = match args.infra {
+        true => {
+            if !json {
+                ui::progress("Asking what versions the infrastructure has…");
+            }
+            let found = updates::advances(&config).await;
+            if !json {
+                ui::end_progress();
+            }
+            found
+        }
+        false => Vec::new(),
+    };
+
     let rows: Vec<(String, String)> = wanted
         .iter()
         .map(|check| {
@@ -1482,33 +1562,107 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     ui::say("");
 
     // Missing counts: nothing has pulled it yet, so there is something to fetch either way.
-    let stale: Vec<&updates::UpstreamCheck> = wanted
+    let mut stale: Vec<&updates::UpstreamCheck> = wanted
         .into_iter()
         .filter(|c| matches!(c.state, UpstreamState::Newer | UpstreamState::Missing))
         .collect();
 
-    if stale.is_empty() {
+    if !advances.is_empty() {
+        ui::step("Newer versions are published for:");
+        ui::table(
+            &advances
+                .iter()
+                .map(|advance| {
+                    (
+                        advance.service.clone(),
+                        ui::dim(&format!("{} → {}", advance.from, advance.to)),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        ui::step(&ui::dim(
+            "Applying these rewrites the profile — the pin is what the hub follows.",
+        ));
+        ui::say("");
+    }
+
+    // The infrastructure is held back unless it was asked for. A service migrates its own
+    // schema forward and can be moved on a channel; the database, the cache, the gateway
+    // and the object store are where a moved image means a store the new binary will not
+    // open. `--service db` is asking for it by name, and is honoured.
+    if !args.infra && args.service.is_none() {
+        let (services, held): (Vec<_>, Vec<_>) = stale
+            .into_iter()
+            .partition(|c| !updates::is_infrastructure(&config, &c.service));
+        stale = services;
+        if !held.is_empty() {
+            let names: Vec<&str> = held.iter().map(|c| c.service.as_str()).collect();
+            ui::step(&ui::dim(&format!(
+                "Holding back the infrastructure: {}. Pass --infra to move it too.",
+                names.join(", ")
+            )));
+            ui::say("");
+        }
+    }
+
+    if stale.is_empty() && advances.is_empty() {
         ui::ok("Everything is up to date.");
         ui::say("");
         return Ok(());
     }
 
-    let names: Vec<&str> = stale.iter().map(|c| c.service.as_str()).collect();
+    let mut names: Vec<&str> = stale.iter().map(|c| c.service.as_str()).collect();
+    for advance in &advances {
+        if !names.contains(&advance.service.as_str()) {
+            names.push(&advance.service);
+        }
+    }
     if args.check {
         ui::step(&format!(
             "{} would be updated: {}",
-            stale.len(),
+            names.len(),
             names.join(", ")
         ));
+        if !args.no_backup {
+            ui::step(&ui::dim(
+                "A backup would be taken first — `--no-backup` skips it, `--backup-into` \
+                 says where.",
+            ));
+        }
         ui::step(&ui::dim("Run `konstruktor update` to apply."));
         ui::say("");
         return Ok(());
     }
 
+    // Where the backup will go, resolved before the prompt: taking one is minutes of work
+    // and a folder of disk, and a question that does not mention it is not the question
+    // being answered.
+    let backup_into = match args.no_backup {
+        true => None,
+        false => Some(match &args.backup_into {
+            Some(path) => path.clone(),
+            None => dir
+                .parent()
+                .map(|parent| parent.join("konstruktor-backups"))
+                .ok_or_else(|| anyhow!("no folder to back up into — pass --backup-into <FOLDER>"))?,
+        }),
+    };
+
     if !args.yes {
         if !ui::is_interactive() {
             bail!("this restarts {}. Pass --yes to confirm.", names.join(", "));
         }
+        match &backup_into {
+            Some(into) => ui::step(&format!(
+                "A backup is taken into {} first.",
+                ui::bold(&into.to_string_lossy())
+            )),
+            None => ui::warn(
+                "No backup will be taken. Migrations run when a service starts and are \
+                 one-way, so there will be nothing to go back to.",
+            ),
+        }
+        ui::say("");
         let confirmed = inquire::Confirm::new(&format!("Update {}?", names.join(", ")))
             .with_default(true)
             .prompt()
@@ -1521,28 +1675,293 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         }
     }
 
-    for check in &stale {
-        ui::step(&format!("{}…", ui::bold(&check.service)));
-        // Pull then recreate, per service. `up_service` carries --no-deps for a reason
-        // its doc comment spells out: without it, updating one service on a stopped stack
-        // would quietly boot the infrastructure and leave the hub half up.
-        for argv in [
-            compose::pull_service(&check.service),
-            compose::up_service(&check.service),
-        ] {
-            let status = konstruktor_core::docker::command()
-                .args(&argv)
-                .current_dir(&dir)
-                .status()
-                .context("running docker")?;
-            if !status.success() {
-                bail!("docker {} exited with {status}", argv.join(" "));
+    // --- the backup ---------------------------------------------------------------------
+    //
+    // An image can be moved back; a migration cannot. Every service here runs `bash
+    // run.sh`, which migrates the database forward on start, so the moment a new image
+    // boots, the old one is running against a schema it has never seen. The backup taken
+    // here is the only thing that makes the whole update reversible, which is why it is
+    // the default rather than a flag.
+    if let Some(into) = backup_into {
+        let request = konstruktor_core::backup::BackupRequest {
+            dir: dir.clone(),
+            target: into,
+        };
+        ui::say("");
+        ui::step(&format!(
+            "Backing up into {} first…",
+            ui::bold(&request.target.to_string_lossy())
+        ));
+        let report = konstruktor_core::backup::run(&request, &|event| {
+            use konstruktor_core::backup::BackupEvent;
+            match event {
+                BackupEvent::Step { title, .. } => ui::step(&ui::dim(&format!("  {title}"))),
+                BackupEvent::Line { .. } => {}
+                BackupEvent::Skipped { reason, .. } => ui::warn(&format!("skipped — {reason}")),
             }
+        })
+        .await?;
+        for warning in &report.warnings {
+            ui::warn(warning);
         }
+        ui::ok(&format!("Backed up to {}", report.path));
+        ui::step(&ui::dim(&format!(
+            "If this update goes wrong: konstruktor restore {}",
+            report.path
+        )));
+        ui::say("");
+    }
+
+    // What the hub is on right now, written down before anything moves it. This is what
+    // `konstruktor rollback` reads — and recording it here rather than at create means a
+    // hub made before any of this existed still gets a state to go back to, the first time
+    // it is updated.
+    use konstruktor_core::lock;
+    if let Err(error) = lock::record(&dir, &config, "before update", lock::now()).await {
+        // Not fatal: an unwritable lock file costs the ability to roll back, which is
+        // worth saying, and is not a reason to refuse an update the user asked for.
+        ui::warn(&format!(
+            "could not record what this hub is running ({error}) — `konstruktor rollback` \
+             will have nothing to go back to"
+        ));
+    }
+
+    // The profile rewrite comes before any pull, because it is what decides *which* image
+    // the pull fetches — the reference in the compose file is generated from it.
+    if !advances.is_empty() {
+        let images: Vec<(String, String)> = advances
+            .iter()
+            .map(|advance| (advance.service.clone(), advance.to.clone()))
+            .collect();
+        konstruktor_core::profile::rewrite_images(&dir, &images).map_err(|e| anyhow!("{e}"))?;
+        ui::ok(&format!(
+            "Profile moved to {}.",
+            advances
+                .iter()
+                .map(|advance| advance.to.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        ui::step(&ui::dim(
+            "`konstruktor rollback` puts the previous versions back.",
+        ));
+        ui::say("");
+    }
+
+    // The advanced services have to be recreated even though the registry said their old
+    // reference was current — it is the profile that moved, not the tag.
+    let config = konstruktor_core::profile::read_profile(&dir)
+        .map(|p| p.config)
+        .map_err(|e| anyhow!("{e}"))?;
+    let to_recreate: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+
+    // --- pull, check, recreate ------------------------------------------------------
+    let mut updated: Vec<String> = Vec::new();
+    let mut refused: Vec<(String, String)> = Vec::new();
+    for service in &to_recreate {
+        ui::step(&format!("{}…", ui::bold(service)));
+        // Pull first, then ask whether the image that arrived may be run. A fetched image
+        // changes nothing until a container is recreated on it, and the guard reads what
+        // the *new* image declares — asked before the pull it would be reading the image
+        // already running, and would always agree with itself.
+        run_compose(&dir, compose::pull_service(service)).with_context(|| match args.no_backup {
+            true => format!("pulling {service}"),
+            false => format!("pulling {service} — the backup taken above is already on disk"),
+        })?;
+
+        match updates::guard(&dir, &config, service).await {
+            updates::Guard::Refuse(reason) => {
+                let image = config
+                    .stack_images()
+                    .into_iter()
+                    .find(|(name, _)| name == service)
+                    .map(|(_, image)| image)
+                    .unwrap_or_else(|| service.clone());
+                ui::fail(&reason);
+                ui::step(&ui::dim(&format!(
+                    "The running {service} container was not touched — but the image was \
+                     pulled, so `{image}` now resolves to it on this machine and a plain \
+                     `up` would recreate the container onto it. `konstruktor up` refuses \
+                     that for the same reason; anything that calls `docker compose up` \
+                     directly will not."
+                )));
+                refused.push((service.clone(), reason));
+                continue;
+            }
+            updates::Guard::Warn(detail) => ui::warn(&detail),
+            updates::Guard::Clear => {}
+        }
+
+        // `up_service` carries --no-deps for a reason its doc comment spells out: without
+        // it, updating one service on a stopped stack would quietly boot the
+        // infrastructure and leave the hub half up.
+        run_compose(&dir, compose::up_service(service))?;
+        updated.push(service.clone());
+    }
+
+    if updated.is_empty() {
+        ui::say("");
+        bail!("nothing was updated — see above");
     }
 
     ui::say("");
-    ui::ok(&format!("Updated {}.", names.join(", ")));
+    ui::ok(&format!("Updated {}.", updated.join(", ")));
+    let _ = lock::record(&dir, &config, "updated", lock::now()).await;
+
+    // --- did it come back? ----------------------------------------------------------
+    //
+    // A migration that fails leaves a container restarting, and `docker compose up`
+    // reports success regardless: it started the container, which is all it claims. The
+    // same check a restore runs is what turns that into a failed update rather than a red
+    // dot somebody notices later.
+    ui::say("");
+    ui::step("Checking the services still answer…");
+    let health = konstruktor_core::health::check(&dir, &config, &|event| {
+        if let konstruktor_core::health::HealthEvent::Line { line } = event {
+            ui::say(&ui::dim(&format!("  {line}")));
+        }
+    })
+    .await
+    .map_err(|e| anyhow!("{e}"))?;
+
+    ui::say("");
+    for service in &health {
+        if service.healthy {
+            ui::ok(&format!("{}: {}", service.service, service.detail));
+        } else {
+            ui::fail(&format!("{}: {}", service.service, service.detail));
+        }
+    }
+    ui::say("");
+
+    if !refused.is_empty() {
+        let names: Vec<&str> = refused.iter().map(|(service, _)| service.as_str()).collect();
+        bail!("{} was not updated — see above", names.join(", "));
+    }
+    if !health.iter().all(|service| service.healthy) {
+        bail!(
+            "updated, but not every service is healthy — the previous state is in the \
+             backup taken above"
+        );
+    }
+    ui::ok(&format!("All {} services answer.", health.len()));
+    ui::say("");
+    Ok(())
+}
+
+/// One `docker compose` invocation in a deployment folder, its output left on the
+/// terminal where the user can watch it.
+fn run_compose(dir: &Path, argv: Vec<String>) -> Result<()> {
+    let status = konstruktor_core::docker::command()
+        .args(&argv)
+        .current_dir(dir)
+        .status()
+        .context("running docker")?;
+    if !status.success() {
+        bail!("docker {} exited with {status}", argv.join(" "));
+    }
+    Ok(())
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct RollbackArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// Show what would be put back, and change nothing.
+    #[arg(long)]
+    pub check: bool,
+    /// Skip the confirmation. Required when this is not a terminal.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+/// `konstruktor rollback`: back onto the images this hub ran before its last update.
+///
+/// The images only. `run.sh` migrates the database forward when a service starts, and
+/// nothing takes a migration back, so this points the older code at the newer schema —
+/// which is often exactly what is wanted after a bad build, and is never the same thing as
+/// undoing the update. That sentence is on the confirmation prompt for the same reason it
+/// is here.
+pub async fn rollback(args: RollbackArgs, json: bool) -> Result<()> {
+    use konstruktor_core::rollback;
+
+    let dir = args.target.resolve()?;
+    let plan = rollback::plan(&dir).map_err(|e| anyhow!("{e}"))?;
+
+    if json {
+        return ui::emit_json(&plan);
+    }
+
+    ui::say("");
+    ui::step(&format!(
+        "Back to what {} was running {} ({}):",
+        ui::bold(&dir.to_string_lossy()),
+        konstruktor_core::backup::timestamp(plan.recorded_at),
+        plan.reason
+    ));
+    ui::say("");
+    ui::table(
+        &plan
+            .changes
+            .iter()
+            .map(|change| (change.service.clone(), ui::dim(&change.to)))
+            .collect::<Vec<_>>(),
+    );
+    ui::say("");
+    for warning in &plan.warnings {
+        ui::warn(warning);
+    }
+    ui::say("");
+
+    if args.check {
+        ui::step(&ui::dim("Run `konstruktor rollback` to apply."));
+        ui::say("");
+        return Ok(());
+    }
+
+    if !args.yes {
+        if !ui::is_interactive() {
+            bail!(
+                "this rewrites the profile and recreates {} service(s). Pass --yes to \
+                 confirm.",
+                plan.changes.len()
+            );
+        }
+        let confirmed = inquire::Confirm::new("Roll these services back?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false);
+        if !confirmed {
+            ui::say("");
+            ui::step("Left alone.");
+            ui::say("");
+            return Ok(());
+        }
+    }
+
+    rollback::apply(&dir, &plan).map_err(|e| anyhow!("{e}"))?;
+    ui::ok("Profile rewritten and the deployment files regenerated.");
+
+    for change in &plan.changes {
+        ui::step(&format!("{}…", ui::bold(&change.service)));
+        run_compose(&dir, compose::pull_service(&change.service))?;
+        run_compose(&dir, compose::up_service(&change.service))?;
+    }
+    rollback::record_applied(&dir).await.map_err(|e| anyhow!("{e}"))?;
+
+    ui::say("");
+    ui::ok(&format!(
+        "Rolled {} back.",
+        plan.changes
+            .iter()
+            .map(|c| c.service.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    ui::step(&ui::dim(
+        "The database was not touched. If the update migrated it, restore the backup \
+         taken before the update.",
+    ));
     ui::say("");
     Ok(())
 }

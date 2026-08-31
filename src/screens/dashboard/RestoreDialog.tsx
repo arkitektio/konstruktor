@@ -299,7 +299,7 @@ export const RestoreDialog = ({
                       <td className="px-2 py-1 font-medium">{id}</td>
                       <td className="px-2 py-1">—</td>
                       <td className="px-2 py-1">runs here</td>
-                      <td className="px-2 py-1">nothing to restore</td>
+                      <td className="px-2 py-1">keeps its current data</td>
                     </tr>
                   ))}
                   {plan && (

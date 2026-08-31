@@ -22,6 +22,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::backup::{
     self, postgres_major, BackupEvent, BackupManifest, DataSource, DUMP_FILE, MANIFEST_FILE,
+    MESH_DATA_DIR,
     MANIFEST_FORMAT, MINIO_DATA_DIR, POSTGRES_DATA_DIR,
 };
 use crate::catalog::ServiceId;
@@ -152,8 +153,12 @@ pub struct RestorePlan {
     pub target_identifier: Option<String>,
     pub target_storage: StorageMode,
     pub services: Vec<ServiceComparison>,
-    /// Services the target runs that the backup has no data for. Harmless: they start
-    /// empty, as they would on a new hub.
+    /// Services the target runs that the backup has no data for.
+    ///
+    /// Harmless on a *fresh* target — they start empty, as they would on a new hub. On one
+    /// that has been used they are the opposite of harmless: `pg_dumpall --clean` drops
+    /// only the databases in the dump, so these keep their current data while everything
+    /// else is replaced. [`judge`] warns for exactly that reason.
     pub extra_in_target: Vec<ServiceId>,
     pub db: ImageComparison,
     /// `postgres --version` of the target, when it could be asked.
@@ -257,20 +262,105 @@ pub fn compare(
 /// The blocking reasons and warnings for a request, from a comparison that is already
 /// made. Pure, for the same reason as [`compare`].
 #[allow(clippy::too_many_arguments)]
+/// The Postgres majors on the two sides of a restore, each resolved by whatever means was
+/// available *without starting anything* — see [`plan`] for where each comes from.
+///
+/// `None` means "could not tell", which is never the same as "compatible".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostgresMajors {
+    /// What wrote the data in the backup.
+    pub backup: Option<u32>,
+    /// What will serve it once it is restored.
+    pub target: Option<u32>,
+}
+
+/// The two sides lined up against each other, as [`compare`] reports them.
+pub struct Comparison {
+    pub services: Vec<ServiceComparison>,
+    /// Services the target runs that the backup has no data for.
+    pub extra_in_target: Vec<ServiceId>,
+    pub db: ImageComparison,
+}
+
+/// What the user asked for: which halves, and how the database should come back.
+#[derive(Debug, Clone, Copy)]
+pub struct Asked {
+    pub method: DbMethod,
+    pub postgres: bool,
+    pub minio: bool,
+}
+
 pub fn judge(
-    plan_services: &[ServiceComparison],
-    db: &ImageComparison,
+    comparison: &Comparison,
     available: &Available,
     manifest: &BackupManifest,
-    target_storage: StorageMode,
-    target_postgres_version: Option<&str>,
+    target: &HubConfig,
+    majors: PostgresMajors,
     same_hub: bool,
-    method: DbMethod,
-    restore_postgres: bool,
-    restore_minio: bool,
+    asked: Asked,
 ) -> (Vec<String>, Vec<String>) {
+    let Comparison { services: plan_services, extra_in_target, db } = comparison;
+    let Asked { method, postgres: restore_postgres, minio: restore_minio } = asked;
     let mut blocking = Vec::new();
     let mut warnings = Vec::new();
+    let target_storage = storage_mode_of(target);
+
+    // Every hub generates its own random Postgres role. A dump recreates the *backup's*
+    // role and gives it ownership of everything it restores, and a raw copy replaces the
+    // cluster wholesale — either way the services here go on connecting as this hub's
+    // role, which then owns none of the restored databases. The manifest records the
+    // other side's user precisely so this can be said out loud before it happens.
+    if restore_postgres && manifest.postgres.user != target.db.postgres_user {
+        warnings.push(format!(
+            "the backup's database role ({}) is not this hub's ({}) — the restored \
+             databases will be owned by a role these services do not connect as, and may \
+             need their ownership reassigned afterwards",
+            manifest.postgres.user, target.db.postgres_user
+        ));
+    }
+
+    // The same skew one level down: a service whose database is named differently here
+    // restores into a name nothing reads.
+    let renamed: Vec<String> = manifest
+        .services
+        .iter()
+        .filter(|backed| {
+            target
+                .enabled_services()
+                .iter()
+                .any(|id| *id == backed.id && target.service(*id).db_config.db != backed.db)
+        })
+        .map(|backed| {
+            format!(
+                "{} ({} in the backup, {} here)",
+                backed.host,
+                backed.db,
+                target.service(backed.id).db_config.db
+            )
+        })
+        .collect();
+    if restore_postgres && !renamed.is_empty() {
+        warnings.push(format!(
+            "these services keep their data in a differently named database here: {} — the \
+             backup's copy would be restored under the old name",
+            renamed.join(", ")
+        ));
+    }
+
+    // A service the target runs that the backup has no data for. `pg_dumpall --clean`
+    // drops only the databases *in the dump*, so this one keeps whatever it has now while
+    // everything around it is replaced — which on a hub that has been used is two eras of
+    // data in one deployment, not the empty start a fresh target would get.
+    if !extra_in_target.is_empty() {
+        let names: Vec<&str> = extra_in_target.iter().map(|id| id.as_str()).collect();
+        warnings.push(format!(
+            "the backup holds no data for {} — {} will keep the data {} has now, while every \
+             other service is replaced from the backup",
+            names.join(", "),
+            if names.len() == 1 { "it" } else { "they" },
+            if names.len() == 1 { "it" } else { "they" },
+        ));
+    }
 
     for service in plan_services {
         match service.verdict {
@@ -318,15 +408,15 @@ pub fn judge(
                 blocking.push(format!("the backup holds no {POSTGRES_DATA_DIR} to copy back"))
             }
             DbMethod::Raw => {
-                let backed = manifest.postgres.server_version.as_deref().and_then(postgres_major);
-                let target = target_postgres_version.and_then(postgres_major);
-                match (backed, target) {
-                    (Some(a), Some(b)) if a != b => blocking.push(format!(
-                        "a raw copy of PGDATA from Postgres {a} cannot be started by Postgres {b} — \
-                         replay the dump instead"
+                match backup::major_move(majors.backup, majors.target) {
+                    backup::MajorMove::Across { data, server } => blocking.push(format!(
+                        "a raw copy of PGDATA from Postgres {data} cannot be started by Postgres \
+                         {server} — replay the dump instead"
                     )),
-                    (Some(_), Some(_)) => {}
-                    _ => warnings.push(
+                    backup::MajorMove::Same(_) => {}
+                    // Still possible — an image that sets no `PG_MAJOR`, a backup with no
+                    // `PG_VERSION` — but no longer the ordinary case of a stopped hub.
+                    backup::MajorMove::Unknown => warnings.push(
                         "the Postgres versions on the two sides could not both be read; a raw \
                          copy only works into the same major"
                             .into(),
@@ -349,6 +439,43 @@ pub fn judge(
         blocking.push("nothing was selected to restore".into());
     }
 
+    // Half a restore leaves the two halves describing different moments: rows referring
+    // to objects that were never put back, or objects nothing refers to. Every service
+    // still answers, so the health check cannot notice — this is the only place it gets
+    // said. Not blocking: doing one half deliberately is a legitimate thing to want.
+    // The backup carries the hub's tailnet identity, and a restore deliberately does not
+    // put it back: whether a node identity may reappear — here, or on another machine — is
+    // a question about the tailnet, not about this folder. Say where it is, so it is a
+    // decision rather than a surprise.
+    if manifest.contents.mesh_copied {
+        warnings.push(format!(
+            "the backup holds this hub's mesh identity ({MESH_DATA_DIR}), which is not \
+             restored — a hub that lost its tailnet state has to be authorized again for \
+             a new key"
+        ));
+    }
+
+    // Whatever the backup itself recorded as not having gone to plan. `backup.rs` writes
+    // these carefully — "postgres/data was copied from a running server", say — and until
+    // now nothing read them back.
+    for note in &manifest.contents.warnings {
+        warnings.push(format!("from the backup: {note}"));
+    }
+
+    match (restore_postgres, restore_minio) {
+        (true, false) => warnings.push(
+            "the object storage is being left as it is — the restored database may refer \
+             to files this hub does not have"
+                .into(),
+        ),
+        (false, true) => warnings.push(
+            "the database is being left as it is — the restored files may be ones no row \
+             in this hub refers to"
+                .into(),
+        ),
+        _ => {}
+    }
+
     (blocking, warnings)
 }
 
@@ -357,6 +484,17 @@ fn describe(storage: StorageMode) -> &'static str {
         StorageMode::DockerVolumes => "Docker volumes",
         StorageMode::DeploymentFolder => "folders in the deployment",
     }
+}
+
+/// Whether a finished restore may be called healthy.
+///
+/// Two conditions, and the second is the one that is easy to forget: a dump replays under
+/// `ON_ERROR_STOP=0`, so `psql` exits 0 even when statements failed — and `--clean` has
+/// already dropped whatever they were meant to replace. Every service then answers
+/// perfectly well over a half-restored database, so the health checks alone would report
+/// success over data that is missing. The replay errors have to count against it.
+pub fn restore_succeeded(health: &[crate::health::ServiceHealth], psql_errors: u32) -> bool {
+    health.iter().all(|h| h.healthy) && psql_errors == 0
 }
 
 /// Reads both sides and compares them. Asks the engine for image ids and, when the
@@ -396,8 +534,9 @@ pub async fn plan(request: &RestoreRequest) -> Result<RestorePlan, RestoreError>
     let target_storage = storage_mode_of(&config);
     let available = available_in(&request.backup);
 
-    // Only asked when the database is already up; starting it just to ask would be a
-    // side effect a *plan* must not have. Without it a raw restore is warned, not blocked.
+    // Asked of the running server only when it happens to be up — starting it just to ask
+    // would be a side effect a *plan* must not have. It stays on the plan because the UI
+    // shows it, but it is no longer what the raw-copy check depends on.
     let target_postgres_version =
         if backup::service_running(dir, DB_COMPOSE_SERVICE).await.unwrap_or(false) {
             backup::postgres_version(dir).await
@@ -405,18 +544,43 @@ pub async fn plan(request: &RestoreRequest) -> Result<RestorePlan, RestoreError>
             None
         };
 
+    // Both majors, resolved without starting anything. This is what makes the raw-copy
+    // refusal fire for a stopped hub, which is the ordinary case and the one where
+    // `copy_back`'s `rsync --delete` would otherwise destroy the target's data before
+    // Postgres ever got the chance to refuse the directory.
+    //
+    // Backup side: the manifest if it recorded a version, else `PG_VERSION` — the file
+    // `available_in` already stats to decide a raw copy is there at all.
+    // Target side: the running server if there is one, else the `PG_MAJOR` the db image
+    // declares. What matters is the server that will mount the directory.
+    let majors = PostgresMajors {
+        backup: manifest
+            .postgres
+            .server_version
+            .as_deref()
+            .and_then(postgres_major)
+            .or_else(|| backup::backup_pgdata_major(&request.backup)),
+        target: match target_postgres_version.as_deref().and_then(postgres_major) {
+            Some(major) => Some(major),
+            None => docker::image_pg_major(&config.db.image).await,
+        },
+    };
+
+    let comparison = Comparison { services, extra_in_target, db };
     let (blocking, warnings) = judge(
-        &services,
-        &db,
+        &comparison,
         &available,
         &manifest,
-        target_storage,
-        target_postgres_version.as_deref(),
+        &config,
+        majors,
         same_hub,
-        request.method,
-        request.restore_postgres,
-        request.restore_minio,
+        Asked {
+            method: request.method,
+            postgres: request.restore_postgres,
+            minio: request.restore_minio,
+        },
     );
+    let Comparison { services, extra_in_target, db } = comparison;
 
     Ok(RestorePlan {
         manifest,
@@ -600,14 +764,24 @@ pub async fn run(
     })
     .await
     .map_err(RestoreError::Engine)?;
-    report.all_healthy = report.health.iter().all(|h| h.healthy);
-    if !report.all_healthy {
-        let failing: Vec<&str> = report
-            .health
-            .iter()
-            .filter(|h| !h.healthy)
-            .map(|h| h.service.as_str())
-            .collect();
+    let replay_failed = report.psql_errors > 0;
+    report.all_healthy = restore_succeeded(&report.health, report.psql_errors);
+    if replay_failed {
+        warnings.push(format!(
+            "{} statement(s) failed while replaying the dump — the database is only \
+             partly restored, whatever the services report",
+            report.psql_errors
+        ));
+    }
+    let failing: Vec<&str> = report
+        .health
+        .iter()
+        .filter(|h| !h.healthy)
+        .map(|h| h.service.as_str())
+        .collect();
+    // Only when there is something to name — a restore that failed *only* its replay has
+    // every service answering, and "not answering: " with nothing after it is noise.
+    if !failing.is_empty() {
         warnings.push(format!("not answering: {}", failing.join(", ")));
     }
     if !was_running {
@@ -769,6 +943,19 @@ mod tests {
     use crate::backup::{BackupContents, ManifestHub, ManifestImage, ManifestPostgres, ManifestService};
     use crate::config::hub::{build_hub_config, HubConfigOptions};
 
+    /// The three halves `compare` returns, as `judge` wants them.
+    fn comparison(
+        services: Vec<ServiceComparison>,
+        extra: Vec<ServiceId>,
+        db: ImageComparison,
+    ) -> Comparison {
+        Comparison { services, extra_in_target: extra, db }
+    }
+
+    fn asked(method: DbMethod, postgres: bool, minio: bool) -> Asked {
+        Asked { method, postgres, minio }
+    }
+
     fn hub(services: Vec<ServiceId>, storage: StorageMode) -> HubConfig {
         build_hub_config(&HubConfigOptions {
             device_id: "device".into(),
@@ -835,12 +1022,45 @@ mod tests {
         assert_eq!(db.verdict, Verdict::Same);
 
         let available = Available { dump: true, postgres_raw: true, minio: true };
-        let (blocking, _) = judge(
-            &services, &db, &available, &manifest, StorageMode::DockerVolumes, None,
-            true, DbMethod::Dump, true, true,
+        let (blocking, warnings) = judge(
+            &comparison(services.clone(), extra.clone(), db.clone()), &available, &manifest,
+            &target, PostgresMajors::default(), true, asked(DbMethod::Dump, true, true),
         );
         assert_eq!(blocking.len(), 1, "{blocking:?}");
         assert!(blocking[0].contains("mikro"));
+
+        // Two separately generated hubs have two different random Postgres roles, so this
+        // is also the cross-machine case: the restored databases would end up owned by a
+        // role these services do not connect as.
+        assert!(
+            warnings.iter().any(|w| w.contains("database role")),
+            "{warnings:?}"
+        );
+
+        // The extra service does not block — a restore into a hub that runs more than the
+        // backup is legitimate — but it is no longer silent: fluss keeps its own data
+        // while everything else is replaced, and that is worth being told.
+        assert!(
+            warnings.iter().any(|w| w.contains("fluss") && w.contains("keep the data")),
+            "{warnings:?}"
+        );
+    }
+
+    /// A fresh target has nothing to keep, so the warning is only as loud as it needs to
+    /// be: it fires on the list, not on the hub's history, which the core cannot see.
+    #[test]
+    fn no_extra_services_means_no_warning_about_them() {
+        let config = hub(vec![ServiceId::Rekuest], StorageMode::DockerVolumes);
+        let manifest = manifest_of(&config, &|_| Some("sha256:abc".into()));
+        let (services, extra, db) = compare(&manifest, &config, &|_| Some("sha256:abc".into()));
+        assert!(extra.is_empty());
+
+        let available = Available { dump: true, postgres_raw: true, minio: true };
+        let (_, warnings) = judge(
+            &comparison(services.clone(), extra.clone(), db.clone()), &available, &manifest,
+            &config, PostgresMajors::default(), true, asked(DbMethod::Dump, true, true),
+        );
+        assert!(!warnings.iter().any(|w| w.contains("keep the data")), "{warnings:?}");
     }
 
     #[test]
@@ -853,8 +1073,8 @@ mod tests {
 
         let available = Available { dump: true, postgres_raw: true, minio: true };
         let (blocking, warnings) = judge(
-            &services, &db, &available, &manifest, StorageMode::DockerVolumes, None,
-            true, DbMethod::Dump, true, true,
+            &comparison(services.clone(), vec![], db.clone()), &available, &manifest,
+            &config, PostgresMajors::default(), true, asked(DbMethod::Dump, true, true),
         );
         assert!(blocking.is_empty(), "{blocking:?}");
         assert!(warnings.iter().any(|w| w.contains("different build")));
@@ -869,19 +1089,129 @@ mod tests {
 
         let available = Available { dump: false, postgres_raw: true, minio: false };
         let (blocking, _) = judge(
-            &services, &db, &available, &manifest, StorageMode::DeploymentFolder,
-            Some("postgres (PostgreSQL) 15.1"), false, DbMethod::Raw, true, false,
+            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
+            // The backup was written by 16 (the manifest's own version) and the target
+            // would serve it with 15 — the case that has to be refused.
+            PostgresMajors { backup: Some(16), target: Some(15) },
+            false, asked(DbMethod::Raw, true, false),
         );
         assert!(blocking.iter().any(|b| b.contains("Postgres 16")), "{blocking:?}");
 
+        // The backup was taken from a volumes hub; this target keeps its data in the
+        // folder, which is the storage-mode skew worth mentioning.
+        let folder_target = hub(vec![ServiceId::Rekuest], StorageMode::DeploymentFolder);
         let (blocking, warnings) = judge(
-            &services, &db, &available, &manifest, StorageMode::DeploymentFolder, None,
-            false, DbMethod::Dump, true, true,
+            &comparison(services.clone(), vec![], db.clone()), &available, &manifest,
+            &folder_target, PostgresMajors::default(), false, asked(DbMethod::Dump, true, true),
         );
         assert!(blocking.iter().any(|b| b.contains("dump.sql")));
         assert!(blocking.iter().any(|b| b.contains("minio")));
         assert!(warnings.iter().any(|w| w.contains("different hub")));
         assert!(warnings.iter().any(|w| w.contains("Docker volumes")));
+    }
+
+    /// The case that used to slip through: a stopped hub gave no running server, the
+    /// majors matched on `_`, and the refusal became a warning while `copy_back` went on
+    /// to rsync `--delete` over PGDATA. Resolving the target from the image closes it.
+    #[test]
+    fn a_raw_copy_is_refused_even_when_the_hub_is_stopped() {
+        let config = hub(vec![ServiceId::Rekuest], StorageMode::DeploymentFolder);
+        let manifest = manifest_of(&config, &|_| None);
+        let (services, _, db) = compare(&manifest, &config, &|_| None);
+        let available = Available { dump: false, postgres_raw: true, minio: false };
+
+        // No running server to ask — the target major came from the image instead.
+        let (blocking, _) = judge(
+            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
+            PostgresMajors { backup: Some(15), target: Some(16) },
+            true, asked(DbMethod::Raw, true, false),
+        );
+        assert!(
+            blocking.iter().any(|b| b.contains("Postgres 15") && b.contains("Postgres 16")),
+            "{blocking:?}"
+        );
+
+        // Same majors is fine, and must not warn about being unable to read them.
+        let (blocking, warnings) = judge(
+            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
+            PostgresMajors { backup: Some(16), target: Some(16) },
+            true, asked(DbMethod::Raw, true, false),
+        );
+        assert!(blocking.is_empty(), "{blocking:?}");
+        assert!(!warnings.iter().any(|w| w.contains("could not both be read")), "{warnings:?}");
+    }
+
+    /// An image that declares no major must not read as agreement.
+    #[test]
+    fn an_unreadable_major_warns_rather_than_passing() {
+        let config = hub(vec![ServiceId::Rekuest], StorageMode::DeploymentFolder);
+        let manifest = manifest_of(&config, &|_| None);
+        let (services, _, db) = compare(&manifest, &config, &|_| None);
+        let available = Available { dump: false, postgres_raw: true, minio: false };
+
+        let (blocking, warnings) = judge(
+            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
+            PostgresMajors { backup: Some(16), target: None },
+            true, asked(DbMethod::Raw, true, false),
+        );
+        assert!(blocking.is_empty(), "{blocking:?}");
+        assert!(warnings.iter().any(|w| w.contains("could not both be read")), "{warnings:?}");
+    }
+
+    /// Half a restore is allowed, but it must not be silent: the two halves then describe
+    /// different moments and nothing downstream can tell.
+    #[test]
+    fn restoring_only_one_half_warns_about_the_other() {
+        let config = hub(vec![ServiceId::Rekuest], StorageMode::DockerVolumes);
+        let manifest = manifest_of(&config, &|_| Some("sha256:abc".into()));
+        let (services, extra, db) = compare(&manifest, &config, &|_| Some("sha256:abc".into()));
+        let available = Available { dump: true, postgres_raw: true, minio: true };
+
+        let judge_with = |postgres, minio| {
+            judge(
+                &comparison(services.clone(), extra.clone(), db.clone()), &available, &manifest,
+                &config, PostgresMajors::default(), true, asked(DbMethod::Dump, postgres, minio),
+            )
+        };
+
+        let (blocking, warnings) = judge_with(true, false);
+        assert!(blocking.is_empty(), "{blocking:?}");
+        assert!(warnings.iter().any(|w| w.contains("object storage is being left")), "{warnings:?}");
+
+        let (blocking, warnings) = judge_with(false, true);
+        assert!(blocking.is_empty(), "{blocking:?}");
+        assert!(warnings.iter().any(|w| w.contains("database is being left")), "{warnings:?}");
+
+        // Both halves is the whole thing, and says nothing about either.
+        let (_, warnings) = judge_with(true, true);
+        assert!(!warnings.iter().any(|w| w.contains("being left as it is")), "{warnings:?}");
+
+        // Neither is still refused outright.
+        let (blocking, _) = judge_with(false, false);
+        assert!(blocking.iter().any(|b| b.contains("nothing was selected")), "{blocking:?}");
+    }
+
+    /// The health checks alone are not enough: they pass over a half-restored database.
+    #[test]
+    fn a_restore_with_replay_errors_is_not_healthy() {
+        let ok = |service: &str| crate::health::ServiceHealth {
+            service: service.into(),
+            container_state: Some("running".into()),
+            restarts_seen: false,
+            http_status: Some(200),
+            url: None,
+            detail: "answers".into(),
+            healthy: true,
+        };
+        let bad = crate::health::ServiceHealth { healthy: false, ..ok("mikro") };
+
+        assert!(restore_succeeded(&[ok("rekuest"), ok("mikro")], 0));
+        // Every service answers, but statements failed on the way in.
+        assert!(!restore_succeeded(&[ok("rekuest"), ok("mikro")], 1));
+        // And the older condition still holds on its own.
+        assert!(!restore_succeeded(&[ok("rekuest"), bad], 0));
+        assert!(!restore_succeeded(&[], 3));
+        assert!(restore_succeeded(&[], 0));
     }
 
     #[test]

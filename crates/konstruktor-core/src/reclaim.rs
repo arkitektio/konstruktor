@@ -49,6 +49,9 @@ const RESERVED: &[&str] = &[
     HUB_CONFIG_FILENAME,
     "docker-compose.yaml",
     "hub_credentials.json",
+    // The record of what this hub was running before its last update — the only thing
+    // `rollback` has to go on, and worth nothing if `purge` takes it with the data.
+    crate::lock::LOCK_FILENAME,
 ];
 
 /// Why a mount in the profile is not something Konstruktor will delete.
@@ -399,6 +402,9 @@ mod tests {
             ("configs", MountRefusal::Reserved),
             ("mounts/rekuest", MountRefusal::Reserved),
             ("./hub_config.yaml", MountRefusal::Reserved),
+            // The record of what this hub ran before its last update. `purge` deleting it
+            // is what would make `rollback` useless exactly when it is wanted.
+            ("./hub_lock.json", MountRefusal::Reserved),
         ] {
             assert_eq!(
                 resolve_mount(&dir, mount),

@@ -157,6 +157,9 @@ pub struct ChannelView {
 /// The tag out of an image reference, tolerating a registry host with a port
 /// (`registry:5000/image:tag`) by only looking after the last slash.
 pub fn image_tag(image: &str) -> Option<String> {
+    // A digest-pinned reference is `repo:tag@sha256:…`, and the last colon in that belongs
+    // to the digest. The tag is still the channel, so drop the pin before looking.
+    let image = image.split('@').next().unwrap_or(image);
     let last = image.rsplit('/').next().unwrap_or(image);
     last.rsplit_once(':').map(|(_, tag)| tag.to_string())
 }
@@ -322,6 +325,11 @@ mod tests {
             Some("next")
         );
         assert_eq!(image_tag("rekuest").as_deref(), None);
+        // A digest pin must not be mistaken for the tag: this hub is still on `dev`.
+        assert_eq!(
+            image_tag("jhnnsrs/daten:dev@sha256:c692f316").as_deref(),
+            Some("dev")
+        );
     }
 
     fn view(tag: Option<&str>) -> ServiceView {

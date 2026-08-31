@@ -677,6 +677,38 @@ pub async fn image_states(images: &[(String, String)]) -> Result<Vec<ImageState>
     Ok(states)
 }
 
+/// The Postgres major an image would run, from the `PG_MAJOR` environment variable.
+///
+/// The official Postgres images set it, and anything derived from them inherits it —
+/// `jhnnsrs/daten` does. That makes the major readable without starting a container,
+/// which matters because the two places that need it must not have side effects: a
+/// restore *plan*, and the check before an update recreates the database.
+///
+/// `None` when the image is not on this machine or sets no such variable. Callers must
+/// treat that as "could not tell", never as "compatible" — an image that does not say is
+/// not an image that agrees.
+pub async fn image_pg_major(image: &str) -> Option<u32> {
+    let engine = engine_probe::engine();
+    let output = run(
+        engine.async_command().args(["image", "inspect", image]),
+        QUERY_TIMEOUT,
+    )
+    .await
+    .ok()
+    .filter(|output| output.status.success())?;
+
+    json_list(&output.stdout)
+        .into_iter()
+        .next()?
+        .get("Config")?
+        .get("Env")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|entry| entry.strip_prefix("PG_MAJOR="))
+        .and_then(|major| major.trim().parse::<u32>().ok())
+}
+
 pub async fn restart_container(container_id: &str) -> Result<(), String> {
     let engine = engine_probe::engine();
     let output = run(

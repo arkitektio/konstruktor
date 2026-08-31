@@ -95,8 +95,9 @@ export const runSummary = (containers: Container[]): RunSummary => {
  *
  * `pulled` is the interesting one: `docker compose pull` moves a tag to a newer image
  * without touching anything already running, so a hub can sit for weeks on an update it
- * has already downloaded. Nothing here asks a registry: whether a *newer* image exists
- * upstream is a question the daemon cannot answer without a pull.
+ * has already downloaded. Nothing *here* asks a registry — the daemon cannot answer
+ * that without a pull — but the dashboard does, through `api.checkUpdates`, and shows
+ * the answer beside this one.
  */
 export type UpdateState =
   | "current"

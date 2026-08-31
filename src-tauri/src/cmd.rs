@@ -620,6 +620,9 @@ pub async fn compose_command_streamed(
     on_line: Channel<ComposeLine>,
 ) -> Result<String, String> {
     let args = compose_args(&action, None, None)?;
+    if action == "up" {
+        refuse_a_database_it_cannot_open(&path).await?;
+    }
     let stdout = run_streamed(args, &path, &on_line).await?;
 
     match action.as_str() {
@@ -648,10 +651,45 @@ pub async fn update_service(
     on_line: Channel<ComposeLine>,
 ) -> Result<String, String> {
     let mut output = String::new();
+    let dir = PathBuf::from(&path);
+
+    // What this hub is on, written down before anything moves it, so `konstruktor
+    // rollback` has a state to return to — the dashboard's update button and the CLI's
+    // both have to leave that record, or which one performed the update would decide
+    // whether the hub can be put back.
+    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
+        use konstruktor_core::lock;
+        let _ = lock::record(&dir, &profile.config, "before update", lock::now()).await;
+    }
+
     if pull {
         output.push_str(&run_streamed(compose::pull_service(&service), &path, &on_line).await?);
     }
+
+    // The database is the one service that cannot simply be recreated on whatever image is
+    // now on disk: Postgres will not open a cluster written by another major. Asked here,
+    // after any pull and before the recreate, because before the pull the local image is
+    // still the one running and the check would always agree with itself. The same guard
+    // the CLI applies — see `updates::guard`.
+    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
+        match konstruktor_core::updates::guard(&dir, &profile.config, &service).await {
+            konstruktor_core::updates::Guard::Refuse(reason) => return Err(reason),
+            konstruktor_core::updates::Guard::Warn(detail) => {
+                let _ = on_line.send(ComposeLine {
+                    line: detail,
+                    stderr: true,
+                });
+            }
+            konstruktor_core::updates::Guard::Clear => {}
+        }
+    }
+
     output.push_str(&run_streamed(compose::up_service(&service), &path, &on_line).await?);
+
+    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
+        use konstruktor_core::lock;
+        let _ = lock::record(&dir, &profile.config, "updated", lock::now()).await;
+    }
 
     // This brought a container up, so the same bookkeeping a whole-stack `up` does.
     started.started(&path);
@@ -729,6 +767,30 @@ async fn run_streamed(
     }
 }
 
+/// The database guard, asked before anything that could recreate the database container.
+///
+/// `compose up` applies whatever the image reference resolves to *now*, so an image pulled
+/// earlier — by a `pull`, or by an update that then refused to apply it — is applied here,
+/// with nothing else in the way. Postgres will not open a cluster written by another
+/// major, so that is a crash loop rather than a start. `konstruktor up` refuses the same
+/// thing for the same reason; the two front ends must not disagree about it.
+async fn refuse_a_database_it_cannot_open(path: &str) -> Result<(), String> {
+    let dir = PathBuf::from(path);
+    let Ok(profile) = konstruktor_core::profile::read_profile(&dir) else {
+        return Ok(());
+    };
+    match konstruktor_core::updates::guard(
+        &dir,
+        &profile.config,
+        konstruktor_core::config::hub::DB_COMPOSE_SERVICE,
+    )
+    .await
+    {
+        konstruktor_core::updates::Guard::Refuse(reason) => Err(reason),
+        _ => Ok(()),
+    }
+}
+
 fn clean(raw: &str) -> String {
     String::from_utf8_lossy(&strip_ansi_escapes::strip(raw)).into_owned()
 }
@@ -760,6 +822,9 @@ pub async fn compose_command(
     tail: Option<u32>,
 ) -> Result<String, String> {
     let args = compose_args(&action, service.as_deref(), tail)?;
+    if action == "up" {
+        refuse_a_database_it_cannot_open(&path).await?;
+    }
 
     let output = konstruktor_core::docker::command()
         .args(&args)

@@ -73,23 +73,67 @@ fn new_id() -> String {
     crate::secrets::generate_alpha_numeric_string(32)
 }
 
+/// Where an unreadable registry is moved before an empty one takes its place.
+pub const QUARANTINE_SUFFIX: &str = ".unreadable";
+
 /// Reads the registry, falling back to an empty one when the file is missing or corrupt —
 /// the same tolerance the desktop app has, so a bad file never blocks either front end.
+///
+/// Tolerant, but not destructive. Almost every caller follows a `load` with a [`save`],
+/// so returning an empty registry for a file that merely failed to parse used to mean the
+/// next write erased the record of every deployment on the machine. The files stayed;
+/// nothing pointed at them any more.
+///
+/// So an unreadable file is *moved aside* rather than overwritten, and its `deviceId` is
+/// salvaged if it can be read at all — that id becomes the `node_id` on every service
+/// manifest, and a new one makes a re-authorized hub look like a different machine to the
+/// coordination server.
 pub fn load() -> RegistryFile {
     let Some(path) = registry_path() else {
         return RegistryFile::empty(new_id());
     };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str::<RegistryFile>(&text)
-            .map(|mut r| {
-                if r.device_id.is_empty() {
-                    r.device_id = new_id();
-                }
-                r
-            })
-            .unwrap_or_else(|_| RegistryFile::empty(new_id())),
-        Err(_) => RegistryFile::empty(new_id()),
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        // No file at all is the ordinary first run, not a loss.
+        return RegistryFile::empty(new_id());
+    };
+
+    match serde_json::from_str::<RegistryFile>(&text) {
+        Ok(mut registry) => {
+            if registry.device_id.is_empty() {
+                registry.device_id = new_id();
+            }
+            registry
+        }
+        Err(_) => {
+            let _ = std::fs::rename(&path, path.with_extension(
+                format!("json{QUARANTINE_SUFFIX}"),
+            ));
+            RegistryFile::empty(salvage_device_id(&text).unwrap_or_else(new_id))
+        }
     }
+}
+
+/// The `deviceId` out of a registry that will not parse as a whole.
+///
+/// A truncated or hand-edited file often still has this line intact, and keeping it is
+/// what stops a corrupt registry from also changing this machine's identity.
+fn salvage_device_id(text: &str) -> Option<String> {
+    // Valid JSON that simply is not a registry any more — a field that changed type, say.
+    if let Some(id) = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value.get("deviceId")?.as_str().map(str::to_string))
+    {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+
+    // Truncated part-way through, which no JSON parser will accept but which usually
+    // still carries this line whole. Read the quoted value after the key and no further.
+    let after = text.split_once("\"deviceId\"")?.1.split_once('"')?.1;
+    let id = after.split('"').next()?.trim();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 pub fn save(registry: &RegistryFile) -> std::io::Result<()> {
@@ -295,6 +339,25 @@ pub fn record_regeneration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn salvages_a_device_id_from_a_registry_that_will_not_parse() {
+        // Valid JSON, wrong shape.
+        assert_eq!(
+            salvage_device_id(r#"{"version":"one","deviceId":"keep-me"}"#).as_deref(),
+            Some("keep-me")
+        );
+        // Truncated mid-write — no parser takes this, the id is still there.
+        assert_eq!(
+            salvage_device_id(r#"{"version":1,"deviceId":"keep-me","deployments":[{"id":"a"#)
+                .as_deref(),
+            Some("keep-me")
+        );
+        // Nothing to salvage.
+        assert_eq!(salvage_device_id("not json at all"), None);
+        assert_eq!(salvage_device_id(r#"{"deviceId":""}"#), None);
+        assert_eq!(salvage_device_id(""), None);
+    }
 
     fn registry_with(paths: &[(&str, &str)]) -> RegistryFile {
         let mut registry = RegistryFile::empty("device".into());

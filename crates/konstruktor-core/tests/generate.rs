@@ -710,3 +710,37 @@ mod storage {
         assert!(compose["volumes"].get("minio_data").is_none());
     }
 }
+
+/// A rollback works by writing a digest-pinned reference into the profile and
+/// regenerating. That only puts anything back if the pin survives the round trip — a
+/// generator that rebuilt the reference from its parts would drop the digest, and the
+/// rollback would report success while changing nothing.
+#[test]
+fn a_digest_pinned_image_survives_the_profile_and_reaches_the_compose_file() {
+    use konstruktor_core::profile::{hub_profile, read_profile, write_profile};
+
+    let pinned = "jhnnsrs/rekuest:next@sha256:\
+0123456789012345678901234567890123456789012345678901234567890123";
+    let mut config = config_of("hub_config.yaml");
+    config.rekuest.image = Some(pinned.to_string());
+
+    let dir = std::env::temp_dir().join(format!("konstruktor-pin-{}", rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).expect("a scratch folder");
+    write_profile(&dir, &hub_profile(config)).expect("writing the profile");
+    let read_back = read_profile(&dir).expect("reading it back").config;
+
+    assert_eq!(read_back.rekuest.image.as_deref(), Some(pinned));
+    assert!(
+        read_back
+            .stack_images()
+            .iter()
+            .any(|(service, image)| service == "rekuest" && image == pinned),
+        "the pin did not reach stack_images"
+    );
+
+    let files = generate_hub_files(&read_back, &IssuedIdentity::default());
+    assert!(
+        files["docker-compose.yaml"].contains(pinned),
+        "the pin did not reach the compose file"
+    );
+}
