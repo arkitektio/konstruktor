@@ -25,6 +25,25 @@ pub fn stop_timeout(seconds: u32) -> Vec<String> {
 pub fn pull() -> Vec<&'static str> {
     vec!["compose", "pull"]
 }
+/// Fetch one service's image, leaving everything that is running alone.
+pub fn pull_service(service: &str) -> Vec<String> {
+    vec!["compose".into(), "pull".into(), service.into()]
+}
+/// Recreate one service against the image its tag points at *now*, and nothing else.
+///
+/// `--no-deps` is the load-bearing flag. Every generated service declares
+/// `depends_on: [redis, db, minio]`, so without it updating one service on a stopped
+/// stack would quietly boot the infrastructure and leave the hub half up — the one state
+/// the dashboard draws as a fault.
+pub fn up_service(service: &str) -> Vec<String> {
+    vec![
+        "compose".into(),
+        "up".into(),
+        "-d".into(),
+        "--no-deps".into(),
+        service.into(),
+    ]
+}
 /// Removes containers and networks; volumes (the database!) survive.
 pub fn down() -> Vec<&'static str> {
     vec!["compose", "down"]
@@ -94,12 +113,23 @@ pub fn ps() -> Vec<&'static str> {
 }
 
 pub fn logs(service: Option<&str>, tail: u32) -> Vec<String> {
+    logs_following(service, tail, false)
+}
+
+/// `logs`, optionally left attached to the stream.
+///
+/// Only a terminal can use `--follow`: it never returns on its own, so the desktop app —
+/// which reads a command's whole output and then renders it — must never pass `true`.
+pub fn logs_following(service: Option<&str>, tail: u32, follow: bool) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "compose".into(),
         "logs".into(),
         "--tail".into(),
         tail.to_string(),
     ];
+    if follow {
+        args.push("--follow".into());
+    }
     if let Some(service) = service {
         args.push(service.to_string());
     }

@@ -428,6 +428,7 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
                       replaceCheckout(next);
                       setSwitched(true);
                     }}
+                    onUpdated={refreshAll}
                   />
                 ))}
               </div>

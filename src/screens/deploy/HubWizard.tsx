@@ -28,11 +28,15 @@ import { StorageStep } from "./steps/StorageStep";
 import { HostsStep } from "./steps/HostsStep";
 import { SummaryStep } from "./steps/SummaryStep";
 import {
-  InstallProgress,
   CreateState,
+  InstallPanel,
+  StateIcon,
   emptyCreateState,
+  explanation,
+  heading,
   reduceCreate,
 } from "./InstallProgress";
+import { StepFrame } from "../wizard/StepFrame";
 import * as api from "../../api";
 import type {
   AdvertisedHost,
@@ -463,9 +467,28 @@ export const HubWizard = () => {
   );
 
   /**
+   * Creating is a step of the wizard rather than a dialog over it: it takes as long as it
+   * takes somebody else to accept the code, and that wait belongs in the flow — with the
+   * rail still saying where it sits — not behind a modal that cannot be dismissed.
+   */
+  const installing = creating.running || creating.done || creating.error !== null;
+
+  /**
+   * Stop waiting for the code to be accepted.
+   *
+   * Only the wait can be interrupted, so this is a request rather than a switch: the
+   * core notices at its next poll and the call comes back with "Cancelled.". Nothing has
+   * been written by then — the folder is written after the hub is accepted, never before.
+   */
+  const handleCancel = async () => {
+    setCreating((previous) => ({ ...previous, cancelled: true }));
+    await api.cancelAuthorization();
+  };
+
+  /**
    * One call builds the profile, authorizes it and writes the folder — it does not start
    * the stack. Progress, including the device code somebody has to accept, comes back
-   * through a channel and is rendered by {@link InstallProgress}; when it is done we go
+   * through a channel and is rendered by {@link InstallPanel}; when it is done we go
    * to the hub's dashboard, where Start is.
    */
   const handleSubmit = async (values: HubForm) => {
@@ -510,40 +533,72 @@ export const HubWizard = () => {
   };
 
   return (
-    <>
-      <InstallProgress
-        open={creating.running || creating.done || creating.error !== null}
-        state={creating}
-        onClose={() => setCreating(emptyCreateState)}
-      />
-      <Wizard<HubForm>
-        initialValues={initialValues}
-        steps={steps}
-        onSubmit={handleSubmit as any}
-      >
-        {({
-          currentStepIndex,
-          rail,
-          position,
-          total,
-          renderComponent,
-          handlePrev,
-          handleNext,
-          goBackTo,
-          isSubmitting,
-          isValid,
-          isNextDisabled,
-          isPrevDisabled,
-          isLastStep,
-        }: WizardRenderProps) => (
-          <WizardPage
-            title={`New ${kind.label.toLowerCase()}`}
-            rail={rail}
-            position={position}
-            total={total}
-            onJump={goBackTo}
-            stepKey={currentStepIndex}
-            buttons={
+    <Wizard<HubForm>
+      initialValues={initialValues}
+      steps={steps}
+      onSubmit={handleSubmit as any}
+    >
+      {({
+        currentStepIndex,
+        rail,
+        position,
+        total,
+        renderComponent,
+        handlePrev,
+        handleNext,
+        goBackTo,
+        isSubmitting,
+        isValid,
+        isNextDisabled,
+        isPrevDisabled,
+        isLastStep,
+      }: WizardRenderProps) => (
+        <WizardPage
+          title={`New ${kind.label.toLowerCase()}`}
+          // Creating is a step of its own on the rail, so the flow does not appear to
+          // end on Review while the longest wait in it is still running.
+          rail={
+            installing
+              ? [
+                  ...rail.map((step) => ({ ...step, status: "done" as const })),
+                  {
+                    index: steps.length,
+                    meta: { label: "Create", title: "Create", icon: Rocket },
+                    status: "current" as const,
+                  },
+                ]
+              : rail
+          }
+          position={installing ? total + 1 : position}
+          total={installing ? total + 1 : total}
+          // Going back to change an answer mid-creation would leave the call running
+          // with nothing on screen saying so, and the answers it was given are already
+          // in the profile being authorized.
+          onJump={installing ? undefined : goBackTo}
+          stepKey={installing ? "create" : currentStepIndex}
+          buttons={
+            installing ? (
+              // Only the wait for the code is interruptible — see `handleCancel`. Offering
+              // Cancel during the Docker probe or while files are written would be a
+              // button that quietly does nothing.
+              creating.running ? (
+                creating.staged && (
+                  <Button
+                    variant="outline"
+                    disabled={creating.cancelled}
+                    onClick={handleCancel}
+                  >
+                    {creating.cancelled ? "Stopping…" : "Cancel"}
+                  </Button>
+                )
+              ) : creating.done ? null : (
+                // Stopped or failed. The answers are all still in the form, so the way
+                // out is back to Review rather than out of the wizard.
+                <Button onClick={() => setCreating(emptyCreateState)}>
+                  Back to the review
+                </Button>
+              )
+            ) : (
               <>
                 {/*
                   Absent, not greyed out, until the step is answered. A disabled button
@@ -579,12 +634,22 @@ export const HubWizard = () => {
                   </Button>
                 )}
               </>
-            }
-          >
-            {renderComponent()}
-          </WizardPage>
-        )}
-      </Wizard>
-    </>
+            )
+          }
+        >
+          {installing ? (
+            <StepFrame
+              icon={(props) => <StateIcon state={creating} {...props} />}
+              title={heading(creating, "hub")}
+              subtitle={explanation(creating, "hub")}
+            >
+              <InstallPanel state={creating} />
+            </StepFrame>
+          ) : (
+            renderComponent()
+          )}
+        </WizardPage>
+      )}
+    </Wizard>
   );
 };

@@ -176,6 +176,15 @@ export const ConnectScreen: React.FC<{}> = () => {
     }
   }, [selected, settings.proberEndpoint, port, ssl]);
 
+  /**
+   * Stop waiting for somebody to accept the code. Only the wait can be interrupted; the
+   * call comes back with "Cancelled." and the hub is left exactly as it was.
+   */
+  const stopWaiting = useCallback(async () => {
+    setAuthorizing((previous) => ({ ...previous, cancelled: true }));
+    await api.cancelAuthorization();
+  }, []);
+
   const connect = useCallback(async () => {
     if (!deployment) return;
     setAuthorizing({ ...emptyCreateState, running: true });
@@ -239,6 +248,7 @@ export const ConnectScreen: React.FC<{}> = () => {
         open={busy || authorizing.done || authorizing.error !== null}
         state={authorizing}
         onClose={() => setAuthorizing(emptyCreateState)}
+        onCancel={stopWaiting}
       />
       <Page
         menu={

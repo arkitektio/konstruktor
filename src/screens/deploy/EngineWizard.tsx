@@ -13,10 +13,14 @@ import { useSettings } from "../../settings/settings-context";
 import { Wizard, WizardRenderProps, WizardStep } from "../wizard/Wizard";
 import {
   CreateState,
+  InstallPanel,
+  StateIcon,
   emptyCreateState,
-  InstallProgress,
+  explanation,
+  heading,
   reduceCreate,
 } from "./InstallProgress";
+import { StepFrame } from "../wizard/StepFrame";
 import { coordinationServerSchema } from "./hub-form";
 import { CoordinationStep } from "./steps/CoordinationStep";
 import { DockerStep } from "./steps/DockerStep";
@@ -136,6 +140,15 @@ export const EngineWizard = () => {
     },
   ];
 
+  /** Creating is the wizard's last step, exactly as it is for a hub. */
+  const installing = creating.running || creating.done || creating.error !== null;
+
+  /** Stop waiting for the engine to be accepted. Nothing has been written yet. */
+  const handleCancel = async () => {
+    setCreating((previous) => ({ ...previous, cancelled: true }));
+    await api.cancelAuthorization();
+  };
+
   const handleSubmit = async (values: EngineForm) => {
     setCreating({ ...emptyCreateState, running: true });
 
@@ -169,41 +182,65 @@ export const EngineWizard = () => {
   };
 
   return (
-    <>
-      <InstallProgress
-        open={creating.running || creating.done || creating.error !== null}
-        state={creating}
-        onClose={() => setCreating(emptyCreateState)}
-        kind="engine"
-      />
-      <Wizard<EngineForm>
-        initialValues={initialValues}
-        steps={steps}
-        onSubmit={handleSubmit as any}
-      >
-        {({
-          currentStepIndex,
-          rail,
-          position,
-          total,
-          renderComponent,
-          handlePrev,
-          handleNext,
-          goBackTo,
-          isSubmitting,
-          isValid,
-          isNextDisabled,
-          isPrevDisabled,
-          isLastStep,
-        }: WizardRenderProps) => (
-          <WizardPage
-            title="New plugin engine"
-            rail={rail}
-            position={position}
-            total={total}
-            onJump={goBackTo}
-            stepKey={currentStepIndex}
-            buttons={
+    <Wizard<EngineForm>
+      initialValues={initialValues}
+      steps={steps}
+      onSubmit={handleSubmit as any}
+    >
+      {({
+        currentStepIndex,
+        rail,
+        position,
+        total,
+        renderComponent,
+        handlePrev,
+        handleNext,
+        goBackTo,
+        isSubmitting,
+        isValid,
+        isNextDisabled,
+        isPrevDisabled,
+        isLastStep,
+      }: WizardRenderProps) => (
+        <WizardPage
+          title="New plugin engine"
+          rail={
+            installing
+              ? [
+                  ...rail.map((step) => ({ ...step, status: "done" as const })),
+                  {
+                    index: steps.length,
+                    meta: { label: "Create", title: "Create", icon: Rocket },
+                    status: "current" as const,
+                  },
+                ]
+              : rail
+          }
+          position={installing ? total + 1 : position}
+          total={installing ? total + 1 : total}
+          onJump={installing ? undefined : goBackTo}
+          stepKey={installing ? "create" : currentStepIndex}
+          buttons={
+            installing ? (
+              // Only the wait for the code is interruptible — see `handleCancel`. Offering
+              // Cancel during the Docker probe or while files are written would be a
+              // button that quietly does nothing.
+              creating.running ? (
+                creating.staged && (
+                  <Button
+                    variant="outline"
+                    disabled={creating.cancelled}
+                    onClick={handleCancel}
+                  >
+                    {creating.cancelled ? "Stopping…" : "Cancel"}
+                  </Button>
+                )
+              ) : creating.done ? null : (
+                <Button onClick={() => setCreating(emptyCreateState)}>
+                  Back to the review
+                </Button>
+              )
+            ) : (
               <>
                 {(isValid || isSubmitting) && (
                   <Button disabled={isNextDisabled} onClick={handleNext}>
@@ -230,12 +267,22 @@ export const EngineWizard = () => {
                   </Button>
                 )}
               </>
-            }
-          >
-            {renderComponent()}
-          </WizardPage>
-        )}
-      </Wizard>
-    </>
+            )
+          }
+        >
+          {installing ? (
+            <StepFrame
+              icon={(props) => <StateIcon state={creating} {...props} />}
+              title={heading(creating, "engine")}
+              subtitle={explanation(creating, "engine")}
+            >
+              <InstallPanel state={creating} kind="engine" />
+            </StepFrame>
+          ) : (
+            renderComponent()
+          )}
+        </WizardPage>
+      )}
+    </Wizard>
   );
 };

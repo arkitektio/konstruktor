@@ -1,4 +1,5 @@
-import { Database, PlayCircle, ScrollText } from "lucide-react";
+import { CheckCircle2, ChevronDown, Database, PlayCircle, ScrollText } from "lucide-react";
+import { useState } from "react";
 import { TbReload } from "react-icons/tb";
 import { Link } from "react-router-dom";
 
@@ -6,7 +7,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../utils";
 import type { Container, DeploymentRecord } from "../../api";
-import { isInitContainer, type ServiceUpdate } from "./lifecycle";
+import { initSucceeded, isInitContainer, type ServiceUpdate } from "./lifecycle";
 import { containerColor, PENDING_BADGE } from "./tone";
 
 /**
@@ -16,6 +17,12 @@ import { containerColor, PENDING_BADGE } from "./tone";
  * container, but only the services in the profile were rendered, so a hub whose database
  * had exited looked entirely healthy. They get a row of their own now, and they count
  * towards the "started" stage.
+ *
+ * The init containers are their own category at the end of the row. One that exited zero
+ * has nothing left to say — it created the buckets, months ago — so those are counted
+ * into a single chip that unfolds. One that failed, or is still going, or whose status
+ * cannot be read, keeps its tile: the whole point of folding the successful ones away is
+ * that what is left standing is worth looking at.
  */
 export const InfrastructureRow = ({
   containers,
@@ -33,10 +40,18 @@ export const InfrastructureRow = ({
   onRestart: (id: string) => void;
 }) => {
   const byService = new Map(updates.map((u) => [u.service, u]));
+  const [showInit, setShowInit] = useState(false);
+
+  const done = containers.filter(
+    (container) => isInitContainer(container) && initSucceeded(container)
+  );
+  // Everything else in the order it came: the infrastructure proper, and any init
+  // container that did not plainly succeed.
+  const shown = containers.filter((container) => !done.includes(container));
 
   return (
     <div className="flex flex-row flex-wrap gap-2">
-      {containers.map((container) => {
+      {[...shown, ...(showInit ? done : [])].map((container) => {
         const update = container.service
           ? byService.get(container.service)
           : undefined;
@@ -119,6 +134,25 @@ export const InfrastructureRow = ({
           </div>
         );
       })}
+
+      {done.length > 0 && (
+        <Button
+          variant="ghost"
+          size="xs"
+          className="self-start h-auto py-1.5 text-xs text-muted-foreground"
+          onClick={() => setShowInit((open) => !open)}
+          title="Containers that ran once, did their job and exited cleanly"
+        >
+          {showInit ? (
+            <ChevronDown className="size-3.5" />
+          ) : (
+            <CheckCircle2 className="size-3.5" />
+          )}
+          {showInit
+            ? "Hide"
+            : `+ ${done.length} successful init container${done.length === 1 ? "" : "s"}`}
+        </Button>
+      )}
     </div>
   );
 };

@@ -28,7 +28,8 @@ export const WizardPage = ({
   rail: WizardRailStep[];
   position: number;
   total: number;
-  onJump: (index: number) => void;
+  /** Left out while the wizard is doing something a step cannot be changed under. */
+  onJump?: (index: number) => void;
   buttons?: React.ReactNode;
   children: React.ReactNode;
   /** Changes when the step changes, which is what drives the transition. */
@@ -104,24 +105,29 @@ const WizardRail = ({
   onJump,
 }: {
   rail: WizardRailStep[];
-  onJump: (index: number) => void;
+  onJump?: (index: number) => void;
 }) => (
   <nav className="hidden @2xl:flex shrink-0 w-52 flex-col gap-0.5 border-r border-border/60 px-3 py-6 overflow-y-auto">
     {rail.map((step) => {
       const Icon = step.meta?.icon;
       const done = step.status === "done";
+      // A done step still reads as done while the wizard is busy — it just cannot be
+      // jumped to. A button that looks pressable and does nothing is worse than one
+      // that plainly is not offered.
+      const clickable = done && onJump !== undefined;
       const current = step.status === "current";
 
       return (
         <button
           key={step.index}
           type="button"
-          disabled={!done}
-          onClick={() => onJump(step.index)}
+          disabled={!clickable}
+          onClick={() => onJump?.(step.index)}
           className={cn(
             "group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
             current && "bg-accent text-accent-foreground font-medium",
-            done && "text-muted-foreground hover:bg-accent/50 cursor-pointer",
+            done && "text-muted-foreground",
+            clickable && "hover:bg-accent/50 cursor-pointer",
             !done && !current && "text-muted-foreground/50 cursor-default"
           )}
         >

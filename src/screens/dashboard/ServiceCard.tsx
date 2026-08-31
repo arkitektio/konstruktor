@@ -1,16 +1,26 @@
 import { open } from "@tauri-apps/plugin-shell";
 import {
+  Bug,
   CloudDownload,
   Download,
   ExternalLink,
+  Loader2,
   MoreHorizontal,
   RotateCw,
   ScrollText,
   UserPlus,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
+import * as api from "../../api";
+import { useAlerter } from "../../alerter/alerter-context";
+import {
+  advance,
+  EMPTY_PROGRESS,
+  newProgressState,
+  type ComposeProgress,
+} from "../../compose-progress";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -25,6 +35,7 @@ import type { Checkout, Container, DeploymentRecord, ServiceView, UpstreamCheck 
 import { BranchPicker } from "./CheckoutsCard";
 import { HealthDot } from "./HealthDot";
 import { formatDate, type ServiceUpdate } from "./lifecycle";
+import { BugReportDialog } from "./BugReportDialog";
 import { SuperuserDialog } from "./SuperuserDialog";
 import { PENDING_BADGE, serviceEdge } from "./tone";
 
@@ -50,6 +61,7 @@ export const ServiceCard = ({
   checkout,
   onRestart,
   onSwitched,
+  onUpdated,
 }: {
   service: ServiceView;
   containers: Container[];
@@ -63,14 +75,77 @@ export const ServiceCard = ({
   checkout: Checkout | undefined;
   onRestart: (id: string) => void;
   onSwitched: (next: Checkout) => void;
+  /** Re-read containers, images and the registry verdict once this service has moved. */
+  onUpdated: () => void;
 }) => {
   const [admin, setAdmin] = useState(false);
+  const [reporting, setReporting] = useState(false);
   // An account is made by exec-ing into the container, so there has to be one running.
   // `state` is compose's own word for it — `status` is the human line ("Up 3 minutes").
   const running = containers.some((container) => container.state === "running");
   const built = formatDate(update?.imageCreated);
 
   const line = statusLine(containers);
+  const { alert } = useAlerter();
+  const [updating, setUpdating] = useState(false);
+  /**
+   * What compose is doing, from its own narration. A pull of a large image is minutes of
+   * apparent nothing, so the tile says which layer or container it is on rather than
+   * leaving a spinner to imply that something might be happening.
+   */
+  const [progress, setProgress] = useState<ComposeProgress>(EMPTY_PROGRESS);
+  const progressState = useRef(newProgressState());
+
+  /**
+   * An image that is already on this machine — `compose pull` moved the tag but nothing
+   * recreated the container. Applying it is local work, so it must not be made to wait
+   * on a registry that may not answer.
+   */
+  const ready = update?.state === "pulled";
+  /** The registry has something newer, or the image was never fetched at all. */
+  const needsPull = upstream?.state === "newer" || update?.state === "missing";
+  /*
+   * Only while the stack is up. `--no-deps` keeps the update to this one service, which
+   * means on a stopped stack it would start exactly one container and leave the hub in
+   * the half-up state the page draws as a fault — and the grid already carries a "Start
+   * hub" over it there, which is the right remedy.
+   */
+  const updatable = stackUp && (ready || needsPull) && containers.length > 0;
+
+  /**
+   * A pull followed by a recreate narrates two commands into one progress state: the
+   * images the first names and the containers the second names land in the same counts,
+   * so the fraction would go *backwards* the moment the recreate starts. Two phases get
+   * the indeterminate fill and the step text, which is the useful half anyway.
+   */
+  const fraction = needsPull ? undefined : progress.fraction;
+
+  const applyUpdate = async () => {
+    setUpdating(true);
+    progressState.current = newProgressState();
+    setProgress(EMPTY_PROGRESS);
+    try {
+      await api.updateService(
+        deployment.path,
+        service.host,
+        Boolean(needsPull),
+        (line) =>
+          setProgress(advance(progressState.current, line, deployment.project))
+      );
+      onUpdated();
+    } catch (error) {
+      alert({
+        error: `Could not update ${service.name}`,
+        message: typeof error === "string" ? error : String(error),
+        subtitle: needsPull
+          ? "docker compose could not fetch or recreate this service."
+          : "docker compose could not recreate this service.",
+      });
+    } finally {
+      setUpdating(false);
+      setProgress(EMPTY_PROGRESS);
+    }
+  };
 
   return (
     <div
@@ -85,24 +160,67 @@ export const ServiceCard = ({
         <div className="text-sm font-medium truncate flex-1" title={service.host}>
           {service.name}
         </div>
-        {update?.state === "pulled" ? (
-          <Badge
+        {/*
+          The badge does the thing it announces. It used to only say that an update was
+          waiting, and left the user to find "Pull images" and "Apply updates" in a card
+          further down the page — which updates every service, when the one they were
+          looking at is right here.
+        */}
+        {ready || needsPull ? (
+          <Button
             variant="outline"
-            className={cn("gap-1 h-5 px-1.5 text-[10px] font-normal", PENDING_BADGE)}
-            title="A newer image is on disk; recreate the stack to run it."
+            size="xs"
+            disabled={!updatable || updating}
+            onClick={applyUpdate}
+            className={cn(
+              "relative overflow-hidden h-5 px-1.5 text-[10px] font-normal",
+              ready && PENDING_BADGE,
+              // Disabled-but-working: the fill and the count have to stay readable.
+              updating && "disabled:opacity-100"
+            )}
+            title={
+              !stackUp
+                ? "Start the hub first — updating one service on a stopped stack would leave the rest down"
+                : ready
+                  ? "A newer image is on disk. Recreate this service to run it."
+                  : "Fetch the newer image for this tag and recreate this service."
+            }
           >
-            <Download className="size-3" />
-            update ready
-          </Badge>
-        ) : upstream?.state === "newer" ? (
-          <Badge
-            variant="outline"
-            className="gap-1 h-5 px-1.5 text-[10px] font-normal"
-            title="The registry has a newer image for this tag. Pull images to fetch it."
-          >
-            <CloudDownload className="size-3" />
-            update
-          </Badge>
+            {/*
+              How far compose has got, as a fill creeping in from the left — the same
+              language the footer's buttons speak while a stack starts.
+            */}
+            {updating && (
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute inset-y-0 left-0 bg-primary/20 transition-[width] duration-300 ease-out",
+                  fraction === undefined && "w-1/5 animate-pulse"
+                )}
+                style={
+                  fraction === undefined
+                    ? undefined
+                    : { width: `${Math.max(8, Math.round(fraction * 100))}%` }
+                }
+              />
+            )}
+            <span className="relative flex items-center gap-1">
+              {updating ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : ready ? (
+                <Download className="size-3" />
+              ) : (
+                <CloudDownload className="size-3" />
+              )}
+              {updating
+                ? fraction !== undefined && progress.total > 0
+                  ? `${progress.done}/${progress.total}`
+                  : "updating…"
+                : ready
+                  ? "apply update"
+                  : "update"}
+            </span>
+          </Button>
         ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -140,6 +258,15 @@ export const ServiceCard = ({
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
+            {/*
+              To the service's own repository, with its log attached and this hub's
+              credentials taken out of it. Under the separator with the other things that
+              act on the service rather than navigate to it.
+            */}
+            <DropdownMenuItem onClick={() => setReporting(true)}>
+              <Bug className="size-4" />
+              Report a bug
+            </DropdownMenuItem>
             <DropdownMenuItem
               disabled={!running}
               onClick={() => setAdmin(true)}
@@ -173,8 +300,16 @@ export const ServiceCard = ({
           </span>
         )}
         <span aria-hidden>·</span>
-        <span className="truncate" title={line.title}>
-          {line.text}
+        {/*
+          While the update runs the second line reports it, because that is the only
+          line on the tile with room for a sentence — and "Up 2 hours" is stale the
+          moment the container is recreated anyway.
+        */}
+        <span
+          className="truncate"
+          title={updating ? `${progress.done} of ${progress.total}` : line.title}
+        >
+          {updating ? (progress.step ?? "working…") : line.text}
         </span>
       </div>
 
@@ -183,6 +318,14 @@ export const ServiceCard = ({
         onOpenChange={setAdmin}
         path={deployment.path}
         service={service.host}
+      />
+
+      <BugReportDialog
+        open={reporting}
+        onOpenChange={setReporting}
+        path={deployment.path}
+        service={service.host}
+        name={service.name}
       />
     </div>
   );

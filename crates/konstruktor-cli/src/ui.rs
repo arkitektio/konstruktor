@@ -84,3 +84,13 @@ pub fn table(rows: &[(String, String)]) {
         eprintln!("  {:width$}  {value}", dim(key), width = width);
     }
 }
+
+/// The one machine-readable document a command produces, on stdout.
+///
+/// The stdout/stderr split this module is built around is what makes this work in a pipe:
+/// every narration above goes to stderr, so `konstruktor status --json | jq` sees the
+/// document and nothing else.
+pub fn emit_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}

@@ -166,11 +166,9 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
 
     // The one check that says "this is ours". A registry entry pointing somewhere that no
     // longer holds a deployment is a stale entry, not a licence to delete that folder.
-    //
-    // A hub is recognised by its profile. A plugin engine has none — it is one deployer
-    // container — so the compose file Konstruktor wrote is what stands in: a folder with
-    // neither is not something this ever created.
-    if !profile::holds_a_hub(&dir) && !dir.join("docker-compose.yaml").is_file() {
+    // What counts as a deployment is `profile::holds_a_deployment`'s to say, so that
+    // resolving one and deleting one cannot disagree.
+    if profile::holds_a_deployment(&dir).is_none() {
         return Err(DeleteError::NotADeployment(dir.display().to_string()));
     }
 

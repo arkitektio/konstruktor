@@ -1,3 +1,4 @@
+mod authorize;
 mod create;
 mod engine;
 mod manage;
@@ -22,6 +23,12 @@ use konstruktor_core::create::MeshMode;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Emit the answer as JSON on stdout, with no narration mixed into it.
+    ///
+    /// Global, but only the reporting commands have a document to emit — `status`,
+    /// `list`, `ps`, `doctor` and `update --check`.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -32,6 +39,8 @@ enum Command {
     /// A plugin engine: one deployer container that runs an organization's plugins.
     #[command(subcommand)]
     Engine(EngineCommand),
+    /// Re-authorize an existing hub: change what it advertises, or claim a mesh key.
+    Authorize(Box<authorize::AuthorizeArgs>),
     /// Report what this hub is and what is running.
     Status(manage::Target),
     /// The deployments this machine knows about.
@@ -44,6 +53,8 @@ enum Command {
     Down(manage::DownArgs),
     /// Pull newer images for a deployment.
     Pull(manage::Target),
+    /// Update the services whose images have actually moved upstream.
+    Update(manage::UpdateArgs),
     /// The containers of a deployment.
     Ps(manage::Target),
     /// A deployment's logs.
@@ -56,8 +67,20 @@ enum Command {
     Backup(manage::BackupArgs),
     /// Restore a backup into a hub, then check that its services still answer.
     Restore(manage::RestoreArgs),
-    /// Check whether Docker is ready.
-    Doctor,
+    /// Restart a deployment's containers, or just one service's.
+    Restart(manage::RestartArgs),
+    /// Open a hub in a browser.
+    Open(manage::OpenArgs),
+    /// Remove a deployment completely: its containers, its data, its folder, its entry.
+    Destroy(manage::DestroyArgs),
+    /// Delete a deployment's data, keeping the deployment itself.
+    Purge(manage::DestroyArgs),
+    /// Stop listing a deployment. Nothing on disk is touched.
+    Forget(manage::Target),
+    /// A bug report for one service: its environment and its log, with secrets removed.
+    Report(manage::ReportArgs),
+    /// Check whether Docker is ready, and optionally fix it.
+    Doctor(manage::DoctorArgs),
 }
 
 #[derive(Subcommand)]
@@ -123,13 +146,15 @@ fn classify(error: &anyhow::Error) -> i32 {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    let json = cli.json;
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
+        Command::Authorize(args) => authorize::run(*args).await,
         Command::Checkout(args) => manage::checkout(&args),
-        Command::Doctor => manage::doctor().await,
-        Command::List => manage::list(),
-        Command::Status(target) => manage::status(&target).await,
+        Command::Doctor(args) => manage::doctor(json, args.fix, args.yes).await,
+        Command::List => manage::list(json),
+        Command::Status(target) => manage::status(&target, json).await,
         Command::Up(target) => {
             manage::compose(&target, konstruktor_core::compose::up(), "Starting")
         }
@@ -140,15 +165,22 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Pull(target) => {
             manage::compose(&target, konstruktor_core::compose::pull(), "Pulling")
         }
-        Command::Ps(target) => manage::ps(&target).await,
+        Command::Update(args) => manage::update(args, json).await,
+        Command::Ps(target) => manage::ps(&target, json).await,
         Command::Logs(args) => manage::logs(args),
         Command::Superuser(args) => manage::superuser(args),
+        Command::Restart(args) => manage::restart(args).await,
+        Command::Open(args) => manage::open(args),
+        Command::Destroy(args) => manage::destroy(args),
+        Command::Purge(args) => manage::purge(args),
+        Command::Forget(target) => manage::forget(&target),
+        Command::Report(args) => manage::report(args).await,
         Command::Backup(args) => manage::backup(args).await,
         Command::Restore(args) => manage::restore(args).await,
     }
 }
 
-/// Shared by `hub create` and, later, `authorize`.
+/// Shared by `hub create` and `authorize`.
 /// How far a hub should reach, as `--reach` spells it.
 pub fn parse_reach(value: &str) -> Result<konstruktor_core::hosts::ReachPresetId, String> {
     use konstruktor_core::hosts::ReachPresetId;

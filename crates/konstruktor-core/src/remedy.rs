@@ -125,8 +125,9 @@ impl Prereqs {
     }
 }
 
-/// One thing an installer does, in order. The desktop app executes these; the CLI only
-/// ever prints the equivalent `CopyCommand`.
+/// One thing an installer does, in order. Both front ends execute these through
+/// [`install`]; a step needing sudo is a `CopyCommand` on the remedy instead, and stays
+/// the user's to paste.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallAction {
     /// Run a program. `program` is a bare name the caller resolves, or an absolute path.
@@ -162,6 +163,16 @@ impl InstallerId {
             InstallerId::WingetRancherDesktop => {
                 "winget install -e --id SUSE.RancherDesktop --accept-package-agreements --accept-source-agreements"
             }
+        }
+    }
+
+    /// The platform this installer is for. The gate used to be spelled out again in the
+    /// desktop command layer; it belongs with the plan it guards, so there is one place
+    /// that knows `brew` is macOS and `winget` is Windows.
+    pub fn platform(self) -> Platform {
+        match self {
+            InstallerId::BrewColima | InstallerId::BrewComposePlugin => Platform::Macos,
+            InstallerId::WingetRancherDesktop => Platform::Windows,
         }
     }
 
@@ -715,4 +726,311 @@ mod tests {
             assert!(!id.command().is_empty());
         }
     }
+}
+
+// --- running a remedy ------------------------------------------------------------------
+//
+// Everything above *describes* what would fix a machine; everything below runs it. The two
+// were split across crates until now — the plans here, the executor in the desktop app —
+// which meant `konstruktor doctor` could name a remedy it had no way to apply.
+//
+// Nothing here decides anything: every program and argument is a literal in `plan()`, and
+// this only spawns them.
+
+use tokio_util::sync::CancellationToken;
+
+/// One line of an installer's output, plus the stage markers a front end uses as headings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallLine {
+    pub line: String,
+    pub stderr: bool,
+    /// Set on the line that opens a new stage — "Installing Colima…" — and on nothing
+    /// else, so a panel can render those as headings rather than as output.
+    pub stage: bool,
+}
+
+/// How the installer ended. A failure is an *outcome*, not an `Err`: the output it
+/// streamed is the explanation, and an `Err` would only repeat the last line of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallOutcome {
+    pub ok: bool,
+    /// The installer said Windows has to restart before the engine can start. Surfaced,
+    /// never hidden: the next probe would otherwise keep failing without saying why.
+    pub needs_reboot: bool,
+    pub cancelled: bool,
+    pub message: Option<String>,
+}
+
+fn cancelled() -> InstallOutcome {
+    InstallOutcome {
+        ok: false,
+        needs_reboot: false,
+        cancelled: true,
+        message: Some("cancelled".into()),
+    }
+}
+
+fn clean(raw: &str) -> String {
+    String::from_utf8_lossy(&strip_ansi_escapes::strip(raw)).into_owned()
+}
+
+/// A program name from a plan, as something that can be spawned. Bare names are looked
+/// up the way the engine binary is; `open` and `explorer.exe` are always on `PATH`.
+fn resolve_program(program: &str) -> Result<std::path::PathBuf, String> {
+    let path = std::path::PathBuf::from(program);
+    if path.is_absolute() || matches!(program, "open" | "explorer.exe") {
+        return Ok(path);
+    }
+    crate::engine_probe::find_tool(program)
+        .ok_or_else(|| format!("`{program}` was not found on this machine"))
+}
+
+/// Runs one of the fixed installers, streaming its output over `on_line`.
+///
+/// The program is resolved the way the engine binary is, so a Homebrew that a
+/// Finder-launched app cannot see on `PATH` is still found.
+pub async fn install(
+    installer: InstallerId,
+    cancel: &CancellationToken,
+    on_line: &(dyn Fn(InstallLine) + Sync),
+) -> Result<InstallOutcome, String> {
+    let platform = Platform::current();
+    if installer.platform() != platform {
+        return Err(format!("{installer:?} is not an installer for this platform"));
+    }
+    run_plan(installer.plan(), platform, cancel, on_line).await
+}
+
+/// Launches the product behind a stopped daemon — Colima, OrbStack, Docker Desktop… —
+/// and returns without waiting for it. A probe's polling notices when it is up.
+pub async fn launch(target: StartTarget) -> Result<(), String> {
+    let (program, args) = target
+        .launch(Platform::current())
+        .ok_or_else(|| format!("{} cannot be started from here", target.label()))?;
+    let program = resolve_program(&program)?;
+    tokio::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn run_plan(
+    plan: Vec<InstallAction>,
+    platform: Platform,
+    token: &CancellationToken,
+    on_line: &(dyn Fn(InstallLine) + Sync),
+) -> Result<InstallOutcome, String> {
+    let stage = |text: &str| {
+        on_line(InstallLine {
+            line: text.to_string(),
+            stderr: false,
+            stage: true,
+        });
+    };
+    let mut needs_reboot = false;
+
+    for action in plan {
+        if token.is_cancelled() {
+            return Ok(cancelled());
+        }
+        match action {
+            InstallAction::Run {
+                title,
+                program,
+                args,
+            } => {
+                stage(title);
+                let program = resolve_program(program)?;
+                let mut cmd = tokio::process::Command::new(&program);
+                cmd.args(&args);
+                // Homebrew: no prompts, no hints, and no minutes-long `brew update`
+                // before the install the user asked for.
+                cmd.env("NONINTERACTIVE", "1")
+                    .env("HOMEBREW_NO_ENV_HINTS", "1")
+                    .env("HOMEBREW_NO_AUTO_UPDATE", "1");
+                let (status, output) = stream(cmd, token, on_line).await?;
+                let Some(status) = status else {
+                    return Ok(cancelled());
+                };
+                let code = status.code().unwrap_or(-1);
+                // winget's "installed, restart to finish" codes, and the word itself.
+                let restart_hinted = program.to_string_lossy().contains("winget")
+                    && (code == 3010
+                        || code == 1641
+                        || output.to_ascii_lowercase().contains("restart"));
+                needs_reboot |= restart_hinted;
+                if !status.success() && !(restart_hinted && (code == 3010 || code == 1641)) {
+                    return Ok(InstallOutcome {
+                        ok: false,
+                        needs_reboot,
+                        cancelled: false,
+                        message: Some(format!("{title} failed (exit code {code})")),
+                    });
+                }
+            }
+            InstallAction::LinkComposePlugin => {
+                stage("Linking Compose where the Docker CLI looks for plugins");
+                link_compose_plugin(on_line).await?;
+            }
+            InstallAction::Launch(target) => {
+                stage(&format!("Starting {}", target.label()));
+                let Some((program, args)) = target.launch(platform) else {
+                    continue;
+                };
+                let program = resolve_program(&program)?;
+                if target == StartTarget::Colima {
+                    // `colima start` is the install's last, and longest, step: it
+                    // downloads a VM image the first time. Worth watching.
+                    let mut cmd = tokio::process::Command::new(&program);
+                    cmd.args(&args);
+                    let (status, _) = stream(cmd, token, on_line).await?;
+                    match status {
+                        None => return Ok(cancelled()),
+                        Some(s) if !s.success() => {
+                            return Ok(InstallOutcome {
+                                ok: false,
+                                needs_reboot,
+                                cancelled: false,
+                                message: Some("Colima did not start".into()),
+                            })
+                        }
+                        Some(_) => {}
+                    }
+                } else {
+                    tokio::process::Command::new(program)
+                        .args(args)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+
+    Ok(InstallOutcome {
+        ok: true,
+        needs_reboot,
+        cancelled: false,
+        message: None,
+    })
+}
+
+/// Runs a command, forwarding every line, until it exits or `token` fires. `None` for the
+/// status means it was cancelled — and killed, not abandoned.
+async fn stream(
+    mut cmd: tokio::process::Command,
+    token: &CancellationToken,
+    on_line: &(dyn Fn(InstallLine) + Sync),
+) -> Result<(Option<std::process::ExitStatus>, String), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    // Both pipes are read here rather than in spawned tasks: `on_line` borrows, so it
+    // cannot be moved into a `'static` task the way a Tauri channel could. Reading them
+    // concurrently in one future is what keeps a chatty installer from filling a pipe
+    // buffer and blocking on the other.
+    let mut out_lines = BufReader::new(stdout).lines();
+    let mut err_lines = BufReader::new(stderr).lines();
+    let mut collected = String::new();
+    let mut out_done = false;
+    let mut err_done = false;
+
+    let status = loop {
+        if out_done && err_done {
+            break tokio::select! {
+                status = child.wait() => Some(status.map_err(|e| e.to_string())?),
+                _ = token.cancelled() => {
+                    let _ = child.kill().await;
+                    None
+                }
+            };
+        }
+        tokio::select! {
+            line = out_lines.next_line(), if !out_done => match line {
+                Ok(Some(raw)) => {
+                    let line = clean(&raw);
+                    collected.push_str(&line);
+                    collected.push('\n');
+                    on_line(InstallLine { line, stderr: false, stage: false });
+                }
+                _ => out_done = true,
+            },
+            line = err_lines.next_line(), if !err_done => match line {
+                Ok(Some(raw)) => {
+                    let line = clean(&raw);
+                    if !line.trim().is_empty() {
+                        collected.push_str(&line);
+                        collected.push('\n');
+                        on_line(InstallLine { line, stderr: true, stage: false });
+                    }
+                }
+                _ => err_done = true,
+            },
+            _ = token.cancelled() => {
+                let _ = child.kill().await;
+                break None;
+            }
+        }
+    };
+
+    Ok((status, collected))
+}
+
+/// Homebrew installs `docker-compose` as a standalone binary; the `docker` CLI only finds
+/// it as `docker compose` through `~/.docker/cli-plugins`. Done here rather than by a
+/// shell one-liner so there is no shell, and no quoting, between us and the path.
+async fn link_compose_plugin(on_line: &(dyn Fn(InstallLine) + Sync)) -> Result<(), String> {
+    let brew = resolve_program("brew")?;
+    let output = tokio::process::Command::new(brew)
+        .args(["--prefix", "docker-compose"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("`brew --prefix docker-compose` failed — is docker-compose installed?".into());
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let binary = std::path::PathBuf::from(prefix)
+        .join("bin")
+        .join("docker-compose");
+    if !binary.is_file() {
+        return Err(format!("{} is not there", binary.display()));
+    }
+
+    let home = dirs::home_dir().ok_or("no home directory")?;
+    let plugins = home.join(".docker").join("cli-plugins");
+    std::fs::create_dir_all(&plugins).map_err(|e| e.to_string())?;
+    let link = plugins.join("docker-compose");
+    if link.exists() || link.symlink_metadata().is_ok() {
+        std::fs::remove_file(&link).map_err(|e| e.to_string())?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&binary, &link).map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    std::fs::copy(&binary, &link).map_err(|e| e.to_string())?;
+
+    on_line(InstallLine {
+        line: format!("{} -> {}", link.display(), binary.display()),
+        stderr: false,
+        stage: false,
+    });
+    Ok(())
 }

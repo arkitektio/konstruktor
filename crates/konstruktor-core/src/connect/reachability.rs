@@ -130,11 +130,11 @@ fn address_from_echo(body: &str) -> Option<String> {
 
 /// The URL an external prober should try for a given advertised host.
 ///
-/// The gateway root, deliberately — not a health path. The manifest carries
-/// `challenge: "ht"`, which looks like it names one, but nothing in this repository
-/// defines what a challenge is or serves such a route, and the one comment that mentions
-/// `/ht` disagrees with the code beneath it. Reachability does not need the distinction:
-/// any answer at all, including an error from the proxy, proves the socket was reached.
+/// The gateway root, deliberately — not a health path. The manifest's
+/// `challenge: "ht"` does name a real route (`crate::health::HEALTH_PATH`, which every
+/// service serves under its own prefix), but reachability does not need it: any answer at
+/// all, including an error from the proxy, proves the socket was reached, while a health
+/// path would fail a service that is merely still starting.
 pub fn probe_url(host: &str, port: u16, ssl: bool) -> String {
     let scheme = if ssl { "https" } else { "http" };
     // A v6 literal has to be bracketed before a port can be appended to it.

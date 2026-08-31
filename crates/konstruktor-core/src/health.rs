@@ -31,6 +31,24 @@ pub const HOLD: Duration = Duration::from_secs(10);
 /// after a restart runs migrations checks and warms caches; it is not quick.
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// The path every service answers a health check on, under its own prefix: `/lok/ht`.
+///
+/// `ht` and not `health`: it is `django-health-check` mounted by the service's own
+/// `urls.py`, and it is the same route the manifest hands the coordination server as
+/// each alias's `challenge` (see `connect::manifest`). Asking for `/health/` — which is
+/// what this used to do — is a 404 on every service there has ever been, so the dot went
+/// red on a hub that was working perfectly.
+pub const HEALTH_PATH: &str = "ht";
+
+/// Where one service answers a health check, through the gateway on this machine.
+///
+/// One builder because two callers have to agree: the restore's verification here, and
+/// the dashboard's health dot in the app. `?format=json` asks the check for its verdict
+/// as JSON rather than the HTML page it renders by default.
+pub fn health_url(scheme: &str, port: u16, host: &str) -> String {
+    format!("{scheme}://localhost:{port}/{host}/{HEALTH_PATH}?format=json")
+}
+
 /// What was found out about one service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceHealth {
@@ -155,7 +173,7 @@ pub async fn check(
 
     // --- 3. every service, through the gateway ------------------------------------
     let port = advertised_port(config);
-    let scheme = if config.gateway.ssl { "https" } else { "http" };
+    let scheme = crate::config::hub::scheme_of(config);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .danger_accept_invalid_certs(true)
@@ -164,7 +182,7 @@ pub async fn check(
 
     for id in config.enabled_services() {
         let host = config.service(id).host.clone();
-        let url = format!("{scheme}://localhost:{port}/{host}/health/?format=json");
+        let url = health_url(scheme, port, &host);
         let state = last.get(&host).and_then(|c| c.state.clone());
         let restarts = seen_down.get(&host).copied().unwrap_or(false);
 

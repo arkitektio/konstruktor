@@ -224,6 +224,13 @@ export const previewHubFiles = (answers: HubAnswers) =>
  * cannot go stale against answers that changed afterwards; the whole "authorize again"
  * mechanism the wizard used to need is gone.
  */
+/**
+ * Stop waiting for a device code to be accepted, in whichever of the three flows is
+ * waiting. The call that was waiting rejects with "Cancelled." and has written nothing:
+ * the folder is only written once the coordination server has accepted the hub.
+ */
+export const cancelAuthorization = () => invoke<void>("cancel_authorization");
+
 export const createHub = (
   answers: HubAnswers,
   onEvent: (event: CreateEvent) => void
@@ -355,6 +362,24 @@ export const composeCommandStreamed = (
   return invoke<string>("compose_command_streamed", { path, action, onLine: channel });
 };
 
+/**
+ * Bring one service up to date: fetch its image when `pull`, then recreate that one
+ * container — `--no-deps`, so nothing else in the stack is touched.
+ *
+ * `pull` is false for an image that is already on disk and merely waiting to be run:
+ * applying that must work with no network, so it does not go and ask a registry first.
+ */
+export const updateService = (
+  path: string,
+  service: string,
+  pull: boolean,
+  onLine: (line: ComposeLine) => void
+) => {
+  const channel = new Channel<ComposeLine>();
+  channel.onmessage = onLine;
+  return invoke<string>("update_service", { path, service, pull, onLine: channel });
+};
+
 export const composeCommand = (
   path: string,
   action: ComposeAction,
@@ -366,6 +391,32 @@ export const composeCommand = (
     service: options.service ?? null,
     tail: options.tail ?? null,
   });
+
+/**
+ * A bug report for one service: its environment, and its log with this deployment's own
+ * secrets taken out of it.
+ *
+ * Assembled in Rust because that is where the deployment's configuration is — the
+ * redaction matches the hub's actual credentials rather than guessing at what a secret
+ * looks like. See `konstruktor_core::redact`.
+ */
+export type BugReport = {
+  service: string;
+  /** Where the service's code lives. `null` for one the profile does not name. */
+  repo: string | null;
+  /** The prefilled "new issue" page. `null` when there is no repository to file against. */
+  issueUrl: string | null;
+  title: string;
+  /** The whole report as markdown — this is what goes on the clipboard. */
+  body: string;
+  /** How many distinct secret values were removed from the log. */
+  redactions: number;
+  /** Why the log is missing, when it is. */
+  logError: string | null;
+};
+
+export const bugReport = (path: string, service: string) =>
+  invoke<BugReport>("bug_report", { path, service });
 
 export const listDeploymentContainers = (path: string) =>
   invoke<{ containers: Container[] }>("list_deployment_containers", { path });

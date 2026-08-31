@@ -80,3 +80,78 @@ pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> 
 pub fn holds_a_hub(dir: &Path) -> bool {
     profile_path(dir).exists()
 }
+
+/// The two shapes a deployment folder comes in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeploymentKind {
+    Hub,
+    Engine,
+}
+
+impl DeploymentKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            DeploymentKind::Hub => "hub",
+            DeploymentKind::Engine => "plugin engine",
+        }
+    }
+}
+
+/// What kind of deployment a folder holds, if it holds one at all.
+///
+/// A hub is recognised by its profile. A plugin engine has none — it is one deployer
+/// container — so the compose file Konstruktor wrote is what stands in: a folder with
+/// neither is not something this ever created.
+///
+/// This is the rule `destroy::plan` has always applied before deleting anything; it lives
+/// here so that resolving a deployment and deleting one cannot disagree about what counts.
+pub fn holds_a_deployment(dir: &Path) -> Option<DeploymentKind> {
+    if holds_a_hub(dir) {
+        return Some(DeploymentKind::Hub);
+    }
+    if dir.join(crate::compose_file::COMPOSE_FILENAME).is_file() {
+        return Some(DeploymentKind::Engine);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("konstruktor-profile-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_profile_makes_it_a_hub() {
+        let dir = tmpdir();
+        std::fs::write(profile_path(&dir), "version: '1.0'").unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Hub));
+    }
+
+    #[test]
+    fn a_bare_compose_file_makes_it_an_engine() {
+        let dir = tmpdir();
+        std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Engine));
+    }
+
+    /// A hub also has a compose file. The profile has to win, or every hub would resolve
+    /// as an engine and lose the commands that need its config.
+    #[test]
+    fn a_hub_with_a_compose_file_is_still_a_hub() {
+        let dir = tmpdir();
+        std::fs::write(profile_path(&dir), "version: '1.0'").unwrap();
+        std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Hub));
+    }
+
+    #[test]
+    fn an_empty_folder_holds_nothing() {
+        assert_eq!(holds_a_deployment(&tmpdir()), None);
+    }
+}

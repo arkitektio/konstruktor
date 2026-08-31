@@ -3,6 +3,7 @@
     windows_subsystem = "windows"
 )]
 mod cmd;
+mod report;
 mod fix_env;
 mod tray;
 use tauri::{Manager, RunEvent};
@@ -25,6 +26,7 @@ fn main() {
         .manage(cmd::StartedStacks::default())
         .manage(tray::TrayState::default())
         .manage(cmd::InstallState::default())
+        .manage(cmd::AuthorizeState::default())
         .setup(|app| {
             tray::init(app.handle())?;
 
@@ -44,6 +46,7 @@ fn main() {
             cmd::probe_git,
             cmd::install_engine,
             cmd::cancel_install,
+            cmd::cancel_authorization,
             cmd::start_engine,
             cmd::deployment_checkouts,
             cmd::checkout_branches,
@@ -55,6 +58,8 @@ fn main() {
             cmd::host_candidates,
             cmd::egress_identity,
             cmd::probe_reachability,
+            cmd::update_service,
+            report::bug_report,
             cmd::create_hub,
             cmd::preview_hub_files,
             cmd::discover_server,

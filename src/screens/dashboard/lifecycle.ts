@@ -30,6 +30,20 @@ export const isInitContainer = (container: Container): boolean =>
   !!container.service &&
   (INIT_SERVICES.has(container.service) || container.service.endsWith("_init"));
 
+/**
+ * Whether an init container finished the job it was started for.
+ *
+ * The only evidence there is: the engine's own sentence, `Exited (0) 5 minutes ago`.
+ * `Container` carries no exit code, so the code is read out of that string — and
+ * anything that does not parse is deliberately *not* called a success. A container
+ * folded away as "successful" that had in fact failed is the one mistake this cannot be
+ * allowed to make, and showing a tile too many costs nothing.
+ */
+export const initSucceeded = (container: Container): boolean => {
+  const code = /Exited \((\d+)\)/.exec(container.status ?? "");
+  return code !== null && code[1] === "0";
+};
+
 // --- is it running ----------------------------------------------------------
 
 /**

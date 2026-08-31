@@ -93,6 +93,7 @@ pub fn fix() -> std::result::Result<(), Error> {
 /// ## Platform-specific
 ///
 /// - **Windows**: Does nothing as the environment variables are already set.
+#[allow(dead_code)] // Kept in sync with the upstream fix-path-env crate.
 pub fn fix_all_vars() -> std::result::Result<(), Error> {
     fix_vars(&[])
 }

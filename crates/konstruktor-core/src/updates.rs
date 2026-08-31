@@ -206,6 +206,27 @@ pub async fn check(images: &[ImageState]) -> Vec<UpstreamCheck> {
     results.into_iter().map(|(_, check)| check).collect()
 }
 
+/// The local state of every image a deployment's stack declares.
+///
+/// The engine only — no network. Separate from [`for_deployment`] because a front end
+/// showing which images are present refreshes far more often than it asks a registry
+/// anything.
+pub async fn images_for_deployment(
+    dir: &std::path::Path,
+) -> Result<Vec<ImageState>, String> {
+    let profile = crate::profile::read_profile(dir).map_err(|e| e.to_string())?;
+    crate::docker::image_states(&profile.config.stack_images()).await
+}
+
+/// Every image a deployment declares, checked against its registry.
+///
+/// One call because the two halves were being spelled out separately in each front end,
+/// and the order matters: the local state is what the remote digests are compared to.
+pub async fn for_deployment(dir: &std::path::Path) -> Result<Vec<UpstreamCheck>, String> {
+    let images = images_for_deployment(dir).await?;
+    Ok(check(&images).await)
+}
+
 async fn check_one(local: ImageState) -> UpstreamCheck {
     let base = |state, remote_digest, error| UpstreamCheck {
         service: local.service.clone(),

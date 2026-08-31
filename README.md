@@ -59,8 +59,25 @@ konstruktor hub create /mnt/data/lab-hub
 konstruktor list                # what this machine knows about
 konstruktor status [target]     # what a hub is, and what is running
 konstruktor up|stop|down|pull|ps|logs [target]
-konstruktor doctor              # is Docker ready?
+konstruktor logs -f [target]    # stay attached; Ctrl-C stops it
+konstruktor restart [service]   # bounce a container that has wedged
+konstruktor open [target]       # the hub in a browser
+konstruktor update [target]     # only what has actually moved upstream
+konstruktor authorize [target]  # re-authorize: new addresses, or a mesh key
+konstruktor report <service>    # a bug report, with the log's secrets removed
+konstruktor doctor [--fix]      # is Docker ready — and make it so
+konstruktor destroy|purge|forget <target>
 ```
+
+`pull` fetches every image whether anything changed or not; **`update`** asks each registry
+whether the tag has moved and recreates only those services. `--check` reports without
+touching anything.
+
+The three ways to remove a deployment are separate commands because they are three
+different amounts of destruction: **`forget`** stops listing it and touches no files,
+**`purge`** deletes its data and keeps the hub, and **`destroy`** removes the containers,
+the folder and the registry entry. Each prints what it is about to take — including source
+checkouts that may hold commits pushed nowhere — before it asks.
 
 Every answer has a flag, so a hub can be created unattended:
 
@@ -68,6 +85,11 @@ Every answer has a flag, so a hub can be created unattended:
 konstruktor hub create ~/MyHubs/lab-hub --server go.arkitekt.live \
   --identifier lab-hub --services rekuest,mikro,fluss --yes
 ```
+
+`--dry-run` prints the files it would write and stops, so an unattended invocation can be
+rehearsed before it is trusted. `--json` on `status`, `list`, `ps`, `doctor` and
+`update --check` puts a document on stdout and nothing else — the narration is on stderr,
+so `konstruktor status --json | jq .` works in a pipe.
 
 Addresses work the same way as in the wizard: `--reach local-only|this-network|public`
 picks them by how far the hub should reach, defaulting to `this-network`, and `--host`

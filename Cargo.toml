@@ -27,7 +27,15 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_norway = "0.9"
+strip-ansi-escapes = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 thiserror = "2"
 tokio = "1"
 tokio-util = "0.7"
+
+# A debug build of the desktop app is ~330MB, and nearly all of that is DWARF for every
+# variable in every dependency. Line tables alone still give a backtrace its file and line
+# — which is the part anyone reads — and `target/debug/deps` keeps every binary it has
+# ever built, so the saving is per stale copy, not once.
+[profile.dev]
+debug = "line-tables-only"

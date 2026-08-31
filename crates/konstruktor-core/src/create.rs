@@ -419,6 +419,31 @@ pub async fn create_hub(
 ///
 /// The verdict and what to do about it, as text. Worded once, in `remedy`, for both
 /// front ends — the desktop app shows the same remedies as buttons.
+/// The files a hub with these answers would be written to, without writing any of them.
+///
+/// Built from a throwaway config with a placeholder identity: the *names* do not depend on
+/// the keys, and asking a coordination server for real ones is exactly what a preview must
+/// not do.
+pub fn preview_files(answers: &HubAnswers) -> Vec<String> {
+    let config = crate::config::hub::build_hub_config(&crate::config::hub::HubConfigOptions {
+        coord_server: answers.coord_server.clone(),
+        rekuest_server: answers.rekuest_server.clone(),
+        services: Some(answers.services.clone()),
+        http_port: Some(answers.http_port),
+        https_port: Some(answers.https_port),
+        ssl: answers.ssl,
+        // The bind mounts a source checkout adds live in the compose file, so the
+        // preview only tells the truth if it knows which services asked for one.
+        dev_hub: answers.dev_hub,
+        service_options: answers.service_options.clone(),
+        storage: answers.storage,
+        ..Default::default()
+    });
+    crate::generate::generate_hub_files(&config, &crate::generate::IssuedIdentity::default())
+        .into_keys()
+        .collect()
+}
+
 pub fn describe_docker(probe: &docker::DockerProbe) -> String {
     crate::remedy::describe(probe)
 }

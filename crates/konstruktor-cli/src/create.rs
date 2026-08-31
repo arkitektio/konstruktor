@@ -32,7 +32,7 @@ pub struct CreateArgs {
     /// `local` runs Rekuest here; a host points at a remote provenance authority.
     #[arg(long, default_value = "local")]
     pub rekuest: String,
-    /// Comma-separated. Defaults to rekuest,mikro,fluss,kabinet,kraph.
+    /// Comma-separated. Defaults to rekuest,mikro,fluss,kabinet,kraph,alpaka.
     #[arg(long, value_delimiter = ',')]
     pub services: Option<Vec<String>>,
     #[arg(long, default_value_t = 7080)]
@@ -78,6 +78,10 @@ pub struct CreateArgs {
     /// Windows.
     #[arg(long, default_value = "volumes", value_parser = parse_storage)]
     pub storage: StorageMode,
+    /// Print what would be written and stop. Nothing is created, and the coordination
+    /// server is never contacted — so an unattended invocation can be rehearsed safely.
+    #[arg(long)]
+    pub dry_run: bool,
     /// Skip `docker compose up -d`.
     #[arg(long)]
     pub no_start: bool,
@@ -275,6 +279,17 @@ pub async fn run(args: CreateArgs) -> Result<()> {
     };
 
     summarise(&answers);
+
+    if args.dry_run {
+        ui::say(&ui::bold("  Would write:"));
+        for name in konstruktor_core::create::preview_files(&answers) {
+            ui::step(&ui::dim(&name));
+        }
+        ui::say("");
+        ui::step("Nothing was created. Drop --dry-run to do it for real.");
+        ui::say("");
+        return Ok(());
+    }
 
     // --- go -----------------------------------------------------------------
     let cancel = CancellationToken::new();

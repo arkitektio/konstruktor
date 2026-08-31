@@ -497,6 +497,19 @@ pub const MINIO_FOLDER_MOUNT: &str = "./minio_data";
 
 /// Reads a profile back into a [`StorageMode`]: any bind mount on either block means the
 /// data is in a folder, an empty `mount` on both means the volumes.
+/// `https` when the gateway terminates TLS, `http` otherwise.
+///
+/// One helper because three places used to decide this independently — the dashboard's
+/// gateway URL, the restore's health checks, and the reachability probe — and a hub that
+/// disagreed with itself about its own scheme would be diagnosed as unreachable.
+pub fn scheme_of(config: &HubConfig) -> &'static str {
+    if config.gateway.ssl {
+        "https"
+    } else {
+        "http"
+    }
+}
+
 pub fn storage_mode_of(config: &HubConfig) -> StorageMode {
     let bound = |mount: &Option<String>| mount.as_deref().is_some_and(|m| !m.is_empty());
     if bound(&config.db.mount) || bound(&config.minio.mount) {

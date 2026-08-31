@@ -87,8 +87,7 @@ pub async fn list_deployment_containers(path: String) -> Result<ContainerQuery, 
 /// a restart. It answers nothing about the registry — see `docker::image_states`.
 #[command]
 pub async fn deployment_images(path: String) -> Result<Vec<docker::ImageState>, String> {
-    let profile = profile::read_profile(&PathBuf::from(path)).map_err(|e| e.to_string())?;
-    docker::image_states(&profile.config.stack_images()).await
+    konstruktor_core::updates::images_for_deployment(&PathBuf::from(path)).await
 }
 
 /// Asks each image's registry whether its tag has moved on since the last pull.
@@ -99,9 +98,7 @@ pub async fn deployment_images(path: String) -> Result<Vec<docker::ImageState>, 
 pub async fn check_updates(
     path: String,
 ) -> Result<Vec<konstruktor_core::updates::UpstreamCheck>, String> {
-    let profile = profile::read_profile(&PathBuf::from(path)).map_err(|e| e.to_string())?;
-    let images = docker::image_states(&profile.config.stack_images()).await?;
-    Ok(konstruktor_core::updates::check(&images).await)
+    konstruktor_core::updates::for_deployment(&PathBuf::from(path)).await
 }
 
 #[command]
@@ -224,31 +221,84 @@ pub fn allow_deployment_dir(app: tauri::AppHandle, path: String) -> Result<(), S
 
 use konstruktor_core::connect::wellknown::{self, WellKnownFakts};
 use konstruktor_core::create::{self, CreateEvent, HubAnswers};
-use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::registry::{self, DeploymentRecord};
-use konstruktor_core::{backup, compose, compose_file, config, credentials, profile, restore};
+use konstruktor_core::{backup, compose, compose_file, profile, restore};
 use std::path::PathBuf;
 use tauri::ipc::Channel;
 
+/// The authorization that is running, if one is, so a Cancel button has something to
+/// pull.
+///
+/// Creating a hub, creating an engine and re-authorizing all wait on a person accepting
+/// a device code somewhere else, which can take as long as they take — and until this,
+/// the only way out was to quit the app. One slot for all three: they are all started
+/// from a screen that fills the window, so a second cannot be running behind the first.
+///
+/// Only the wait is interruptible — see `authorize::wait_for_hub`, which is where the
+/// token is read. Cancelling during the Docker probe or while files are being written
+/// takes effect at the next wait, or not at all.
+#[derive(Default)]
+pub struct AuthorizeState(Mutex<Option<CancellationToken>>);
+
+impl AuthorizeState {
+    fn begin(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        if let Ok(mut slot) = self.0.lock() {
+            // Whatever was there is finished or abandoned; a stale token left behind by
+            // a panicking call must never make the next attempt uncancellable.
+            *slot = Some(token.clone());
+        }
+        token
+    }
+
+    /// Clears the slot, whether the run succeeded, failed or was cancelled — a token
+    /// left in it would be pulled by the *next* run's Cancel button.
+    fn end(&self) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = None;
+        }
+    }
+
+    fn cancel(&self) {
+        if let Ok(slot) = self.0.lock() {
+            if let Some(token) = slot.as_ref() {
+                token.cancel();
+            }
+        }
+    }
+}
+
+/// Stop waiting for the device code to be accepted. The call that was waiting returns an
+/// error saying it was cancelled; nothing has been written by then.
+#[command]
+pub async fn cancel_authorization(state: tauri::State<'_, AuthorizeState>) -> Result<(), String> {
+    state.cancel();
+    Ok(())
+}
+
 /// Create a hub, streaming progress back as it goes.
 ///
-/// The device code appears in `CreateEvent::Staged`, so the progress dialog shows it —
+/// The device code appears in `CreateEvent::Staged`, so the progress step shows it —
 /// which is why this can be one call rather than a wizard step that can go stale.
 #[command]
 pub async fn create_hub(
     app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
+    authorizing: tauri::State<'_, AuthorizeState>,
     answers: HubAnswers,
     on_event: Channel<CreateEvent>,
 ) -> Result<String, String> {
-    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel = authorizing.begin();
 
     let created = create::create_hub(&answers, &cancel, &move |event| {
         // A closed channel means the window went away; the creation still finishes.
         let _ = on_event.send(event);
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    // Before the `?`: an early return with the token still in the slot would leave the
+    // next attempt with a Cancel button wired to a call that is already over.
+    authorizing.end();
+    let created = created.map_err(|e| e.to_string())?;
 
     let path = created.path.to_string_lossy().to_string();
     // The wizard starts the stack as part of creating it, which counts the same as
@@ -271,16 +321,18 @@ pub async fn create_hub(
 pub async fn create_engine(
     app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
+    authorizing: tauri::State<'_, AuthorizeState>,
     answers: konstruktor_core::engine::EngineAnswers,
     on_event: Channel<CreateEvent>,
 ) -> Result<String, String> {
     let start = answers.start;
-    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel = authorizing.begin();
     let created = konstruktor_core::engine::create_engine(&answers, &cancel, &move |event| {
         let _ = on_event.send(event);
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    authorizing.end();
+    let created = created.map_err(|e| e.to_string())?;
 
     let path = created.path.to_string_lossy().to_string();
     if start {
@@ -296,23 +348,7 @@ pub async fn create_engine(
 /// gets written is minted once, inside `create_hub`.
 #[command]
 pub fn preview_hub_files(answers: HubAnswers) -> Vec<String> {
-    let config = config::hub::build_hub_config(&config::hub::HubConfigOptions {
-        coord_server: answers.coord_server.clone(),
-        rekuest_server: answers.rekuest_server.clone(),
-        services: Some(answers.services.clone()),
-        http_port: Some(answers.http_port),
-        https_port: Some(answers.https_port),
-        ssl: answers.ssl,
-        // The bind mounts a source checkout adds live in the compose file, so the
-        // preview only tells the truth if it knows which services asked for one.
-        dev_hub: answers.dev_hub,
-        service_options: answers.service_options.clone(),
-        storage: answers.storage,
-        ..Default::default()
-    });
-    generate_hub_files(&config, &IssuedIdentity::default())
-        .into_keys()
-        .collect()
+    create::preview_files(&answers)
 }
 
 #[command]
@@ -436,6 +472,7 @@ pub async fn delete_deployment(
 /// Blocking, and so run off the main thread for the reason `delete_deployment` is.
 #[command]
 pub async fn purge_deployment_data(
+    app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     id: String,
 ) -> Result<DataPurge, String> {
@@ -445,145 +482,21 @@ pub async fn purge_deployment_data(
         .map_err(|e| e.to_string())?;
     // The purge took the stack down with it, so the exit hook has nothing left to stop.
     started.stopped(&purged.path);
+    // Every other state-changing command pokes the tray; this one did not, so the menu
+    // went on showing the hub as running until the next ten-second tick.
+    crate::tray::poke(&app);
     Ok(purged)
 }
 
-/// One service, as the dashboard lists it.
-#[derive(Debug, Serialize)]
-pub struct ServiceView {
-    id: String,
-    name: String,
-    host: String,
-    /// Where a browser reaches it through the gateway.
-    url: String,
-    /// The image the profile pins this service to, e.g. `jhnnsrs/rekuest:next`.
-    image: Option<String>,
-    /// That image's tag on its own — the service's release channel.
-    tag: Option<String>,
-}
-
-/// The release channel a hub follows, read off the images its services are pinned to.
-///
-/// There is no channel field in the profile: the channel *is* the set of tags, and those
-/// are per-service. A hub whose services carry different tags has no single channel, and
-/// saying so is the point of `tags` — the alternative is a UI that picks one and lies.
-#[derive(Debug, Serialize)]
-pub struct ChannelView {
-    /// The one tag every service shares, when they do share one.
-    tag: Option<String>,
-    /// Every distinct tag in play, sorted. More than one means the hub is mixed.
-    tags: Vec<String>,
-}
-
-/// The tag out of an image reference, tolerating a registry host with a port
-/// (`registry:5000/image:tag`) by only looking after the last slash.
-fn image_tag(image: &str) -> Option<String> {
-    let last = image.rsplit('/').next().unwrap_or(image);
-    last.rsplit_once(':').map(|(_, tag)| tag.to_string())
-}
-
-/// Everything the dashboard reads out of a deployment folder, derived once here so the
-/// frontend does no URL-building of its own.
-#[derive(Debug, Serialize)]
-pub struct HubStatus {
-    profile: profile::Profile,
-    authorized: bool,
-    identifier: Option<String>,
-    authorized_at: Option<String>,
-    /// The gateway's own address, and the admin account for every service's admin panel.
-    gateway_url: String,
-    admin_user: String,
-    admin_password: String,
-    services: Vec<ServiceView>,
-    mesh_hostname: Option<String>,
-    /// The port an alias advertises, as the manifest computes it — so a reachability
-    /// probe aims at the same socket the coordination server would hand out.
-    advertised_port: u16,
-    /// What this hub last told the coordination server it was reachable at.
-    ///
-    /// The authorize screen seeds from this rather than from a fresh scan: it exists to
-    /// *add* the tailnet address, and a scan of this machine will never find one.
-    advertised_hosts: Vec<konstruktor_core::connect::manifest::AdvertisedHost>,
-    /// The release channel the enabled services are pinned to.
-    channel: ChannelView,
-    /// Where the database and object storage live: the engine's volumes or the folder.
-    storage: config::hub::StorageMode,
-}
+/// The dashboard's view of a deployment folder. Both of these are `konstruktor-core`
+/// types — the derivations behind them (gateway URL, service list, release channel) moved
+/// there so `konstruktor status` answers from the same code. The names are re-exported
+/// unchanged because `src/api/types.ts` reads these keys.
+pub use konstruktor_core::status::HubView as HubStatus;
 
 #[command]
 pub fn hub_status(path: String) -> Result<HubStatus, String> {
-    let dir = PathBuf::from(path);
-    let profile = profile::read_profile(&dir).map_err(|e| e.to_string())?;
-    let creds = credentials::read_credentials(&dir);
-    let config = &profile.config;
-
-    let scheme = if config.gateway.ssl { "https" } else { "http" };
-    let port = konstruktor_core::connect::manifest::advertised_port(config);
-    let host = config.domain.clone().unwrap_or_else(|| "localhost".into());
-
-    // A default port is left off the URL; anything else has to be spelled out.
-    let default_port = if config.gateway.ssl { 443 } else { 80 };
-    let authority = if port == default_port {
-        host.clone()
-    } else {
-        format!("{host}:{port}")
-    };
-    let gateway_url = format!("{scheme}://{authority}");
-
-    let catalog = konstruktor_core::catalog::catalog();
-    let services = config
-        .enabled_services()
-        .into_iter()
-        .map(|id| {
-            let block = config.service(id);
-            let meta = catalog.iter().find(|m| m.id == id);
-            ServiceView {
-                id: id.as_str().to_string(),
-                name: meta
-                    .map(|m| m.name.clone())
-                    .unwrap_or_else(|| id.as_str().into()),
-                host: block.host.clone(),
-                url: format!("{gateway_url}/{}", block.host),
-                image: block.image.clone(),
-                tag: block.image.as_deref().and_then(image_tag),
-            }
-        })
-        .collect::<Vec<ServiceView>>();
-
-    let mut tags: Vec<String> = services.iter().filter_map(|s| s.tag.clone()).collect();
-    tags.sort();
-    tags.dedup();
-    let channel = ChannelView {
-        tag: if tags.len() == 1 {
-            tags.first().cloned()
-        } else {
-            None
-        },
-        tags,
-    };
-
-    Ok(HubStatus {
-        authorized: creds.is_some(),
-        identifier: creds.as_ref().map(|c| c.identifier.clone()),
-        authorized_at: creds.as_ref().map(|c| c.authorized_at.clone()),
-        gateway_url,
-        admin_user: config.global_admin.clone(),
-        admin_password: config.global_admin_password.clone(),
-        services,
-        channel,
-        storage: config::hub::storage_mode_of(config),
-        mesh_hostname: config
-            .mesh
-            .as_ref()
-            .filter(|m| m.enabled)
-            .map(|m| m.hostname.clone()),
-        advertised_port: port,
-        advertised_hosts: creds
-            .as_ref()
-            .map(|c| c.advertised_hosts.clone())
-            .unwrap_or_default(),
-        profile,
-    })
+    konstruktor_core::status::hub_view(&PathBuf::from(path)).map_err(|e| e.to_string())
 }
 
 /// The source checkouts a dev hub keeps under `mounts/`.
@@ -706,9 +619,58 @@ pub async fn compose_command_streamed(
     action: String,
     on_line: Channel<ComposeLine>,
 ) -> Result<String, String> {
+    let args = compose_args(&action, None, None)?;
+    let stdout = run_streamed(args, &path, &on_line).await?;
+
+    match action.as_str() {
+        "up" => started.started(&path),
+        "stop" | "down" => started.stopped(&path),
+        _ => {}
+    }
+    crate::tray::poke(&app);
+    Ok(stdout)
+}
+
+/// Bring one service up to date: fetch its image if asked, then recreate that container
+/// and nothing else.
+///
+/// `pull` is a decision, not a formality. An image that has already been fetched is on
+/// this machine and applying it must work with the registry unreachable — so the button
+/// that only recreates says so by passing `false`, rather than being made to go to the
+/// network for an answer it does not need.
+#[command]
+pub async fn update_service(
+    app: tauri::AppHandle,
+    started: tauri::State<'_, StartedStacks>,
+    path: String,
+    service: String,
+    pull: bool,
+    on_line: Channel<ComposeLine>,
+) -> Result<String, String> {
+    let mut output = String::new();
+    if pull {
+        output.push_str(&run_streamed(compose::pull_service(&service), &path, &on_line).await?);
+    }
+    output.push_str(&run_streamed(compose::up_service(&service), &path, &on_line).await?);
+
+    // This brought a container up, so the same bookkeeping a whole-stack `up` does.
+    started.started(&path);
+    crate::tray::poke(&app);
+    Ok(output)
+}
+
+/// Runs one compose invocation, streaming both its streams over `on_line` as they are
+/// written and returning what it put on stdout.
+///
+/// Takes the channel by reference so a command made of two invocations — pull, then up —
+/// can narrate both through the one channel.
+async fn run_streamed(
+    mut args: Vec<String>,
+    path: &str,
+    on_line: &Channel<ComposeLine>,
+) -> Result<String, String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let mut args = compose_args(&action, None, None)?;
     // Plain, line-by-line narration. Without a TTY compose already avoids the redrawing
     // progress UI; `--ansi never` also keeps colour codes out of the lines.
     args.splice(1..1, ["--ansi".to_string(), "never".to_string()]);
@@ -729,6 +691,7 @@ pub async fn compose_command_streamed(
     let stderr = child.stderr.take().ok_or("no stderr")?;
 
     let out_channel = on_line.clone();
+    let err_channel = on_line.clone();
     let out_task = tauri::async_runtime::spawn(async move {
         let mut collected = String::new();
         let mut lines = BufReader::new(stdout).lines();
@@ -750,7 +713,7 @@ pub async fn compose_command_streamed(
             }
             collected.push_str(&line);
             collected.push('\n');
-            let _ = on_line.send(ComposeLine { line, stderr: true });
+            let _ = err_channel.send(ComposeLine { line, stderr: true });
         }
         collected
     });
@@ -760,12 +723,6 @@ pub async fn compose_command_streamed(
     let stderr = err_task.await.unwrap_or_default();
 
     if status.success() {
-        match action.as_str() {
-            "up" => started.started(&path),
-            "stop" | "down" => started.stopped(&path),
-            _ => {}
-        }
-        crate::tray::poke(&app);
         Ok(stdout)
     } else {
         Err(format!("{stdout}{stderr}"))
@@ -834,6 +791,7 @@ pub async fn compose_command(
 /// Re-authorize a hub that already exists — what the connect screen does.
 #[command]
 pub async fn reauthorize_hub(
+    authorizing: tauri::State<'_, AuthorizeState>,
     path: String,
     coord_server: String,
     identifier: String,
@@ -843,9 +801,9 @@ pub async fn reauthorize_hub(
     request_auth_key: bool,
     on_event: Channel<CreateEvent>,
 ) -> Result<(), String> {
-    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel = authorizing.begin();
 
-    create::reauthorize(
+    let done = create::reauthorize(
         &create::ReauthorizeAnswers {
             dir: PathBuf::from(path),
             coord_server,
@@ -860,9 +818,9 @@ pub async fn reauthorize_hub(
             let _ = on_event.send(event);
         },
     )
-    .await
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    .await;
+    authorizing.end();
+    done.map(|_| ()).map_err(|e| e.to_string())
 }
 
 
@@ -958,8 +916,7 @@ pub async fn backup_deployment(
 
 // --- installing and starting an engine ----------------------------------------------
 
-use konstruktor_core::engine_probe::find_tool;
-use konstruktor_core::remedy::{InstallAction, InstallerId, Platform, StartTarget};
+use konstruktor_core::remedy::{InstallerId, StartTarget};
 use tokio_util::sync::CancellationToken;
 
 /// The installer that is running, if one is, so a Cancel button has something to pull.
@@ -995,54 +952,22 @@ impl InstallState {
     }
 }
 
-/// One line of an installer's output, as it is written, plus the stage markers the panel
-/// uses as headings.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallLine {
-    pub line: String,
-    pub stderr: bool,
-    /// Set on the line that opens a new stage — "Installing Colima…" — and on nothing
-    /// else, so the panel can render those as headings rather than as output.
-    pub stage: bool,
-}
+/// Streamed to the setup panel. Both types are `konstruktor_core::remedy`'s — the
+/// executor moved there so `konstruktor doctor --fix` runs the identical plan.
+pub use konstruktor_core::remedy::{InstallLine, InstallOutcome};
 
-/// How the installer ended. A failure is an *outcome*, not an `Err`: the output it
-/// streamed is the explanation, and an `Err` would only repeat the last line of it.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallOutcome {
-    pub ok: bool,
-    /// The installer said Windows has to restart before the engine can start. Surfaced,
-    /// never hidden: the next probe would otherwise keep failing without saying why.
-    pub needs_reboot: bool,
-    pub cancelled: bool,
-    pub message: Option<String>,
-}
-
-/// Runs one of the fixed installers from `konstruktor_core::remedy`, streaming its
-/// output over `on_line`.
-///
-/// Everything it executes is a literal in the core — `installer` selects a plan, it does
-/// not describe one — and the program is resolved the same way the engine binary is, so
-/// a Homebrew that a Finder-launched app cannot see on `PATH` is still found.
+/// Runs one of the fixed installers, streaming its output over `on_line`.
 #[command]
 pub async fn install_engine(
     state: tauri::State<'_, InstallState>,
     installer: InstallerId,
     on_line: Channel<InstallLine>,
 ) -> Result<InstallOutcome, String> {
-    let platform = Platform::current();
-    let allowed = match installer {
-        InstallerId::BrewColima | InstallerId::BrewComposePlugin => platform == Platform::Macos,
-        InstallerId::WingetRancherDesktop => platform == Platform::Windows,
-    };
-    if !allowed {
-        return Err(format!("{installer:?} is not an installer for this platform"));
-    }
-
     let token = state.begin()?;
-    let outcome = run_plan(installer.plan(), platform, &token, &on_line).await;
+    let outcome = konstruktor_core::remedy::install(installer, &token, &move |line| {
+        let _ = on_line.send(line);
+    })
+    .await;
     state.end();
     outcome
 }
@@ -1053,249 +978,10 @@ pub async fn cancel_install(state: tauri::State<'_, InstallState>) -> Result<(),
     Ok(())
 }
 
-/// Launches the product behind a stopped daemon — Colima, OrbStack, Docker Desktop… —
-/// and returns without waiting for it. The probe's polling notices when it is up.
+/// Launches the product behind a stopped daemon, and returns without waiting for it.
 #[command]
 pub async fn start_engine(target: StartTarget) -> Result<(), String> {
-    let (program, args) = target
-        .launch(Platform::current())
-        .ok_or_else(|| format!("{} cannot be started from here", target.label()))?;
-    let program = resolve_program(&program)?;
-    tokio::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// A program name from a plan, as something that can be spawned. Bare names are looked
-/// up the way the engine binary is; `open` and `explorer.exe` are always on `PATH`.
-fn resolve_program(program: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(program);
-    if path.is_absolute() || matches!(program, "open" | "explorer.exe") {
-        return Ok(path);
-    }
-    find_tool(program).ok_or_else(|| format!("`{program}` was not found on this machine"))
-}
-
-async fn run_plan(
-    plan: Vec<InstallAction>,
-    platform: Platform,
-    token: &CancellationToken,
-    on_line: &Channel<InstallLine>,
-) -> Result<InstallOutcome, String> {
-    let stage = |text: &str| {
-        let _ = on_line.send(InstallLine {
-            line: text.to_string(),
-            stderr: false,
-            stage: true,
-        });
-    };
-    let mut needs_reboot = false;
-
-    for action in plan {
-        if token.is_cancelled() {
-            return Ok(cancelled());
-        }
-        match action {
-            InstallAction::Run {
-                title,
-                program,
-                args,
-            } => {
-                stage(title);
-                let program = resolve_program(program)?;
-                let mut cmd = tokio::process::Command::new(&program);
-                cmd.args(&args);
-                // Homebrew: no prompts, no hints, and no minutes-long `brew update` before
-                // the install the user asked for.
-                cmd.env("NONINTERACTIVE", "1")
-                    .env("HOMEBREW_NO_ENV_HINTS", "1")
-                    .env("HOMEBREW_NO_AUTO_UPDATE", "1");
-                let (status, output) = stream(cmd, token, on_line).await?;
-                let Some(status) = status else {
-                    return Ok(cancelled());
-                };
-                let code = status.code().unwrap_or(-1);
-                // winget's "installed, restart to finish" codes, and the word itself.
-                let restart_hinted = program.to_string_lossy().contains("winget")
-                    && (code == 3010 || code == 1641 || output.to_ascii_lowercase().contains("restart"));
-                needs_reboot |= restart_hinted;
-                if !status.success() && !(restart_hinted && (code == 3010 || code == 1641)) {
-                    return Ok(InstallOutcome {
-                        ok: false,
-                        needs_reboot,
-                        cancelled: false,
-                        message: Some(format!("{title} failed (exit code {code})")),
-                    });
-                }
-            }
-            InstallAction::LinkComposePlugin => {
-                stage("Linking Compose where the Docker CLI looks for plugins");
-                link_compose_plugin(on_line).await?;
-            }
-            InstallAction::Launch(target) => {
-                stage(&format!("Starting {}", target.label()));
-                let Some((program, args)) = target.launch(platform) else {
-                    continue;
-                };
-                let program = resolve_program(&program)?;
-                if target == StartTarget::Colima {
-                    // `colima start` is the install's last, and longest, step: it
-                    // downloads a VM image the first time. Worth watching.
-                    let mut cmd = tokio::process::Command::new(&program);
-                    cmd.args(&args);
-                    let (status, _) = stream(cmd, token, on_line).await?;
-                    match status {
-                        None => return Ok(cancelled()),
-                        Some(s) if !s.success() => {
-                            return Ok(InstallOutcome {
-                                ok: false,
-                                needs_reboot,
-                                cancelled: false,
-                                message: Some("Colima did not start".into()),
-                            })
-                        }
-                        Some(_) => {}
-                    }
-                } else {
-                    tokio::process::Command::new(program)
-                        .args(args)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    }
-
-    Ok(InstallOutcome {
-        ok: true,
-        needs_reboot,
-        cancelled: false,
-        message: None,
-    })
-}
-
-fn cancelled() -> InstallOutcome {
-    InstallOutcome {
-        ok: false,
-        needs_reboot: false,
-        cancelled: true,
-        message: Some("cancelled".into()),
-    }
-}
-
-/// Runs a command, forwarding every line, until it exits or `token` fires. `None` for the
-/// status means it was cancelled — and killed, not abandoned.
-async fn stream(
-    mut cmd: tokio::process::Command,
-    token: &CancellationToken,
-    on_line: &Channel<InstallLine>,
-) -> Result<(Option<std::process::ExitStatus>, String), String> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    let mut child = cmd
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-
-    let out_channel = on_line.clone();
-    let out_task = tauri::async_runtime::spawn(async move {
-        let mut collected = String::new();
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(raw)) = lines.next_line().await {
-            let line = clean(&raw);
-            collected.push_str(&line);
-            collected.push('\n');
-            let _ = out_channel.send(InstallLine {
-                line,
-                stderr: false,
-                stage: false,
-            });
-        }
-        collected
-    });
-    let err_channel = on_line.clone();
-    let err_task = tauri::async_runtime::spawn(async move {
-        let mut collected = String::new();
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(raw)) = lines.next_line().await {
-            let line = clean(&raw);
-            if line.trim().is_empty() {
-                continue;
-            }
-            collected.push_str(&line);
-            collected.push('\n');
-            let _ = err_channel.send(InstallLine {
-                line,
-                stderr: true,
-                stage: false,
-            });
-        }
-        collected
-    });
-
-    let status = tokio::select! {
-        status = child.wait() => Some(status.map_err(|e| e.to_string())?),
-        _ = token.cancelled() => {
-            let _ = child.kill().await;
-            None
-        }
-    };
-    let mut output = out_task.await.unwrap_or_default();
-    output.push_str(&err_task.await.unwrap_or_default());
-    Ok((status, output))
-}
-
-/// Homebrew installs `docker-compose` as a standalone binary; the `docker` CLI only finds
-/// it as `docker compose` through `~/.docker/cli-plugins`. Done here rather than by a
-/// shell one-liner so there is no shell, and no quoting, between us and the path.
-async fn link_compose_plugin(on_line: &Channel<InstallLine>) -> Result<(), String> {
-    let brew = resolve_program("brew")?;
-    let output = tokio::process::Command::new(brew)
-        .args(["--prefix", "docker-compose"])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err("`brew --prefix docker-compose` failed — is docker-compose installed?".into());
-    }
-    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let binary = PathBuf::from(prefix).join("bin").join("docker-compose");
-    if !binary.is_file() {
-        return Err(format!("{} is not there", binary.display()));
-    }
-
-    let home = dirs::home_dir().ok_or("no home directory")?;
-    let plugins = home.join(".docker").join("cli-plugins");
-    std::fs::create_dir_all(&plugins).map_err(|e| e.to_string())?;
-    let link = plugins.join("docker-compose");
-    if link.exists() || link.symlink_metadata().is_ok() {
-        std::fs::remove_file(&link).map_err(|e| e.to_string())?;
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&binary, &link).map_err(|e| e.to_string())?;
-    #[cfg(not(unix))]
-    std::fs::copy(&binary, &link).map_err(|e| e.to_string())?;
-
-    let _ = on_line.send(InstallLine {
-        line: format!("{} -> {}", link.display(), binary.display()),
-        stderr: false,
-        stage: false,
-    });
-    Ok(())
+    konstruktor_core::remedy::launch(target).await
 }
 
 // --- restore -----------------------------------------------------------------------
@@ -1356,4 +1042,158 @@ pub async fn restore_deployment(
     }
     crate::tray::poke(&app);
     result
+}
+
+#[cfg(test)]
+mod wire_shape {
+    use super::*;
+    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+    use konstruktor_core::status::{ChannelView, ServiceView};
+
+    /// The keys `src/api/types.ts` declares for each of these types.
+    ///
+    /// Nothing typechecks the frontend against Rust: a renamed or dropped field here
+    /// compiles, ships, and shows up as an empty dashboard or a clipboard that copies
+    /// `undefined`. These lists are the contract, and they are what makes it safe to move
+    /// this module's derivations into `konstruktor-core` — the shape may not move with
+    /// them.
+    const HUB_STATUS: &[&str] = &[
+        "profile",
+        "authorized",
+        "identifier",
+        "authorized_at",
+        "gateway_url",
+        "admin_user",
+        "admin_password",
+        "services",
+        "mesh_hostname",
+        "advertised_port",
+        "advertised_hosts",
+        "channel",
+        "storage",
+    ];
+    const SERVICE_VIEW: &[&str] = &["id", "name", "host", "url", "image", "tag"];
+    const CHANNEL_VIEW: &[&str] = &["tag", "tags"];
+
+    fn keys(value: &serde_json::Value) -> Vec<String> {
+        let mut found: Vec<String> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn sorted(names: &[&str]) -> Vec<String> {
+        let mut names: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    fn a_status() -> HubStatus {
+        let config = build_hub_config(&HubConfigOptions {
+            device_id: "device".into(),
+            coord_server: "go.arkitekt.live".into(),
+            ..Default::default()
+        });
+        HubStatus {
+            authorized: true,
+            identifier: Some("lab-hub".into()),
+            authorized_at: Some("2026-01-01T00:00:00Z".into()),
+            gateway_url: "http://localhost:7080".into(),
+            admin_user: config.global_admin.clone(),
+            admin_password: config.global_admin_password.clone(),
+            services: vec![ServiceView {
+                id: "rekuest".into(),
+                name: "Rekuest".into(),
+                host: "rekuest".into(),
+                url: "http://localhost:7080/rekuest".into(),
+                image: Some("jhnnsrs/rekuest:next".into()),
+                tag: Some("next".into()),
+            }],
+            channel: ChannelView {
+                tag: Some("next".into()),
+                tags: vec!["next".into()],
+            },
+            storage: konstruktor_core::config::hub::storage_mode_of(&config),
+            mesh_hostname: None,
+            advertised_port: 7080,
+            advertised_hosts: Vec::new(),
+            profile: profile::hub_profile(config),
+        }
+    }
+
+    /// The three types Phase 4 moved into `konstruktor-core`. Each carries
+    /// `rename_all = "camelCase"`, and each is read by a component that would silently
+    /// render nothing if a key came back snake_case: `EngineSetupPanel` reads
+    /// `needsReboot` and `stage`, `BugReportDialog` reads `issueUrl` and `logError`.
+    #[test]
+    fn the_moved_types_keep_their_camel_case_keys() {
+        use konstruktor_core::remedy::{InstallLine, InstallOutcome};
+        use konstruktor_core::report::BugReport;
+
+        let line = serde_json::to_value(InstallLine {
+            line: "brew install colima".into(),
+            stderr: false,
+            stage: true,
+        })
+        .expect("it serializes");
+        assert_eq!(keys(&line), sorted(&["line", "stderr", "stage"]));
+
+        let outcome = serde_json::to_value(InstallOutcome {
+            ok: false,
+            needs_reboot: true,
+            cancelled: false,
+            message: Some("winget wants a restart".into()),
+        })
+        .expect("it serializes");
+        assert_eq!(
+            keys(&outcome),
+            sorted(&["ok", "needsReboot", "cancelled", "message"])
+        );
+
+        let report = serde_json::to_value(BugReport {
+            service: "mikro".into(),
+            repo: Some("https://github.com/arkitektio/mikro-server-next".into()),
+            issue_url: Some("https://example.invalid/issues/new".into()),
+            title: "mikro: ".into(),
+            body: "### What happened".into(),
+            redactions: 3,
+            log_error: None,
+        })
+        .expect("it serializes");
+        assert_eq!(
+            keys(&report),
+            sorted(&[
+                "service",
+                "repo",
+                "issueUrl",
+                "title",
+                "body",
+                "redactions",
+                "logError",
+            ])
+        );
+    }
+
+    #[test]
+    fn hub_status_serializes_the_keys_the_frontend_reads() {
+        let value = serde_json::to_value(a_status()).expect("it serializes");
+        assert_eq!(keys(&value), sorted(HUB_STATUS));
+        assert_eq!(keys(&value["services"][0]), sorted(SERVICE_VIEW));
+        assert_eq!(keys(&value["channel"]), sorted(CHANNEL_VIEW));
+    }
+
+    /// `profile` is passed through whole and the dashboard reads into it, so the envelope
+    /// around the config has to survive too.
+    #[test]
+    fn the_profile_envelope_is_passed_through_whole() {
+        let value = serde_json::to_value(a_status()).expect("it serializes");
+        assert_eq!(
+            keys(&value["profile"]),
+            sorted(&["version", "kind", "backend", "config"])
+        );
+    }
 }

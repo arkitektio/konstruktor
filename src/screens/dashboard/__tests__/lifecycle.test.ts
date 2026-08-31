@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Container, HubStatus, ImageState } from "../../../api";
 import {
+  initSucceeded,
   isInitContainer,
   runSummary,
   serviceUpdates,
@@ -73,6 +74,26 @@ describe("init containers", () => {
       container({ id: "b", service: "minio_init", state: "exited" }),
     ]);
     expect(summary).toEqual({ state: "running", running: 1, total: 1 });
+  });
+
+  /**
+   * What decides whether a tile is folded away. Only a plainly clean exit is: the row
+   * hides the ones with nothing left to say, and anything unreadable stays on screen.
+   */
+  it("calls only a clean exit successful", () => {
+    expect(
+      initSucceeded(container({ state: "exited", status: "Exited (0) 5 minutes ago" }))
+    ).toBe(true);
+    expect(
+      initSucceeded(container({ state: "exited", status: "Exited (1) 5 minutes ago" }))
+    ).toBe(false);
+    // Still going: not a failure, but not finished either — it keeps its tile.
+    expect(initSucceeded(container({ state: "running", status: "Up 2 seconds" }))).toBe(
+      false
+    );
+    // An engine that words it differently is never folded away on a guess.
+    expect(initSucceeded(container({ state: "exited", status: "exited" }))).toBe(false);
+    expect(initSucceeded(container({ state: "exited", status: undefined }))).toBe(false);
   });
 
   it("still reports an empty project as never started", () => {
