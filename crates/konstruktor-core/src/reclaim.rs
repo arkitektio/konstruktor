@@ -1,7 +1,7 @@
 //! Getting a hub's data directories back so they can be deleted.
 //!
 //! A hub that opted out of the engine's volumes keeps its database and its object
-//! storage in **bind mounts inside its own folder** — `./db_data` and `./minio_data`
+//! storage in **bind mounts inside its own folder** — `./db_data` and `./rustfs_data`
 //! (see `config::hub::StorageMode`). That has a consequence nothing else in the app had
 //! to deal with: the
 //! Docker daemon runs as root, creates those directories itself on the first `compose
@@ -524,7 +524,7 @@ mod tests {
 
         let dir = scratch("config");
         std::fs::create_dir_all(dir.join("db_data")).unwrap();
-        std::fs::create_dir_all(dir.join("minio_data")).unwrap();
+        std::fs::create_dir_all(dir.join("rustfs_data")).unwrap();
         let root = std::fs::canonicalize(&dir).unwrap();
 
         let mut config = build_hub_config(&HubConfigOptions {
@@ -534,7 +534,7 @@ mod tests {
         let found = data_dirs(&dir, &config);
         assert_eq!(
             found.removable,
-            vec![root.join("db_data"), root.join("minio_data")]
+            vec![root.join("db_data"), root.join("rustfs_data")]
         );
         assert!(found.skipped.is_empty());
 

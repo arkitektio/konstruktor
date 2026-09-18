@@ -140,7 +140,7 @@ fn storage_lives_in_docker_volumes_by_default() {
     assert_eq!(config.minio.mount, None);
     assert_eq!(config.db.mount, None);
     assert_eq!(config.db.volume_name, "db_data");
-    assert_eq!(config.minio.volume_name, "minio_data");
+    assert_eq!(config.minio.volume_name, "rustfs_data");
 }
 
 /// The opt-out keeps both mounts relative, so the deployment stays one movable folder.
@@ -153,7 +153,7 @@ fn storage_can_be_kept_inside_the_deployment_folder() {
         ..Default::default()
     });
     assert_eq!(storage_mode_of(&config), StorageMode::DeploymentFolder);
-    assert_eq!(config.minio.mount.as_deref(), Some("./minio_data"));
+    assert_eq!(config.minio.mount.as_deref(), Some("./rustfs_data"));
     assert_eq!(config.db.mount.as_deref(), Some("./db_data"));
 }
 
@@ -208,53 +208,32 @@ fn a_skipped_answer_becomes_null_not_an_empty_string() {
     assert_eq!(config.global_description, None);
 }
 
-/// The infrastructure a new hub gets must not float on a mutable tag.
-///
-/// The services follow a channel on purpose — that is what a channel is here. The four
-/// underneath them do not: a `db` image that silently became the next Postgres major
-/// leaves a cluster the new binary refuses to open, and no amount of rolling the image
-/// back undoes what a migration did on the way. Immutable means one of two things, both
-/// allowed: a digest, for `jhnnsrs/daten` and `jhnnsrs/init`, which publish only channel
-/// tags and so have no version to name; or an exact version tag, for the images that
-/// publish one.
+/// Every image the arkitekt project publishes follows `latest`, and so does RustFS: a hub
+/// is created on what was released last. The database major moving under a running hub
+/// is `updates::guard`'s to catch, not a pin's. Caddy and Redis keep their exact version
+/// tags — third-party images whose `latest` nobody here releases.
 #[test]
-fn the_infrastructure_is_pinned_to_something_immutable() {
+fn the_infrastructure_follows_latest_except_the_third_party_pins() {
     let config = built();
-    let infrastructure = [
+    let tag = |image: &str| konstruktor_core::status::image_tag(image);
+
+    for (service, image) in [
         ("db", config.db.image.clone()),
+        ("rustfs", config.minio.image.clone()),
+        ("rustfs_init", config.minio.init_container_image.clone()),
+    ] {
+        assert_eq!(tag(&image).as_deref(), Some("latest"), "{service} is `{image}`");
+        assert!(!image.contains("@sha256:"), "{service} is `{image}`, pinned by digest");
+    }
+
+    for (service, image) in [
         ("gateway", config.gateway.image.clone()),
         ("redis", config.local_redis.image.clone()),
-        ("minio", config.minio.image.clone()),
-        ("minio_init", config.minio.init_container_image.clone()),
-    ];
-
-    for (service, image) in infrastructure {
-        if image.contains("@sha256:") {
-            continue;
-        }
-        let tag = konstruktor_core::status::image_tag(&image)
-            .unwrap_or_else(|| panic!("{service} is `{image}` — no tag and no digest at all"));
-        assert!(
-            !["latest", "dev", "next", "prod", "prodx", "release", "nightly"]
-                .contains(&tag.as_str()),
-            "{service} is pinned to `{image}`, and `{tag}` is a channel that moves — \
-             pin it to a version or a digest"
-        );
+    ] {
+        let tag = tag(&image).unwrap_or_else(|| panic!("{service} is `{image}`, with no tag"));
         assert!(
             tag.chars().any(|c| c.is_ascii_digit()),
-            "{service} is pinned to `{image}`, whose tag names no version"
+            "{service} is `{image}`, whose tag names no version"
         );
     }
-}
-
-/// A digest pin is only a pin if the tag beside it is still readable, because that tag is
-/// what `status` reports as the hub's channel.
-#[test]
-fn a_digest_pinned_image_still_says_which_channel_it_came_from() {
-    let config = built();
-    assert_eq!(
-        konstruktor_core::status::image_tag(&config.db.image).as_deref(),
-        Some("dev"),
-        "the database pin dropped its tag, so `status` can no longer say what it follows"
-    );
 }

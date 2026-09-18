@@ -14,7 +14,7 @@ config:
     enabled: false
     github_repo: https://github.com/arkitektio/alpaka-server
     host: alpaka
-    image: jhnnsrs/alpaka:next
+    image: jhnnsrs/alpaka:latest
     internal_port: 80
     media_bucket:
       bucket_name: alpakamedia
@@ -33,7 +33,7 @@ config:
     enabled: true
     github_repo: https://github.com/arkitektio/daten-server
     host: daten
-    image: jhnnsrs/daten:dev
+    image: jhnnsrs/daten:latest
     mount: ./db_data
     postgres_password: fixture-postgres-password-not-a-real-secret
     postgres_user: fixture-postgres-user-not-a-real-secret
@@ -55,7 +55,7 @@ config:
     enabled: false
     github_repo: https://github.com/arkitektio/elektro-server
     host: elektro
-    image: jhnnsrs/elektro:next
+    image: jhnnsrs/elektro:latest
     internal_port: 80
     media_bucket:
       bucket_name: elektromedia
@@ -83,7 +83,7 @@ config:
     enabled: true
     github_repo: https://github.com/arkitektio/fluss-server-next
     host: fluss
-    image: jhnnsrs/fluss:next
+    image: jhnnsrs/fluss:latest
     internal_port: 80
     media_bucket:
       bucket_name: flussmedia
@@ -126,7 +126,7 @@ config:
     - jhnnsrs/renderer:main
     github_repo: https://github.com/arkitektio/kabinet-server
     host: kabinet
-    image: jhnnsrs/kabinet:next
+    image: jhnnsrs/kabinet:latest
     internal_port: 80
     media_bucket:
       bucket_name: kabinetmedia
@@ -151,7 +151,7 @@ config:
     enabled: true
     github_repo: https://github.com/arkitektio/kraph-server
     host: kraph
-    image: jhnnsrs/kraph:dev
+    image: jhnnsrs/kraph:latest
     internal_port: 80
     media_bucket:
       bucket_name: kraphmedia
@@ -208,7 +208,7 @@ config:
     enabled: true
     github_repo: https://github.com/arkitektio/mikro-server-next
     host: mikro
-    image: jhnnsrs/mikro:next
+    image: jhnnsrs/mikro:latest
     internal_port: 80
     media_bucket:
       bucket_name: mikromedia
@@ -230,16 +230,16 @@ config:
     console_port: 9001
     enabled: true
     exposed_console_port: null
-    host: minio
-    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
-    init_container_host: minio_init
-    init_container_image: jhnnsrs/init:dev
+    host: rustfs
+    image: rustfs/rustfs:latest
+    init_container_host: rustfs_init
+    init_container_image: jhnnsrs/init:latest
     internal_port: 9000
     mount: /data
     root_password: fixture-root-password-not-a-real-secret
     root_user: fixture-root-user-not-a-real-secret
     secret_key: fixture-secret-key-not-a-real-secret
-    volume_name: minio_data
+    volume_name: rustfs_data
   rekuest:
     admin_config:
       kind: global
@@ -254,7 +254,7 @@ config:
     enabled: true
     github_repo: https://github.com/arkitektio/rekuest-server-next
     host: rekuest
-    image: jhnnsrs/rekuest:next
+    image: jhnnsrs/rekuest:latest
     internal_port: 80
     media_bucket:
       bucket_name: rekuestmedia

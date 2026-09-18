@@ -1,25 +1,3 @@
-authentikate:
-  audience: '*'
-  issuers:
-  - iss: coord.example.org
-    jwks_uri: https://coord.example.org/.well-known/jwks.json
-    kind: jwks_uri
-  provenance:
-    audience: '*'
-    issuers:
-    - iss: rekuest.example.org
-      jwks_uri: https://rekuest.example.org/.well-known/jwks.json
-      kind: jwks_uri
-  static_tokens: {}
-datalayer:
-  access_key: fixture-access-key-not-a-real-secret
-  host: minio
-  media:
-    bucket: kraphmedia
-  port: 9000
-  protocol: http
-  region: us-east-1
-  secret_key: fixture-secret-key-not-a-real-secret
 django:
   admin:
     email: null
@@ -42,3 +20,25 @@ postgres:
 redis:
   host: redis
   port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: coord.example.org
+    jwks_uri: https://coord.example.org/.well-known/jwks.json
+    kind: jwks_uri
+  static_tokens: {}
+  provenance:
+    audience: '*'
+    issuers:
+    - iss: rekuest.example.org
+      jwks_uri: https://rekuest.example.org/.well-known/jwks.json
+      kind: jwks_uri
+datalayer:
+  access_key: fixture-access-key-not-a-real-secret
+  secret_key: fixture-secret-key-not-a-real-secret
+  host: rustfs
+  port: 9000
+  protocol: http
+  region: us-east-1
+  media:
+    bucket: kraphmedia

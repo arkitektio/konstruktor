@@ -73,7 +73,7 @@ pub struct CreateArgs {
     pub dev_branch: Option<String>,
     /// Where the database and object storage keep their data. `volumes` (the default)
     /// uses Docker's own named volumes, which is by far the fastest on Docker Desktop;
-    /// `folder` bind-mounts `./db_data` and `./minio_data` inside the deployment folder
+    /// `folder` bind-mounts `./db_data` and `./rustfs_data` inside the deployment folder
     /// so the data is a directory you can see — at a real cost in I/O on macOS and
     /// Windows.
     #[arg(long, default_value = "volumes", value_parser = parse_storage)]

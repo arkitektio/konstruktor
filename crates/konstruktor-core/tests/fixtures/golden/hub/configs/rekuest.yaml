@@ -1,16 +1,3 @@
-authentikate:
-  audience: '*'
-  issuers:
-  - iss: go.arkitekt.live
-    jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
-    kind: jwks_uri
-  provenance:
-    audience: '*'
-    issuers:
-    - iss: rekuest
-      jwks_uri: http://rekuest:80/rekuest/.well-known/jwks.json
-      kind: jwks_uri
-  static_tokens: {}
 django:
   admin:
     email: null
@@ -31,23 +18,30 @@ postgres:
   password: fixture-postgres-password-not-a-real-secret
   port: 5432
   username: fixture-postgres-user-not-a-real-secret
-provenance:
-  issuer: rekuest
-  kid: rekuest-prov-1
-  private_key: '-----BEGIN PRIVATE KEY-----
-
-    RklYVFVSRUtFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVlOT1RBUkVBTA==
-
-    -----END PRIVATE KEY-----
-
-    '
-  public_key: '-----BEGIN PUBLIC KEY-----
-
-    RklYVFVSRVBVQkxJQ0tFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVk=
-
-    -----END PUBLIC KEY-----
-
-    '
 redis:
   host: redis
   port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: go.arkitekt.live
+    jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
+    kind: jwks_uri
+  static_tokens: {}
+  provenance:
+    audience: '*'
+    issuers:
+    - iss: rekuest
+      jwks_uri: http://rekuest:80/rekuest/.well-known/jwks.json
+      kind: jwks_uri
+provenance:
+  issuer: rekuest
+  kid: rekuest-prov-1
+  private_key: |
+    -----BEGIN PRIVATE KEY-----
+    RklYVFVSRUtFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVlOT1RBUkVBTA==
+    -----END PRIVATE KEY-----
+  public_key: |
+    -----BEGIN PUBLIC KEY-----
+    RklYVFVSRVBVQkxJQ0tFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVk=
+    -----END PUBLIC KEY-----

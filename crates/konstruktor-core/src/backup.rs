@@ -335,7 +335,7 @@ pub async fn run(
         .unwrap_or_default();
     let out = backup_folder(request, now);
 
-    // A backup written into `./minio_data` would be copied into itself, forever.
+    // A backup written into `./rustfs_data` would be copied into itself, forever.
     for data in data_sources(dir, &config) {
         if let DataSource::Bind(path) = &data.source {
             if out.starts_with(path) {

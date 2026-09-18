@@ -1,127 +1,129 @@
-networks:
-  polished-meadow:
-    driver: bridge
-    name: polished-meadow
 services:
   db:
+    image: jhnnsrs/daten:latest
     environment:
       POSTGRES_MULTIPLE_DATABASES: rekuest,kabinet,mikro,fluss,kraph
       POSTGRES_PASSWORD: fixture-postgres-password-not-a-real-secret
       POSTGRES_USER: fixture-postgres-user-not-a-real-secret
-    image: jhnnsrs/daten:dev
     volumes:
     - ./db_data:/var/lib/postgresql/data
-  fluss:
-    command: bash run.sh
-    depends_on:
-    - redis
-    - db
-    - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 10
-        window: 300s
-    image: jhnnsrs/fluss:next
-    stop_grace_period: 2s
-    volumes:
-    - ./configs/fluss.yaml:/workspace/config.yaml
-  gateway:
-    image: caddy:latest
-    networks:
-    - polished-meadow
-    - default
-    ports:
-    - 8080:80
-    - 8443:443
-    volumes:
-    - ./configs/Caddyfile:/etc/caddy/Caddyfile
-  kabinet:
-    command: bash run.sh
-    depends_on:
-    - redis
-    - db
-    - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 10
-        window: 300s
-    image: jhnnsrs/kabinet:next
-    stop_grace_period: 2s
-    volumes:
-    - ./configs/kabinet.yaml:/workspace/config.yaml
-  kraph:
-    command: bash run.sh
-    depends_on:
-    - redis
-    - db
-    - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 10
-        window: 300s
-    image: jhnnsrs/kraph:dev
-    stop_grace_period: 2s
-    volumes:
-    - ./configs/kraph.yaml:/workspace/config.yaml
-  mikro:
-    command: bash run.sh
-    depends_on:
-    - redis
-    - db
-    - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 10
-        window: 300s
-    image: jhnnsrs/mikro:next
-    stop_grace_period: 2s
-    volumes:
-    - ./configs/mikro.yaml:/workspace/config.yaml
-  minio:
-    command: server /data
+  redis:
+    image: redis:latest
+  rustfs:
+    image: rustfs/rustfs:latest
     environment:
-      MINIO_ROOT_PASSWORD: fixture-root-password-not-a-real-secret
-      MINIO_ROOT_USER: fixture-root-user-not-a-real-secret
-    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+      RUSTFS_ACCESS_KEY: fixture-root-user-not-a-real-secret
+      RUSTFS_SECRET_KEY: fixture-root-password-not-a-real-secret
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: :9000
+    user: '0:0'
     stop_grace_period: 2s
     volumes:
     - /data:/data
-  minio_init:
-    depends_on:
-      minio:
-        condition: service_started
-    environment:
-      MINIO_HOST: http://minio:9000
-      MINIO_ROOT_PASSWORD: fixture-root-password-not-a-real-secret
-      MINIO_ROOT_USER: fixture-root-user-not-a-real-secret
-    image: jhnnsrs/init:dev
-    stop_grace_period: 2s
+  rustfs_init:
+    image: jhnnsrs/init:latest
     volumes:
-    - ./configs/minio_init.yaml:/workspace/config.yaml
-  redis:
-    image: redis:latest
+    - ./configs/rustfs_init.yaml:/workspace/config.yaml
+    stop_grace_period: 2s
+    environment:
+      RUSTFS_ACCESS_KEY: fixture-root-user-not-a-real-secret
+      RUSTFS_SECRET_KEY: fixture-root-password-not-a-real-secret
+      RUSTFS_HOST: http://rustfs:9000
+    depends_on:
+      rustfs:
+        condition: service_started
   rekuest:
+    image: jhnnsrs/rekuest:latest
     command: bash run.sh
     depends_on:
     - redis
     - db
-    - minio
+    - rustfs
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/rekuest.yaml:/workspace/config.yaml
     deploy:
       restart_policy:
         condition: on-failure
         delay: 10s
         max_attempts: 10
         window: 300s
-    image: jhnnsrs/rekuest:next
+  kabinet:
+    image: jhnnsrs/kabinet:latest
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - rustfs
     stop_grace_period: 2s
     volumes:
-    - ./configs/rekuest.yaml:/workspace/config.yaml
+    - ./configs/kabinet.yaml:/workspace/config.yaml
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+  mikro:
+    image: jhnnsrs/mikro:latest
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - rustfs
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/mikro.yaml:/workspace/config.yaml
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+  fluss:
+    image: jhnnsrs/fluss:latest
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - rustfs
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/fluss.yaml:/workspace/config.yaml
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+  kraph:
+    image: jhnnsrs/kraph:latest
+    command: bash run.sh
+    depends_on:
+    - redis
+    - db
+    - rustfs
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/kraph.yaml:/workspace/config.yaml
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 10
+        window: 300s
+  gateway:
+    image: caddy:latest
+    ports:
+    - 8080:80
+    - 8443:443
+    networks:
+    - polished-meadow
+    - default
+    volumes:
+    - ./configs/Caddyfile:/etc/caddy/Caddyfile
+networks:
+  polished-meadow:
+    driver: bridge
+    name: polished-meadow
 volumes: {}

@@ -37,7 +37,7 @@ const OPTIONS: {
     value: "deployment-folder",
     icon: FolderOpen,
     title: "Folders inside the deployment",
-    body: "Bind-mount db_data/ and minio_data/ inside the deployment folder, so the data is a directory you can see, copy and move with the rest of the hub. Every read and write crosses the file-sharing layer on Docker Desktop.",
+    body: "Bind-mount db_data/ and rustfs_data/ inside the deployment folder, so the data is a directory you can see, copy and move with the rest of the hub. Every read and write crosses the file-sharing layer on Docker Desktop.",
   },
 ];
 

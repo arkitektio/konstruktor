@@ -77,7 +77,7 @@ pub struct DeletionPlan {
     /// The hub holds an identifier on a coordination server that this cannot revoke.
     pub was_authorized: bool,
     /// The data directories a purge would remove, resolved. Named rather than guessed at
-    /// by the UI: `db_data` and `minio_data` are defaults, not constants, and a profile
+    /// by the UI: `db_data` and `rustfs_data` are defaults, not constants, and a profile
     /// in the wild can point somewhere else entirely.
     pub data_dirs: Vec<String>,
     /// Mounts neither a purge nor a delete will follow, and why.
@@ -342,7 +342,7 @@ pub fn purge_data(id: &str) -> Result<DataPurge, DeleteError> {
 
     let (dir, _) = plan(&record)?;
 
-    // No fallback to hardcoded `db_data` / `minio_data` if this fails. Guessing which
+    // No fallback to hardcoded `db_data` / `rustfs_data` if this fails. Guessing which
     // directories to remove recursively is exactly what the guards exist to prevent.
     let profile =
         profile::read_profile(&dir).map_err(|e| DeleteError::ProfileUnreadable(e.to_string()))?;
@@ -496,7 +496,7 @@ mod tests {
         use crate::config::hub::{build_hub_config, HubConfigOptions};
 
         let dir = scratch("purge");
-        for data in ["db_data", "minio_data"] {
+        for data in ["db_data", "rustfs_data"] {
             std::fs::create_dir_all(dir.join(data)).unwrap();
             std::fs::write(dir.join(data).join("some.db"), "rows").unwrap();
         }
@@ -519,7 +519,7 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
         assert_eq!(removed.len(), 2);
         assert!(!dir.join("db_data").exists());
-        assert!(!dir.join("minio_data").exists());
+        assert!(!dir.join("rustfs_data").exists());
 
         for survivor in [
             crate::profile::HUB_CONFIG_FILENAME,

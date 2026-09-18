@@ -1,16 +1,3 @@
-authentikate:
-  audience: '*'
-  issuers:
-  - iss: coord.example.org
-    jwks_uri: https://coord.example.org/.well-known/jwks.json
-    kind: jwks_uri
-  provenance:
-    audience: '*'
-    issuers:
-    - iss: rekuest.example.org
-      jwks_uri: https://rekuest.example.org/.well-known/jwks.json
-      kind: jwks_uri
-  static_tokens: {}
 django:
   admin:
     email: null
@@ -33,3 +20,16 @@ postgres:
 redis:
   host: redis
   port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: coord.example.org
+    jwks_uri: https://coord.example.org/.well-known/jwks.json
+    kind: jwks_uri
+  static_tokens: {}
+  provenance:
+    audience: '*'
+    issuers:
+    - iss: rekuest.example.org
+      jwks_uri: https://rekuest.example.org/.well-known/jwks.json
+      kind: jwks_uri

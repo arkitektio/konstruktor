@@ -5,7 +5,7 @@ use crate::config::hub::{HubConfig, ServiceBlock, DB_COMPOSE_SERVICE};
 use crate::config::mesh::MESH_STATE_DIR;
 use crate::generate::service::{list, map, s};
 
-/// `docker-compose.yaml`, and the bucket manifest the minio init container reads.
+/// `docker-compose.yaml`, and the bucket manifest the storage init container reads.
 
 fn empty_map() -> Value {
     Value::Mapping(Mapping::new())
@@ -36,7 +36,7 @@ pub fn mount_path(service: &ServiceBlock) -> String {
     format!("./{MOUNTS_DIR}/{}", service.host)
 }
 
-fn compose_service(service: &ServiceBlock) -> Value {
+fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
     // The config file is mounted *inside* the workspace, so on a dev hub the source mount
     // is the parent of the config mount. Docker resolves nested binds outermost-first
     // regardless of the order they are declared, so the config still lands on top of the
@@ -68,7 +68,17 @@ fn compose_service(service: &ServiceBlock) -> Value {
                 "bash run.sh"
             }),
         ),
-        ("depends_on", list(vec![s("redis"), s("db"), s("minio")])),
+        // By the profile's own names: the object storage was renamed from `minio` to
+        // `rustfs`, and a dependency on a service that is not in the file is an error
+        // compose refuses the whole project over.
+        (
+            "depends_on",
+            list(vec![
+                s(&config.local_redis.host),
+                s(DB_COMPOSE_SERVICE),
+                s(&config.minio.host),
+            ]),
+        ),
         ("stop_grace_period", s("2s")),
         ("volumes", list(volumes)),
         (
@@ -86,7 +96,7 @@ fn compose_service(service: &ServiceBlock) -> Value {
     ])
 }
 
-/// The bucket + user manifest `minio_init` reads. `None` when nothing declares a bucket.
+/// The bucket + user manifest the init container (`rustfs_init`) reads. `None` when nothing declares a bucket.
 pub fn build_minio_init(config: &HubConfig, enabled: &[ServiceId]) -> Option<Value> {
     let buckets: Vec<String> = enabled
         .iter()
@@ -173,14 +183,26 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
             &config.minio.host,
             map(vec![
                 ("image", s(&config.minio.image)),
-                ("command", s("server /data")),
+                // RustFS reads everything from the environment; there is no `server /data`
+                // command as MinIO had. The root credentials are the admin account the
+                // init container provisions the services' own user with.
                 (
                     "environment",
                     map(vec![
-                        ("MINIO_ROOT_USER", s(&config.minio.root_user)),
-                        ("MINIO_ROOT_PASSWORD", s(&config.minio.root_password)),
+                        ("RUSTFS_ACCESS_KEY", s(&config.minio.root_user)),
+                        ("RUSTFS_SECRET_KEY", s(&config.minio.root_password)),
+                        ("RUSTFS_VOLUMES", s("/data")),
+                        (
+                            "RUSTFS_ADDRESS",
+                            s(&format!(":{}", config.minio.internal_port)),
+                        ),
                     ]),
                 ),
+                // The image runs as uid 10001 and leaves `/data` as it finds it. A bind
+                // mount the engine created is root's, and a restore copies the buckets
+                // back as root, so as 10001 the server dies on `Permission denied` before
+                // it listens. MinIO ran as root; so does this.
+                ("user", s("0:0")),
                 ("stop_grace_period", s("2s")),
                 (
                     "volumes",
@@ -209,10 +231,10 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
                 (
                     "environment",
                     map(vec![
-                        ("MINIO_ROOT_USER", s(&config.minio.root_user)),
-                        ("MINIO_ROOT_PASSWORD", s(&config.minio.root_password)),
+                        ("RUSTFS_ACCESS_KEY", s(&config.minio.root_user)),
+                        ("RUSTFS_SECRET_KEY", s(&config.minio.root_password)),
                         (
-                            "MINIO_HOST",
+                            "RUSTFS_HOST",
                             s(&format!(
                                 "http://{}:{}",
                                 config.minio.host, config.minio.internal_port
@@ -234,7 +256,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     // --- the services themselves ---------------------------------------------
     for id in enabled {
         let service = config.service(*id);
-        insert(&mut services, &service.host, compose_service(service));
+        insert(&mut services, &service.host, compose_service(config, service));
     }
 
     // --- the model provider, when this hub runs its own -----------------------

@@ -142,6 +142,9 @@ pub struct DbBlock {
     pub volume_name: String,
 }
 
+/// The object storage. RustFS since `jhnnsrs/init` 2.0.0, which provisions it through `rc`
+/// and cannot provision MinIO any more; the block keeps its `minio` name because it is
+/// the profile key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MinioBlock {
     pub access_key: String,
@@ -528,7 +531,7 @@ pub enum StorageMode {
     /// Named volumes, managed by the engine. `mount` is left empty on both blocks.
     #[default]
     DockerVolumes,
-    /// Bind mounts at `./db_data` and `./minio_data` inside the deployment folder.
+    /// Bind mounts at `./db_data` and `./rustfs_data` inside the deployment folder.
     DeploymentFolder,
 }
 
@@ -539,42 +542,36 @@ impl StorageMode {
     }
 }
 
-// --- what the infrastructure is pinned to ----------------------------------------------
+// --- what the infrastructure runs ----------------------------------------------------
 //
-// The services float on a channel tag on purpose — `next`, `dev` — because that is what a
-// channel *is* here: there is no version field in the profile, so the set of tags is the
-// only statement of what a hub follows. The infrastructure underneath them is a different
-// question. Nobody chooses a Postgres major by following a channel, and a `db` image that
-// moves from 16 to 17 under a running hub leaves a cluster the new binary refuses to open.
-// MinIO has been pinned to an exact release since the beginning; these are the rest,
-// resolved from what each reference actually pointed at when they were written.
+// Every image follows `latest`. The services have always floated on a channel tag, because
+// there is no version field in the profile and the set of tags is the only statement of
+// what a hub follows; the infrastructure used to be pinned by digest instead, and now
+// follows the same channel.
 //
-// Two of the four could only be pinned by digest. `caddy` and `redis` publish version
-// tags, so they say their version in `status` and can be read at a glance. `jhnnsrs/daten`
-// and `jhnnsrs/init` publish *only* channel tags — `dev`, `next`, `release`, `prod` — so
-// there is no version to name and the digest is the only immutable reference. Both are
-// written `tag@sha256:…`, which keeps the channel readable while the digest decides what
-// is pulled; `status::image_tag` and `updates::parse` both know to look past the pin.
+// That puts the one dangerous move — a Postgres major changing under a running hub, which
+// leaves a cluster the new binary refuses to open — on `updates::guard`, which reads
+// `PG_MAJOR` off the pulled image before an update recreates the database. `jhnnsrs/daten`
+// keeps `PGDATA` at `/var/lib/postgresql/data` across majors, so the mount stays put.
 //
-// This is a default, so it changes new hubs only. Every generator path afterwards reads
-// `config.<service>.image` back out of the stored profile, so hubs created before this
-// keep their floating tags — which is exactly why `updates::guard` exists as well.
+// These are defaults, so they are what new hubs get. Every generator path afterwards
+// reads `config.<service>.image` back out of the stored profile.
 
-/// Postgres 16.13, the version `jhnnsrs/daten:dev` resolved to when this was pinned.
-pub const DB_IMAGE: &str = "jhnnsrs/daten:dev@sha256:c692f316fcaa17f2ceb47bc9ad915925af5063fe274004cd16ca98e1146228d1";
+/// Postgres with multiple-database support (Postgres 19 at the time of writing).
+pub const DB_IMAGE: &str = "jhnnsrs/daten:latest";
 /// Caddy 2.11.4.
 pub const GATEWAY_IMAGE: &str = "caddy:2.11.4";
 /// Redis 8.10.1.
 pub const REDIS_IMAGE: &str = "redis:8.10.1";
-/// The bucket-creating run-once container; Python 3.11, no version tag published.
-pub const MINIO_INIT_IMAGE: &str = "jhnnsrs/init:dev@sha256:a075356076c0980782b2d36cedad87f35c2a517631ffedd9140037950b74c3a1";
-/// The one image that was already pinned, kept here with the others.
-pub const MINIO_IMAGE: &str = "minio/minio:RELEASE.2025-02-18T16-25-55Z";
+/// The S3 server. See [`MinioBlock`].
+pub const STORAGE_IMAGE: &str = "rustfs/rustfs:latest";
+/// The run-once container that creates the buckets and the services' user in RustFS.
+pub const STORAGE_INIT_IMAGE: &str = "jhnnsrs/init:latest";
 
 /// The bind mount the database uses when the data lives in the deployment folder.
 pub const DB_FOLDER_MOUNT: &str = "./db_data";
 /// The bind mount the object storage uses when the data lives in the deployment folder.
-pub const MINIO_FOLDER_MOUNT: &str = "./minio_data";
+pub const STORAGE_FOLDER_MOUNT: &str = "./rustfs_data";
 
 /// Reads a profile back into a [`StorageMode`]: any bind mount on either block means the
 /// data is in a folder, an empty `mount` on both means the volumes.
@@ -838,21 +835,21 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             console_port: 9001,
             enabled: true,
             exposed_console_port: None,
-            host: "minio".into(),
-            image: MINIO_IMAGE.into(),
-            // The dashboard mirrors this name to recognise a run-once container, where
+            host: "rustfs".into(),
+            image: STORAGE_IMAGE.into(),
+            // The dashboard recognises a run-once container by its `_init` suffix, where
             // "exited" is success rather than a failure — see `isInitContainer`.
-            init_container_host: "minio_init".into(),
-            init_container_image: MINIO_INIT_IMAGE.into(),
+            init_container_host: "rustfs_init".into(),
+            init_container_image: STORAGE_INIT_IMAGE.into(),
             internal_port: 9000,
             // Upstream's default is the container-absolute `/data`, which docker turns
             // into an *anonymous* volume — nothing to find again after `down`. Ours is
             // the named volume, or the folder beside the database when that was asked.
-            mount: (!options.storage.uses_volumes()).then(|| MINIO_FOLDER_MOUNT.into()),
+            mount: (!options.storage.uses_volumes()).then(|| STORAGE_FOLDER_MOUNT.into()),
             root_password: generate_alpha_numeric_string(40),
             root_user: generate_name(),
             secret_key: generate_alpha_numeric_string(40),
-            volume_name: "minio_data".into(),
+            volume_name: "rustfs_data".into(),
         },
         rekuest_server: options.rekuest_server.clone(),
     };

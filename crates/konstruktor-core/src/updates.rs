@@ -592,7 +592,7 @@ mod tests {
                 "{host} is one of the hub's own services"
             );
         }
-        for infra in ["db", "redis", "minio", "minio_init", "gateway"] {
+        for infra in ["db", "redis", "rustfs", "rustfs_init", "gateway"] {
             assert!(is_infrastructure(&config, infra), "{infra} is infrastructure");
         }
     }

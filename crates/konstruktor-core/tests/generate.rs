@@ -16,6 +16,10 @@ use serde_norway::Value;
 /// and `authentikate.provenance.audience`. Current authentikate refuses to start without
 /// them, and upstream's generator does not write them yet — see `build_authentikate`.
 ///
+/// A second, larger one, also by hand: object storage is RustFS (`rustfs`, `rustfs_init`,
+/// `RUSTFS_*` environment) and every image follows `latest`, where upstream still writes
+/// MinIO and channel tags. `jhnnsrs/init` 2.0.0 provisions only RustFS.
+///
 /// YAML is compared as *parsed structures*: PyYAML, the `yaml` npm package and
 /// `serde_norway` all render the same data differently (sequence indentation, quote
 /// style, block scalars for PEMs), and none of that is meaningful. The Caddyfile is not
@@ -130,7 +134,7 @@ mod authorized {
             }
             let parsed: Value = serde_norway::from_str(contents).expect("valid YAML");
             let Some(authentikate) = parsed.get("authentikate") else {
-                continue; // minio_init has none
+                continue; // rustfs_init has none
             };
             let issuers = authentikate["issuers"].as_sequence().expect("a list");
             assert_eq!(issuers.len(), 1, "{name}");
@@ -688,11 +692,11 @@ mod storage {
             Value::from("db_data:/var/lib/postgresql/data")
         );
         assert_eq!(
-            compose["services"]["minio"]["volumes"][0],
-            Value::from("minio_data:/data")
+            compose["services"]["rustfs"]["volumes"][0],
+            Value::from("rustfs_data:/data")
         );
         assert!(compose["volumes"].get("db_data").is_some());
-        assert!(compose["volumes"].get("minio_data").is_some());
+        assert!(compose["volumes"].get("rustfs_data").is_some());
     }
 
     #[test]
@@ -703,11 +707,11 @@ mod storage {
             Value::from("./db_data:/var/lib/postgresql/data")
         );
         assert_eq!(
-            compose["services"]["minio"]["volumes"][0],
-            Value::from("./minio_data:/data")
+            compose["services"]["rustfs"]["volumes"][0],
+            Value::from("./rustfs_data:/data")
         );
         assert!(compose["volumes"].get("db_data").is_none());
-        assert!(compose["volumes"].get("minio_data").is_none());
+        assert!(compose["volumes"].get("rustfs_data").is_none());
     }
 }
 
