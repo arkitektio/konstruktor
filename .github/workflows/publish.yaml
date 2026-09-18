@@ -216,6 +216,10 @@ jobs:
 
   # The CLI ships as a plain binary per target, next to the desktop app's installers in
   # the same release. `needs: publish-tauri` so the release exists to upload into.
+  #
+  # Linux builds are static musl binaries: a glibc build from `ubuntu-latest` only runs on
+  # distros at least as new as the runner (it failed with `GLIBC_2.39 not found` on older
+  # Ubuntu), and the CLI has no native dependency that needs glibc — reqwest uses rustls.
   publish-cli:
     needs: [version, publish-tauri]
     permissions:
@@ -225,7 +229,10 @@ jobs:
       matrix:
         include:
           - platform: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
+          # Native ARM runner, so there is no cross toolchain to set up.
+          - platform: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
           - platform: macos-latest
             target: x86_64-apple-darwin
           - platform: macos-latest
@@ -246,21 +253,27 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: install dependencies (linux only)
+        if: runner.os == 'Linux'
+        # musl-gcc, for the C and assembly in `ring`.
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: test
         run: cargo test -p konstruktor-core -p konstruktor-cli
       - name: build
         run: cargo build --release -p konstruktor-cli --target ${{ matrix.target }}
+      - name: check the binary is static (linux only)
+        if: runner.os == 'Linux'
+        run: |
+          file target/${{ matrix.target }}/release/konstruktor
+          file target/${{ matrix.target }}/release/konstruktor | grep -Eq 'statically linked|static-pie linked'
 
       - name: package (unix)
-        if: matrix.platform != 'windows-latest'
+        if: runner.os != 'Windows'
         run: |
           cp target/${{ matrix.target }}/release/konstruktor konstruktor-${{ matrix.target }}
           shasum -a 256 konstruktor-${{ matrix.target }} > konstruktor-${{ matrix.target }}.sha256
       - name: package (windows)
-        if: matrix.platform == 'windows-latest'
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           cp target/${{ matrix.target }}/release/konstruktor.exe konstruktor-${{ matrix.target }}.exe

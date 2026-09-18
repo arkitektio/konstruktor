@@ -51,7 +51,8 @@ detect_target() {
     arch="$(uname -m)"
 
     case "$os" in
-        Linux)  os_part="unknown-linux-gnu" ;;
+        # Static musl builds, so they run whatever the distro's glibc version is.
+        Linux)  os_part="unknown-linux-musl" ;;
         Darwin) os_part="apple-darwin" ;;
         *) die "unsupported operating system: $os. Windows users: download the binary from
     https://github.com/$REPO/releases" ;;
@@ -95,9 +96,24 @@ TMP="$(mktemp -d)"
 trap "rm -rf '$TMP'" EXIT INT TERM
 
 say "Downloading…"
-fetch "$BASE/$ASSET" "$TMP/$BIN_NAME" \
-    || die "no build for $TARGET in that release.
+if ! fetch "$BASE/$ASSET" "$TMP/$BIN_NAME" 2>/dev/null; then
+    # Releases up to konstruktor-v0.4.1 shipped a glibc build for x86_64 Linux only. It
+    # needs a recent glibc, but it is still better than nothing for an older --version.
+    case "$TARGET" in
+        *-unknown-linux-musl)
+            TARGET="${TARGET%-musl}-gnu"
+            ASSET="$BIN_NAME-$TARGET"
+            say "! No static build in that release; trying $TARGET."
+            fetch "$BASE/$ASSET" "$TMP/$BIN_NAME" 2>/dev/null \
+                || die "no build for $TARGET in that release.
     See https://github.com/$REPO/releases"
+            ;;
+        *)
+            die "no build for $TARGET in that release.
+    See https://github.com/$REPO/releases"
+            ;;
+    esac
+fi
 
 # --- verify -----------------------------------------------------------------------------
 # A binary that installs itself into someone's PATH has to be worth trusting; a missing
