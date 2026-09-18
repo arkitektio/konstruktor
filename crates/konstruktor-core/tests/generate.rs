@@ -488,10 +488,10 @@ mod beyond_upstream {
             "no ollama service without being asked"
         );
         assert!(compose["volumes"].get("ollama_models").is_none());
-        assert!(yaml(&files, "configs/alpaka.yaml").get("ollama").is_none());
+        assert!(yaml(&files, "configs/alpaka.yaml").get("ollama_url").is_none());
         assert!(
             yaml(&files, "configs/kabinet.yaml")
-                .get("ensured_repositories")
+                .get("ensured_repos")
                 .is_none(),
             "the seeded default stays out of the generated config, as upstream leaves it"
         );
@@ -524,7 +524,7 @@ mod beyond_upstream {
         assert!(compose["volumes"].get("ollama_models").is_some());
 
         assert_eq!(
-            yaml(&files, "configs/alpaka.yaml")["ollama"]["url"],
+            yaml(&files, "configs/alpaka.yaml")["ollama_url"],
             "http://ollama:11434"
         );
         assert_eq!(config.alpaka.ollama_config.as_ref().unwrap().kind, "local");
@@ -549,7 +549,7 @@ mod beyond_upstream {
             .is_none());
         // A bare host is plain HTTP, which is what an Ollama on the next machine is.
         assert_eq!(
-            yaml(&files, "configs/alpaka.yaml")["ollama"]["url"],
+            yaml(&files, "configs/alpaka.yaml")["ollama_url"],
             "http://gpu-box.lab:11434"
         );
         assert_eq!(config.alpaka.ollama_config.as_ref().unwrap().kind, "global");
@@ -592,7 +592,7 @@ mod beyond_upstream {
             "an answer replaces the seeded pair rather than adding to it"
         );
         assert_eq!(
-            yaml(&files(&config), "configs/kabinet.yaml")["ensured_repositories"][0],
+            yaml(&files(&config), "configs/kabinet.yaml")["ensured_repos"][0],
             "myinstitute/apps:main"
         );
     }

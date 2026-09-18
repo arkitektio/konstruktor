@@ -249,17 +249,19 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
 
     // --- beyond upstream ------------------------------------------------------
     //
-    // The two blocks below have no counterpart in the Python generator, which writes
+    // The two keys below have no counterpart in the Python generator, which writes
     // `ollama_config` and `ensured_repositories` into the *profile* and then emits
     // neither into the service's own config — so nothing ever reaches the container.
     //
-    // **The key shapes here are inferred, not sourced.** If a service disagrees with
-    // them, this is the place to correct, and the golden fixtures will not catch it:
-    // both are emitted only when somebody asked for something upstream cannot express,
-    // so a stock hub still generates exactly what the Python CLI generates.
+    // The key names are the services' own (`alpaka_server/configuration.py`,
+    // `kabinet_server/configuration.py`). Both top-level models are `extra="ignore"`, so
+    // a misspelt key is not an error — it is silently dropped and the default used. The
+    // golden fixtures will not catch that either: both keys are emitted only when
+    // somebody asked for something upstream cannot express, so a stock hub still
+    // generates exactly what the Python CLI generates.
     if id == ServiceId::Alpaka {
         if let Some(ollama) = &config.local_ollama {
-            pairs.push(("ollama", map(vec![("url", s(&ollama.url))])));
+            pairs.push(("ollama_url", s(&ollama.url)));
         }
     }
 
@@ -270,7 +272,7 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
             .filter(|asked| !is_the_seeded_default(asked))
         {
             pairs.push((
-                "ensured_repositories",
+                "ensured_repos",
                 list(repositories.iter().map(|r| s(r)).collect()),
             ));
         }
