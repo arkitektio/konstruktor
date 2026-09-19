@@ -9,7 +9,7 @@ concurrency:
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -37,7 +37,7 @@ jobs:
         run: cargo test -p konstruktor-core -p konstruktor-cli
 
   # Decides the version, writes it everywhere, tags it. Everything downstream builds the
-  # tag this job creates, rather than whatever master happens to be by then.
+  # tag this job creates, rather than whatever main happens to be by then.
   #
   # This has to live in the same workflow as the publishing: a push made with the default
   # GITHUB_TOKEN does not trigger another workflow run, so a separate "tag it" workflow

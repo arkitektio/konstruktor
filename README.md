@@ -36,7 +36,7 @@ Linux it gives you the commands to paste — they need `sudo`.
 ### The command line
 
 ```
-curl -fsSL https://raw.githubusercontent.com/arkitektio/konstruktor/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.sh | sh
 ```
 
 Detects your platform, downloads the matching binary, verifies it against the release's
@@ -328,7 +328,7 @@ KONSTRUKTOR_E2E=1 pnpm test   # additionally runs the real CLI in Docker
 
 ### Releases
 
-The version is not edited by hand — it is derived from the commit subjects on `master`. Every push
+The version is not edited by hand — it is derived from the commit subjects on `main`. Every push
 that contains a releasable commit bumps the version, tags it, and publishes a signed release; the
 tag is the single source of truth that `install.sh` resolves through
 `/releases/latest/download`.

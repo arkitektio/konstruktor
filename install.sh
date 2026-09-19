@@ -1,7 +1,7 @@
 #!/bin/sh
 # Konstruktor installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/arkitektio/konstruktor/master/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.sh | sh
 #
 # Downloads the binary for this machine, verifies it against the release's published
 # checksums, installs it, and — when there is a terminal to talk to — goes straight into
