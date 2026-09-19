@@ -323,7 +323,17 @@ wizards, the dashboard or the CLI invocation belongs here.
 pnpm install
 pnpm tauri dev        # run the app
 pnpm test             # unit tests, no Docker needed
-KONSTRUKTOR_E2E=1 pnpm test   # additionally runs the real CLI in Docker
+cargo test -p konstruktor-core -p konstruktor-cli   # Rust tests
+```
+
+The hub end-to-end test spawns a real hub in Docker, lets it settle, and fails unless every
+service answers its health check through the gateway. It pulls every image and takes minutes,
+so it only runs when asked for. In CI it runs nightly and on demand in the `Hub E2E` workflow,
+and it never gates a release.
+
+```bash
+KONSTRUKTOR_E2E=1 cargo test -p konstruktor-core --test hub_health -- --ignored --nocapture
+# KONSTRUKTOR_E2E_SETTLE_SECS=120 gives the hub longer before it is asked (default 60)
 ```
 
 ### Releases

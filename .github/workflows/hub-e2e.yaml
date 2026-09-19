@@ -1,0 +1,38 @@
+name: "Hub E2E"
+
+# Spawns a real hub in Docker and fails unless every service is healthy after it settles.
+# It pulls every image and takes minutes, so it runs nightly and on demand, never on push:
+# a flaky upstream image must not be able to block a release.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      settle_secs:
+        description: "How long the hub gets after `up` before it is checked"
+        required: false
+        default: "60"
+        type: string
+
+jobs:
+  hub-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: spawn a hub and check every service
+        env:
+          KONSTRUKTOR_E2E: "1"
+          KONSTRUKTOR_E2E_SETTLE_SECS: ${{ inputs.settle_secs || '60' }}
+        run: cargo test -p konstruktor-core --test hub_health -- --ignored --nocapture
+      - name: containers at failure
+        if: failure()
+        run: docker ps -a
