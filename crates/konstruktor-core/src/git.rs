@@ -1,5 +1,6 @@
 use std::path::Path;
-use std::process::Command;
+
+use crate::process::command as git_command;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +28,7 @@ impl GitProbe {
 pub fn probe() -> GitProbe {
     let mut probe = GitProbe::default();
 
-    if let Some(line) = Command::new("git")
+    if let Some(line) = git_command("git")
         .arg("--version")
         .output()
         .ok()
@@ -94,7 +95,7 @@ pub fn clone_service(
         });
     }
 
-    let mut command = Command::new("git");
+    let mut command = git_command("git");
     command.arg("clone");
     if let Some(branch) = branch {
         command.args(["--branch", branch]);
@@ -153,7 +154,7 @@ pub struct Checkout {
 /// failure — git explains itself far better than any wrapper could, and on a dev hub the
 /// explanation is usually "a container wrote this file as root", which only git can say.
 fn git_in(at: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = git_command("git")
         .arg("-C")
         .arg(at)
         .args(args)

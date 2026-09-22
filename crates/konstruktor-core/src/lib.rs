@@ -16,6 +16,7 @@ pub mod git;
 pub mod health;
 pub mod hosts;
 pub mod lock;
+pub mod process;
 pub mod profile;
 pub mod reclaim;
 pub mod redact;

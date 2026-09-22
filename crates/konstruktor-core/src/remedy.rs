@@ -810,7 +810,7 @@ pub async fn launch(target: StartTarget) -> Result<(), String> {
         .launch(Platform::current())
         .ok_or_else(|| format!("{} cannot be started from here", target.label()))?;
     let program = resolve_program(&program)?;
-    tokio::process::Command::new(program)
+    crate::process::async_command(program)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -847,7 +847,7 @@ async fn run_plan(
             } => {
                 stage(title);
                 let program = resolve_program(program)?;
-                let mut cmd = tokio::process::Command::new(&program);
+                let mut cmd = crate::process::async_command(&program);
                 cmd.args(&args);
                 // Homebrew: no prompts, no hints, and no minutes-long `brew update`
                 // before the install the user asked for.
@@ -887,7 +887,7 @@ async fn run_plan(
                 if target == StartTarget::Colima {
                     // `colima start` is the install's last, and longest, step: it
                     // downloads a VM image the first time. Worth watching.
-                    let mut cmd = tokio::process::Command::new(&program);
+                    let mut cmd = crate::process::async_command(&program);
                     cmd.args(&args);
                     let (status, _) = stream(cmd, token, on_line).await?;
                     match status {
@@ -903,7 +903,7 @@ async fn run_plan(
                         Some(_) => {}
                     }
                 } else {
-                    tokio::process::Command::new(program)
+                    crate::process::async_command(program)
                         .args(args)
                         .stdin(std::process::Stdio::null())
                         .stdout(std::process::Stdio::null())
@@ -999,7 +999,7 @@ async fn stream(
 /// shell one-liner so there is no shell, and no quoting, between us and the path.
 async fn link_compose_plugin(on_line: &(dyn Fn(InstallLine) + Sync)) -> Result<(), String> {
     let brew = resolve_program("brew")?;
-    let output = tokio::process::Command::new(brew)
+    let output = crate::process::async_command(brew)
         .args(["--prefix", "docker-compose"])
         .output()
         .await

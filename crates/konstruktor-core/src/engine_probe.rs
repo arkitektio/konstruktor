@@ -198,11 +198,11 @@ pub struct Engine {
 impl Engine {
     /// A command for this engine, ready for `.args(…)`.
     pub fn command(&self) -> std::process::Command {
-        std::process::Command::new(&self.binary)
+        crate::process::command(&self.binary)
     }
 
     pub fn async_command(&self) -> tokio::process::Command {
-        tokio::process::Command::new(&self.binary)
+        crate::process::async_command(&self.binary)
     }
 }
 
@@ -360,7 +360,7 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
 }
 
 fn runs(binary: &PathBuf) -> bool {
-    std::process::Command::new(binary)
+    crate::process::command(binary)
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
