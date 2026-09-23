@@ -2,8 +2,13 @@ use serde_norway::{Mapping, Value};
 
 use crate::catalog::ServiceId;
 use crate::config::hub::{HubConfig, ServiceBlock, DB_COMPOSE_SERVICE};
-use crate::config::mesh::MESH_STATE_DIR;
+use crate::config::mesh::{
+    MESH_SOCKET as TAILSCALE_SOCKET, MESH_SOCKET_DIR as TAILSCALE_SOCKET_DIR,
+    MESH_SOCKET_VOLUME as TAILSCALE_SOCKET_VOLUME, MESH_STATE_DIR,
+};
+use crate::credentials::CREDENTIALS_FILENAME;
 use crate::generate::service::{list, map, s};
+use crate::profile::HUB_CONFIG_FILENAME as PROFILE_FILENAME;
 
 /// `docker-compose.yaml`, and the bucket manifest the storage init container reads.
 
@@ -19,10 +24,7 @@ fn insert(target: &mut Value, key: &str, value: Value) {
 
 /// The bucket names a service declares, in `bucket_purposes()` order.
 fn buckets_of(id: ServiceId, service: &ServiceBlock) -> Vec<String> {
-    id.bucket_purposes()
-        .iter()
-        .filter_map(|purpose| service.bucket(purpose).map(|b| b.bucket_name.clone()))
-        .collect()
+    service.bucket_names(id).into_iter().map(|(_, name)| name).collect()
 }
 
 /// Where a dev hub's checkouts live, relative to the deployment folder.
@@ -291,6 +293,10 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     }
 
     let mesh = config.mesh.as_ref().filter(|m| m.enabled);
+    let reporter = config.reporter.as_ref().filter(|r| r.enabled);
+    // The sidecar's LocalAPI socket, shared so the reporter can say what the tailnet
+    // calls this node. Only when there is a reporter to read it.
+    let share_socket = mesh.is_some() && reporter.is_some();
 
     if let Some(mesh) = mesh {
         // The sidecar holds the network namespace and the gateway moves into it, which is
@@ -311,33 +317,46 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
             extra_args = format!("--login-server={coord}");
             environment.push(("TS_EXTRA_ARGS", s(&extra_args)));
         }
+        if share_socket {
+            environment.push(("TS_SOCKET", s(TAILSCALE_SOCKET)));
+        }
+        let mut sidecar_volumes = vec![
+            s(&format!("{}:{}", mesh.volume_name, MESH_STATE_DIR)),
+            s("/dev/net/tun:/dev/net/tun"),
+        ];
+        if share_socket {
+            sidecar_volumes.push(s(&format!("{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}")));
+        }
 
-        insert(
-            &mut services,
-            &mesh.host,
-            map(vec![
-                ("image", s(&mesh.image)),
-                ("hostname", s(&mesh.hostname)),
-                ("environment", map(environment)),
-                ("ports", list(ports.clone())),
-                (
-                    "networks",
-                    list(vec![s(&config.internal_network), s("default")]),
-                ),
-                (
-                    "volumes",
-                    list(vec![
-                        s(&format!("{}:{}", mesh.volume_name, MESH_STATE_DIR)),
-                        s("/dev/net/tun:/dev/net/tun"),
-                    ]),
-                ),
-                ("cap_add", list(vec![s("net_admin"), s("sys_module")])),
-                // Not `unless-stopped`: the sidecar should recover from its own
-                // crashes, but never come back on its own after the daemon or the host
-                // restarts — the app is what decides whether a stack is running.
-                ("restart", s("on-failure")),
-            ]),
-        );
+        // A member of the sidecar's namespace has no name of its own on the network, so
+        // the sidecar answers to the gateway's too: plugin apps and services beside the
+        // stack reach Caddy as `gateway` whether or not the hub is on a mesh.
+        let gateway_alias = || map(vec![("aliases", list(vec![s(&config.gateway.host)]))]);
+        let networks = map(vec![
+            (config.internal_network.as_str(), gateway_alias()),
+            ("default", gateway_alias()),
+        ]);
+
+        let mut sidecar = vec![
+            ("image", s(&mesh.image)),
+            ("hostname", s(&mesh.hostname)),
+            ("environment", map(environment)),
+        ];
+        // A mesh-only hub publishes nothing, and an empty `ports:` is noise.
+        if !ports.is_empty() {
+            sidecar.push(("ports", list(ports.clone())));
+        }
+        sidecar.extend([
+            ("networks", networks),
+            ("volumes", list(sidecar_volumes)),
+            ("cap_add", list(vec![s("net_admin"), s("sys_module")])),
+            // Not `unless-stopped`: the sidecar should recover from its own crashes, but
+            // never come back on its own after the daemon or the host restarts — the app
+            // is what decides whether a stack is running.
+            ("restart", s("on-failure")),
+        ]);
+
+        insert(&mut services, &mesh.host, map(sidecar));
 
         insert(
             &mut services,
@@ -371,6 +390,34 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         );
     }
 
+    // --- the health reporter ---------------------------------------------------
+    // Tells the coordination server the hub is alive, as the hub — see `hubhealth`. It
+    // reaches the gateway by name on the default network, and reads the grant and the
+    // profile it needs from the folder, read-only.
+    if let Some(reporter) = reporter {
+        let mut mounts = vec![
+            s(&format!("./{CREDENTIALS_FILENAME}:/seed/{CREDENTIALS_FILENAME}:ro")),
+            s(&format!("./{PROFILE_FILENAME}:/seed/{PROFILE_FILENAME}:ro")),
+            s(&format!("{}:/state", reporter.volume_name)),
+        ];
+        if share_socket {
+            mounts.push(s(&format!("{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}:ro")));
+        }
+        insert(
+            &mut services,
+            &reporter.host,
+            map(vec![
+                ("image", s(&reporter.image)),
+                ("command", list(vec![s("hub-report")])),
+                ("volumes", list(mounts)),
+                ("depends_on", list(vec![s(&config.gateway.host)])),
+                // Same reasoning as the sidecar: recover from a crash, but never start on
+                // its own behind the app's back.
+                ("restart", s("on-failure")),
+            ]),
+        );
+    }
+
     // --- volumes and networks -------------------------------------------------
     // Only the mounts that are *not* bind mounts need a named volume declared.
     let mut volumes = Value::Mapping(Mapping::new());
@@ -387,6 +434,12 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     }
     if let Some(ollama) = config.local_ollama.as_ref().filter(|o| o.enabled) {
         insert(&mut volumes, &ollama.volume_name, empty_map());
+    }
+    if let Some(reporter) = reporter {
+        insert(&mut volumes, &reporter.volume_name, empty_map());
+    }
+    if share_socket {
+        insert(&mut volumes, TAILSCALE_SOCKET_VOLUME, empty_map());
     }
 
     map(vec![

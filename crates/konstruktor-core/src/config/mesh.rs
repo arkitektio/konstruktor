@@ -28,10 +28,19 @@ pub struct MeshBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coord_url: Option<String>,
     pub volume_name: String,
+    /// The hub is reached *only* over the mesh: the gateway publishes no port on the
+    /// host, and the manifest advertises the tailnet node and the in-network gateway,
+    /// nothing on the LAN. Kept here so a re-authorization advertises the same thing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mesh_only: bool,
 }
 
 /// Where the sidecar keeps its node identity, so a restart is not a new machine.
 pub const MESH_STATE_DIR: &str = "/var/lib/tailscale";
+/// Where the sidecar puts its LocalAPI socket, on a volume the health reporter mounts.
+pub const MESH_SOCKET_DIR: &str = "/var/run/tailscale";
+pub const MESH_SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
+pub const MESH_SOCKET_VOLUME: &str = "tailscale_socket";
 pub const MESH_IMAGE: &str = "tailscale/tailscale:latest";
 
 #[derive(Debug, Clone, Default)]
@@ -55,6 +64,7 @@ pub fn build_mesh_block(options: &MeshOptions) -> MeshBlock {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         volume_name: "tailscale_state".to_string(),
+        mesh_only: false,
     }
 }
 

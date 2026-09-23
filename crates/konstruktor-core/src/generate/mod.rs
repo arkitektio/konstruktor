@@ -71,11 +71,7 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
                 id,
                 host: &block.host,
                 internal_port: block.internal_port,
-                buckets: id
-                    .bucket_purposes()
-                    .iter()
-                    .filter_map(|purpose| block.bucket(purpose).map(|b| b.bucket_name.clone()))
-                    .collect(),
+                buckets: block.bucket_names(id).into_iter().map(|(_, name)| name).collect(),
             }
         })
         .collect();

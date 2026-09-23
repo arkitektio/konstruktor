@@ -189,6 +189,12 @@ async fn resolve_hosts(
         return Ok(chosen);
     }
 
+    // A mesh-only hub advertises nothing on this machine's networks — its aliases are the
+    // tailnet node and the in-network gateway, which the manifest adds itself.
+    if config.mesh.as_ref().is_some_and(|m| m.enabled && m.mesh_only) {
+        return Ok(Vec::new());
+    }
+
     match existing.map(|c| c.advertised_hosts.clone()) {
         Some(hosts) if !hosts.is_empty() => Ok(hosts),
         _ => bail!(

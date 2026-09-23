@@ -10,6 +10,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  RotateCcw,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -226,13 +227,73 @@ const InstallLog = ({ install, onCancel }: { install: Install; onCancel: () => v
         )}
         <div ref={end} />
       </div>
-      {install.outcome?.needsReboot && (
-        <div className="px-3 py-2 border-t border-border/60 text-muted-foreground">
-          The installer asked for a restart before the engine can start. Restart
-          Windows, open Konstruktor again, and it will pick up from here.
-        </div>
-      )}
     </div>
+  );
+};
+
+/**
+ * The installer finished but Windows has to restart first — WSL, usually. Until it
+ * does, every probe says "missing", so this sits above the verdict and says why. The
+ * restart is two clicks: the first only asks.
+ */
+const RestartBanner = () => {
+  const [confirming, setConfirming] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const restart = async () => {
+    setRestarting(true);
+    setError(null);
+    try {
+      await api.restartComputer();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setRestarting(false);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <Card className="gap-0 py-5 border-2 border-warning bg-warning/10">
+      <div className="px-5 flex items-start gap-3">
+        <RotateCcw className="size-6 shrink-0 mt-0.5 text-warning" />
+        <div className="min-w-0 flex-1">
+          <div className="text-base font-semibold">Restart Windows to finish the install</div>
+          <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+            The installer asked for a restart — usually so WSL can finish setting up. Until
+            then the engine may not start. Open Konstruktor again afterwards and it will pick
+            up from here; if the engine comes up before that, this goes away by itself.
+          </p>
+          <div className="flex flex-wrap items-center gap-2 mt-4">
+            {restarting ? (
+              <Button disabled>
+                <Loader2 className="size-4 animate-spin" />
+                Restarting…
+              </Button>
+            ) : confirming ? (
+              <>
+                <Button variant="destructive" onClick={() => void restart()}>
+                  <RotateCcw className="size-4" />
+                  Restart now
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirming(false)}>
+                  Not yet
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Save your work in other programs first.
+                </span>
+              </>
+            ) : (
+              <Button onClick={() => setConfirming(true)}>
+                <RotateCcw className="size-4" />
+                Restart Windows…
+              </Button>
+            )}
+          </div>
+          {error && <p className="text-xs text-destructive mt-2">{error}</p>}
+        </div>
+      </div>
+    </Card>
   );
 };
 
@@ -449,6 +510,8 @@ export const EngineSetupPanel = ({
 
   return (
     <div className="flex flex-col gap-3">
+      {install?.outcome?.needsReboot && state !== "ready" && <RestartBanner />}
+
       <Card
         className={cn("gap-0 py-5 border transition-colors", v ? TONE[v.tone] : "border-border")}
       >

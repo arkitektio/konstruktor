@@ -26,21 +26,28 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// `reauthorize` records the regeneration in the registry, which lives in the platform's
-/// data directory. Every variable `dirs` consults for it is pointed at a scratch folder
-/// before any test runs, so a test never reads or writes the real one.
+/// data directory. It is pointed at a scratch folder before any test runs, so a test
+/// never reads or writes the real one — through the explicit override, because on Windows
+/// `dirs` ignores `APPDATA`.
 fn isolate_registry() -> PathBuf {
     use std::sync::OnceLock;
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("konstruktor-reauth-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("a scratch data directory");
-        // Linux reads XDG_DATA_HOME then $HOME; macOS reads $HOME; Windows reads APPDATA.
-        std::env::set_var("XDG_DATA_HOME", &root);
-        std::env::set_var("HOME", &root);
-        std::env::set_var("APPDATA", &root);
-        root
-    })
-    .clone()
+    let root = ROOT
+        .get_or_init(|| {
+            let root =
+                std::env::temp_dir().join(format!("konstruktor-reauth-{}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("a scratch data directory");
+            std::env::set_var(konstruktor_core::registry::DATA_DIR_ENV, &root);
+            root
+        })
+        .clone();
+    let path = konstruktor_core::registry::registry_path().expect("a registry path");
+    assert!(
+        path.starts_with(&root),
+        "refusing to touch a registry outside the scratch folder: {}",
+        path.display()
+    );
+    root
 }
 
 /// A folder holding a plain, never-authorized hub.
@@ -125,20 +132,20 @@ async fn coordination_server(token: ResponseTemplate) -> MockServer {
     server
 }
 
-/// The person at the browser pressed Accept.
-fn accepted(extra_auth: serde_json::Value) -> ResponseTemplate {
-    let mut auth = json!({ "jwks_url": "https://coord.example.org/.well-known/jwks.json" });
-    if let (Some(a), Some(b)) = (auth.as_object_mut(), extra_auth.as_object()) {
-        for (k, v) in b {
-            a.insert(k.clone(), v.clone());
-        }
-    }
-    ResponseTemplate::new(200).set_body_json(json!({
+/// The person at the browser pressed Accept. The response is the current shape: the JWKS
+/// URL under `self`, and `auth` present only when it has a mesh key in it.
+fn accepted(auth: serde_json::Value) -> ResponseTemplate {
+    let mut body = json!({
         "token_type": "Bearer",
         "access_token": "eyJ",
+        "refresh_token": "rt-1",
         "client_id": "9c1d",
-        "auth": auth,
-    }))
+        "self": { "jwks_url": "https://coord.example.org/.well-known/jwks.json" },
+    });
+    if auth.as_object().is_some_and(|a| !a.is_empty()) {
+        body["auth"] = auth;
+    }
+    ResponseTemplate::new(200).set_body_json(body)
 }
 
 /// The person at the browser pressed Decline. The endpoint says so with a 400.
@@ -182,7 +189,7 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
 
     assert_eq!(credentials.identifier, "lab-hub");
     assert_eq!(
-        credentials.envelope.auth.jwks_url.as_deref(),
+        credentials.envelope.jwks_url(),
         Some("https://coord.example.org/.well-known/jwks.json")
     );
     // What the hub told the server it is reachable at is kept, so the next authorization
@@ -236,6 +243,8 @@ async fn a_granted_mesh_key_lands_in_the_profile() {
     assert_eq!(mesh.auth_key, "tskey-auth-minted");
     assert_eq!(mesh.hostname, "lab-hub");
     assert_eq!(mesh.coord_url.as_deref(), Some("https://mesh.example.org"));
+    // The grant carried a refresh token, so the hub can report its own health now.
+    assert!(profile.config.reporter.is_some(), "no reporter after authorization");
 
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -48,6 +48,7 @@ fn main() {
             cmd::cancel_install,
             cmd::cancel_authorization,
             cmd::start_engine,
+            cmd::restart_computer,
             cmd::deployment_checkouts,
             cmd::checkout_branches,
             cmd::switch_checkout_branch,

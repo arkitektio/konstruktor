@@ -230,6 +230,9 @@ pub fn alias_scope(host: &str, kind: HostCategory) -> AliasScope {
 pub struct StagingAlias {
     pub id: String,
     pub name: String,
+    /// Empty only on a [`mesh_alias`], and then left out of the JSON: the coordination
+    /// server fills it in from the tailnet node.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
     pub port: u16,
     pub path: Option<String>,
@@ -328,6 +331,56 @@ pub fn build_aliases(
         .collect()
 }
 
+/// `StagingAlias.kind` for the placeholder the coordination server resolves.
+pub const MESH_ALIAS_KIND: &str = "mesh";
+
+/// The alias a hub on a mesh declares for its tailnet node, without knowing its address.
+///
+/// Nothing on this machine can name it: the tailnet interface lives in the sidecar's
+/// network namespace, where no host scan reaches, and the name the node finally gets —
+/// deduplicated by ionscale, under a MagicDNS domain only the server knows — is the
+/// coordination server's to say. So the hub declares *that* it is on the mesh, with the
+/// port and path the gateway serves there, and the server fills in the host from the
+/// node that registered with the key it minted — so no host is sent at all.
+///
+/// The port is the gateway's own, not the host-published one — on the tailnet, Caddy is
+/// reached inside the sidecar's namespace, where no port mapping applies.
+pub fn mesh_alias(ssl: bool, path: &str) -> StagingAlias {
+    StagingAlias {
+        id: MESH_ALIAS_KIND.to_string(),
+        name: MESH_ALIAS_KIND.to_string(),
+        host: String::new(),
+        port: if ssl { 443 } else { 80 },
+        path: Some(path.to_string()),
+        ssl,
+        challenge: Some("ht".to_string()),
+        kind: MESH_ALIAS_KIND.to_string(),
+        scope: AliasScope::Ionscale,
+        // The coordination server can health check this itself once it has resolved it;
+        // until then there is nothing to check.
+        public: false,
+    }
+}
+
+/// The gateway as the containers on the hub's own docker network reach it — plugin
+/// apps an engine or Kabinet starts beside the stack. Same port reasoning as
+/// [`mesh_alias`]: inside the network nothing is mapped. `local` is the scope that fits
+/// best of the four: nothing outside this machine can use it.
+pub fn internal_alias(host: &str, ssl: bool, path: &str) -> StagingAlias {
+    StagingAlias {
+        id: "internal".to_string(),
+        name: "internal".to_string(),
+        host: host.to_string(),
+        port: if ssl { 443 } else { 80 },
+        path: Some(path.to_string()),
+        ssl,
+        challenge: Some("ht".to_string()),
+        kind: "absolute".to_string(),
+        scope: AliasScope::Local,
+        public: false,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HubManifestOptions {
     /// Unique within the organization that accepts the hub.
@@ -339,6 +392,13 @@ pub struct HubManifestOptions {
     /// Of `hosts`, the ones an external probe reached. Empty unless somebody checked.
     pub reachable_hosts: Vec<String>,
     pub request_auth_key: bool,
+    /// The hub is — or is about to be — on a mesh. Adds a [`mesh_alias`] to every
+    /// instance.
+    pub mesh_alias: bool,
+    /// The gateway's name on the hub's docker network, for plugin apps running beside
+    /// it. Adds an [`internal_alias`] to every instance. Set for a mesh-only hub, where
+    /// it is the only non-tailnet address advertised.
+    pub internal_host: Option<String>,
     pub expiration_seconds: Option<u64>,
 }
 
@@ -355,6 +415,20 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
         .map(|id| {
             let block = config.service(id);
             let (name, description, repo) = describe(id);
+
+            let mut aliases = build_aliases(
+                &options.hosts,
+                port,
+                ssl,
+                &block.host,
+                &options.reachable_hosts,
+            );
+            if options.mesh_alias {
+                aliases.push(mesh_alias(ssl, &block.host));
+            }
+            if let Some(host) = options.internal_host.as_deref().filter(|h| !h.is_empty()) {
+                aliases.push(internal_alias(host, ssl, &block.host));
+            }
 
             InstanceRequest {
                 identifier: name.to_string(),
@@ -373,13 +447,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                         url: repo.to_string(),
                     }],
                 },
-                aliases: build_aliases(
-                    &options.hosts,
-                    port,
-                    ssl,
-                    &block.host,
-                    &options.reachable_hosts,
-                ),
+                aliases,
             }
         })
         .collect();
@@ -569,5 +637,88 @@ mod tests {
             .hub
             .request_auth_key
         );
+    }
+
+    /// A hub on a mesh cannot name its own tailnet address, so it declares a placeholder
+    /// per instance for the coordination server to resolve — and a hub off the mesh
+    /// sends exactly what it always did.
+    #[test]
+    fn declares_a_mesh_alias_only_for_a_hub_on_a_mesh() {
+        let config = build_hub_config(&HubConfigOptions::default());
+        let hosts = vec![AdvertisedHost {
+            host: "10.0.0.4".to_string(),
+            kind: HostCategory::Private,
+        }];
+
+        let off = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts: hosts.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(off
+            .hub
+            .instances
+            .iter()
+            .all(|i| i.aliases.iter().all(|a| a.kind != MESH_ALIAS_KIND)));
+
+        let on = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts,
+                mesh_alias: true,
+                ..Default::default()
+            },
+        );
+        for instance in &on.hub.instances {
+            let mesh: Vec<_> = instance
+                .aliases
+                .iter()
+                .filter(|a| a.kind == MESH_ALIAS_KIND)
+                .collect();
+            assert_eq!(mesh.len(), 1, "{}", instance.identifier);
+            let alias = mesh[0];
+            // The server fills the host in; on the wire the key is absent, not empty.
+            let json = serde_json::to_value(alias).expect("serializes");
+            assert!(json.get("host").is_none(), "{json}");
+            assert_eq!(json["kind"], "mesh");
+            assert_eq!(alias.scope, AliasScope::Ionscale);
+            assert_eq!(alias.port, if config.gateway.ssl { 443 } else { 80 });
+            assert!(!alias.public);
+            // The LAN alias is still there beside it.
+            assert!(instance.aliases.iter().any(|a| a.host == "10.0.0.4"));
+        }
+    }
+
+    /// Mesh-only: the tailnet node and the gateway's in-network name, nothing else.
+    #[test]
+    fn a_mesh_only_hub_advertises_the_mesh_and_the_internal_gateway() {
+        let config = build_hub_config(&HubConfigOptions::default());
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                mesh_alias: true,
+                internal_host: Some("gateway".to_string()),
+                ..Default::default()
+            },
+        );
+
+        for instance in &request.hub.instances {
+            let shape: Vec<(&str, &str, AliasScope)> = instance
+                .aliases
+                .iter()
+                .map(|a| (a.kind.as_str(), a.host.as_str(), a.scope))
+                .collect();
+            assert_eq!(
+                shape,
+                vec![
+                    (MESH_ALIAS_KIND, "", AliasScope::Ionscale),
+                    ("absolute", "gateway", AliasScope::Local),
+                ],
+                "{}",
+                instance.identifier
+            );
+        }
     }
 }

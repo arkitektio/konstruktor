@@ -90,6 +90,9 @@ export const cancelInstall = () => invoke<void>("cancel_install");
 export const startEngine = (target: StartTarget) =>
   invoke<void>("start_engine", { target });
 
+/** Restarts Windows, a few seconds after it returns. Only after the user confirmed. */
+export const restartComputer = () => invoke<void>("restart_computer");
+
 /**
  * Whether git is on this machine. Deliberately its own probe rather than a field on the
  * Docker one: the remedies differ, and so does the consequence — no Docker means no

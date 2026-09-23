@@ -45,20 +45,28 @@ impl ServiceId {
     /// `get_buckets()` keys, in declaration order. The config field is `<purpose>_bucket`,
     /// and the order decides both the order buckets are created in `minio_init.yaml` and
     /// the order their routes appear in the Caddyfile — which is byte-compared.
+    ///
+    /// Read off what each service's GraphQL schema actually mounts from its vendored
+    /// `datalayer.mutations` — every upload or access grant resolves its bucket by purpose
+    /// and refuses one that is not configured — and not off the config models, which call
+    /// most buckets optional. Elektro's settings even dereference `parquet` on boot and
+    /// crash without it. Sparse stores live in `zarr`, so they need nothing of their own.
     pub fn bucket_purposes(self) -> &'static [&'static str] {
         match self {
-            ServiceId::Mikro => &["media", "zarr", "parquet", "bigfile"],
-            ServiceId::Elektro => &["media", "zarr"],
+            ServiceId::Mikro => &["media", "zarr", "parquet", "bigfile", "fabriks", "konnektion"],
+            ServiceId::Elektro => &["media", "zarr", "parquet", "bigfile"],
+            ServiceId::Kraph => &["media", "zarr", "bigfile"],
             _ => &["media"],
         }
     }
 
-    /// `_uses_datalayer`. A service that stores no objects itself still gets its buckets
-    /// created — it just receives no `datalayer` block, and upstream's models reject one.
+    /// Whether the service gets a `datalayer` block. The ones whose schema mounts a
+    /// datalayer mutation: Rekuest serves media uploads too. A service that stores no
+    /// objects itself still gets its bucket created, just no block.
     pub fn uses_datalayer(self) -> bool {
         matches!(
             self,
-            ServiceId::Mikro | ServiceId::Kraph | ServiceId::Elektro
+            ServiceId::Mikro | ServiceId::Kraph | ServiceId::Elektro | ServiceId::Rekuest
         )
     }
 }

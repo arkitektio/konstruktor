@@ -96,6 +96,8 @@ const HubSummary = () => {
     values.httpsPort,
     values.ssl,
     values.serviceOptions,
+    values.meshMode,
+    values.meshOnly,
   ]);
 
   return (
@@ -112,11 +114,18 @@ const HubSummary = () => {
           value: rekuestSummary(values.rekuestServer ?? "local"),
         },
         { label: "Services", value: (values.services ?? []).join(", ") || "none" },
-        { label: "Ports", value: `${values.httpPort} / ${values.httpsPort}` },
+        {
+          label: "Ports",
+          value: values.meshOnly
+            ? "none opened — mesh only"
+            : `${values.httpPort} / ${values.httpsPort}`,
+        },
         { label: "Storage", value: storageSummary(values.storage) },
         {
           label: "Advertised at",
-          value: advertisedAt(values.hosts ?? []),
+          value: values.meshOnly
+            ? "the mesh, and inside Docker for plugin apps"
+            : advertisedAt(values.hosts ?? []),
         },
         {
           label: "From source",
@@ -254,6 +263,7 @@ const toAnswers = (values: HubForm): HubAnswers => ({
   mesh_mode: values.meshMode,
   mesh_auth_key: values.meshAuthKey || null,
   mesh_coord_url: values.meshCoordUrl || null,
+  mesh_only: values.meshMode !== "none" && !!values.meshOnly,
   // The wizard writes the deployment and stops there. Starting it is the dashboard's
   // job, so the first `up` happens where its output and the container list already are.
   start: false,
@@ -278,6 +288,8 @@ export const HubWizard = () => {
   const { settings, setSettings } = useSettings();
 
   const [creating, setCreating] = useState<CreateState>(emptyCreateState);
+  /** Set when the done screen waits for a click rather than navigating on its own. */
+  const [createdId, setCreatedId] = useState<string | null>(null);
 
   const initialValues: HubForm = {
     dockerOk: false,
@@ -297,9 +309,12 @@ export const HubWizard = () => {
     globalAdmin: "admin",
     globalAdminPassword: "",
     hosts: [],
-    meshMode: "none",
+    // The mesh is how a hub is reached from beyond this network, and asking the
+    // coordination server for the key costs nothing — so it is where the step starts.
+    meshMode: "coordination",
     meshAuthKey: "",
     meshCoordUrl: "",
+    meshOnly: false,
     serviceOptions: {},
     storage: "docker-volumes",
   };
@@ -407,16 +422,6 @@ export const HubWizard = () => {
         }),
       },
       {
-        component: PortsStep,
-        meta: { label: "Ports", title: "Ports", icon: Plug },
-        validationSchema: z
-          .looseObject({ httpPort: port, httpsPort: port })
-          .refine((v) => v.httpPort !== v.httpsPort, {
-            error: "The two ports must differ",
-            path: ["httpsPort"],
-          }),
-      },
-      {
         component: StorageStep,
         meta: { label: "Storage", title: "Storage", icon: Database },
         validationSchema: z.looseObject({
@@ -424,15 +429,7 @@ export const HubWizard = () => {
         }),
       },
       {
-        component: HostsStep,
-        meta: { label: "Addresses", title: "Addresses", icon: Globe },
-        validationSchema: z.looseObject({
-          hosts: z
-            .array(z.looseObject({ host: z.string() }))
-            .min(1, "Pick at least one address — without one, nothing can find this hub"),
-        }),
-      },
-      {
+        // Before ports and addresses: mesh-only makes both of them moot.
         component: MeshStep,
         meta: { label: "Mesh", title: "Mesh", icon: Waypoints },
         validationSchema: z
@@ -440,11 +437,16 @@ export const HubWizard = () => {
             meshMode: z.enum(["none", "coordination", "manual"]),
             meshAuthKey: z.string(),
             meshCoordUrl: z.string(),
+            meshOnly: z.boolean(),
           })
           .refine(
             (v) => v.meshMode !== "manual" || v.meshAuthKey.trim().length > 0,
             { error: "Paste the mesh key, or pick another option", path: ["meshAuthKey"] }
           )
+          .refine((v) => !v.meshOnly || v.meshMode !== "none", {
+            error: "Mesh only needs a mesh to join",
+            path: ["meshMode"],
+          })
           .refine(
             (v) => {
               const url = v.meshCoordUrl.trim();
@@ -457,6 +459,29 @@ export const HubWizard = () => {
             },
             { error: "That does not look like a server address", path: ["meshCoordUrl"] }
           ),
+      },
+      {
+        component: PortsStep,
+        meta: { label: "Ports", title: "Ports", icon: Plug },
+        // A mesh-only hub publishes nothing on this machine.
+        enabled: (values) => !values.meshOnly,
+        validationSchema: z
+          .looseObject({ httpPort: port, httpsPort: port })
+          .refine((v) => v.httpPort !== v.httpsPort, {
+            error: "The two ports must differ",
+            path: ["httpsPort"],
+          }),
+      },
+      {
+        component: HostsStep,
+        meta: { label: "Addresses", title: "Addresses", icon: Globe },
+        // A mesh-only hub is advertised on the mesh and inside Docker, nowhere else.
+        enabled: (values) => !values.meshOnly,
+        validationSchema: z.looseObject({
+          hosts: z
+            .array(z.looseObject({ host: z.string() }))
+            .min(1, "Pick at least one address — without one, nothing can find this hub"),
+        }),
       },
       {
         component: HubSummary,
@@ -494,8 +519,12 @@ export const HubWizard = () => {
   const handleSubmit = async (values: HubForm) => {
     setCreating({ ...emptyCreateState, running: true });
 
-    const onEvent = (event: CreateEvent) =>
+    // Read once the call is over, which the state setter below cannot tell us.
+    let meshKey = false;
+    const onEvent = (event: CreateEvent) => {
+      if (event.event === "granted") meshKey = event.mesh_key;
       setCreating((previous) => reduceCreate(previous, event));
+    };
 
     try {
       await api.createHub(toAnswers(values), onEvent);
@@ -529,7 +558,11 @@ export const HubWizard = () => {
     const created = (await api.listDeployments()).find(
       (d) => d.path === values.path
     );
-    if (created) navigate(`/dashboard/${created.id}`);
+    if (!created) return;
+    // A mesh key expires 15 minutes after it was issued. The done screen says so, and
+    // navigating straight away would take that warning off screen before anyone read it.
+    if (meshKey) setCreatedId(created.id);
+    else navigate(`/dashboard/${created.id}`);
   };
 
   return (
@@ -591,7 +624,14 @@ export const HubWizard = () => {
                     {creating.cancelled ? "Stopping…" : "Cancel"}
                   </Button>
                 )
-              ) : creating.done ? null : (
+              ) : creating.done ? (
+                createdId && (
+                  <Button onClick={() => navigate(`/dashboard/${createdId}`)}>
+                    Open the dashboard
+                    <ArrowRight className="size-3.5" />
+                  </Button>
+                )
+              ) : (
                 // Stopped or failed. The answers are all still in the form, so the way
                 // out is back to Review rather than out of the wizard.
                 <Button onClick={() => setCreating(emptyCreateState)}>

@@ -414,7 +414,7 @@ pub async fn run(
                     path: destination.display().to_string(),
                     source,
                 })?;
-                let destination = std::fs::canonicalize(&destination)
+                let destination = crate::paths::canonical(&destination)
                     .unwrap_or(destination)
                     .to_string_lossy()
                     .to_string();
@@ -711,7 +711,7 @@ pub(crate) async fn resolve_source(dir: &Path, source: &DataSource) -> Result<Op
             if !path.is_dir() {
                 return Ok(None);
             }
-            let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            let absolute = crate::paths::canonical(path).unwrap_or_else(|_| path.clone());
             Ok(Some(absolute.to_string_lossy().to_string()))
         }
         DataSource::Volume(name) => {

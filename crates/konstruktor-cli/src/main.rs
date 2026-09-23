@@ -111,6 +111,41 @@ enum Command {
     Report(manage::ReportArgs),
     /// Check whether Docker is ready, and optionally fix it.
     Doctor(manage::DoctorArgs),
+
+    /// Report this hub's health to its coordination server, forever. What the stack's
+    /// `reporter` container runs; not for people.
+    #[command(hide = true)]
+    HubReport(HubReportArgs),
+}
+
+#[derive(clap::Args)]
+struct HubReportArgs {
+    /// Holds `hub_credentials.json` and `hub_config.yaml`.
+    #[arg(long, default_value = "/seed")]
+    seed: std::path::PathBuf,
+    /// Where the rotating refresh token is kept.
+    #[arg(long, default_value = "/state")]
+    state: std::path::PathBuf,
+    /// The gateway, as the stack's own network names it.
+    #[arg(long, default_value = konstruktor_core::hubhealth::GATEWAY_BASE)]
+    gateway: String,
+    /// The tailscale sidecar's LocalAPI socket. Absent on a hub without a mesh.
+    #[arg(long, default_value = konstruktor_core::hubhealth::TAILSCALE_SOCKET)]
+    tailscale_socket: std::path::PathBuf,
+}
+
+async fn hub_report(args: HubReportArgs) -> anyhow::Result<()> {
+    use konstruktor_core::hubhealth::{run, ReporterConfig};
+    let config = ReporterConfig {
+        seed_dir: args.seed,
+        state_dir: args.state,
+        gateway: args.gateway,
+        tailscale_socket: args.tailscale_socket,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    // Plain lines on stdout: this is read through `docker compose logs`, not a terminal.
+    run(&config, &|line| println!("{line}")).await?;
+    Ok(())
 }
 
 #[derive(Subcommand)]
@@ -165,7 +200,7 @@ fn classify(error: &anyhow::Error) -> i32 {
             // An engine's claim failing is the same kind of failure as a hub's, and a
             // script branching on the exit code should not have to tell them apart.
             CreateError::AppAuthorization(_) => exit::AUTHORIZATION,
-            CreateError::Folder(_) => exit::USAGE,
+            CreateError::Folder(_) | CreateError::Answers(_) => exit::USAGE,
             _ => exit::FAILURE,
         };
     }
@@ -213,6 +248,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Report(args) => manage::report(args).await,
         Command::Backup(args) => manage::backup(args).await,
         Command::Restore(args) => manage::restore(args).await,
+        Command::HubReport(args) => hub_report(args).await,
     }
 }
 

@@ -54,6 +54,16 @@ http:// {
 		reverse_proxy rustfs:9000
 	}
 
+	@mikrofabriks path /mikrofabriks*
+	handle @mikrofabriks { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikrokonnektion path /mikrokonnektion*
+	handle @mikrokonnektion { 
+		reverse_proxy rustfs:9000
+	}
+
 	@flussmedia path /flussmedia*
 	handle @flussmedia { 
 		reverse_proxy rustfs:9000
@@ -61,6 +71,16 @@ http:// {
 
 	@kraphmedia path /kraphmedia*
 	handle @kraphmedia { 
+		reverse_proxy rustfs:9000
+	}
+
+	@kraphzarr path /kraphzarr*
+	handle @kraphzarr { 
+		reverse_proxy rustfs:9000
+	}
+
+	@kraphbigfile path /kraphbigfile*
+	handle @kraphbigfile { 
 		reverse_proxy rustfs:9000
 	}
 

@@ -34,13 +34,17 @@ fn jwks_issuer(iss: &str, jwks_uri: &str) -> Value {
     ])
 }
 
-/// The coordination server's verification keys, at the base route.
+/// The coordination server's verification keys, where they are actually served.
 ///
-/// The keys are served from the server's own root — `https://<server>/.well-known/
-/// jwks.json` — not from behind the `/lok/` prefix Lok is mounted under. A grant that
-/// still hands back the `/lok/` URL is therefore pointing at a 404, and a service that
-/// cannot fetch the key set rejects every token it is given, so the authority is taken
-/// from the granted URL and the path is replaced rather than trusted.
+/// Older grants handed back `https://<server>/lok/.well-known/jwks.json`, which is a
+/// 404: that well-known is served from the server's root, not from behind the `/lok/`
+/// prefix. A service that cannot fetch the key set rejects every token it is given, so
+/// that one shape — a well-known behind a prefix — is moved to the root.
+///
+/// Anything else is taken as granted. Current servers hand back Lok's own key route,
+/// `https://<server>/lok/o/jwks/`, which is served where it says and anchored to the
+/// issuer; rewriting it to the root well-known only kept working because that route is
+/// kept for older hubs.
 fn jwks_at_base(url: &str) -> String {
     let (scheme, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (scheme, rest),
@@ -48,6 +52,9 @@ fn jwks_at_base(url: &str) -> String {
         // scheme, since guessing at its shape would be worse than passing it through.
         None => return format!("https://{}/{JWKS_PATH}", url.trim_matches('/')),
     };
+    if !rest.ends_with(JWKS_PATH) {
+        return url.to_string();
+    }
     let authority = rest.split('/').next().unwrap_or(rest);
     format!("{scheme}://{authority}/{JWKS_PATH}")
 }
@@ -123,8 +130,18 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
     map(pairs)
 }
 
+/// The role the datalayer assumes for its scoped sessions. See [`build_datalayer`].
+pub const DATALAYER_ROLE_ARN: &str = "arn:aws:iam::000000000000:role/datalayer";
+
 fn build_datalayer(config: &HubConfig, id: ServiceId, service: &ServiceBlock) -> Value {
     let mut pairs = vec![
+        // Every upload and download grant is an STS session scoped by an inline policy,
+        // and the services refuse to issue one without a role to assume — falling back to
+        // their own unscoped key only if told to, which is for development. RustFS, like
+        // MinIO, ignores the ARN itself; any ARN-shaped string does, and this is the one
+        // the services' own example configs use.
+        ("role_arn", s(DATALAYER_ROLE_ARN)),
+        ("session_duration_seconds", Value::from(3600)),
         ("access_key", s(&config.minio.access_key)),
         ("secret_key", s(&config.minio.secret_key)),
         ("host", s(&config.minio.host)),
@@ -133,17 +150,7 @@ fn build_datalayer(config: &HubConfig, id: ServiceId, service: &ServiceBlock) ->
         ("region", s("us-east-1")),
     ];
 
-    // Kept as owned strings so the borrows outlive the loop.
-    let buckets: Vec<(&str, String)> = id
-        .bucket_purposes()
-        .iter()
-        .filter_map(|purpose| {
-            service
-                .bucket(purpose)
-                .map(|b| (*purpose, b.bucket_name.clone()))
-        })
-        .collect();
-
+    let buckets = service.bucket_names(id);
     for (purpose, name) in &buckets {
         pairs.push((purpose, map(vec![("bucket", s(name))])));
     }
@@ -316,6 +323,11 @@ mod tests {
         assert_eq!(
             jwks_at_base("coord.example.org"),
             "https://coord.example.org/.well-known/jwks.json"
+        );
+        // Lok's own key route, which current servers grant, is served where it says.
+        assert_eq!(
+            jwks_at_base("https://go.arkitekt.live/lok/o/jwks/"),
+            "https://go.arkitekt.live/lok/o/jwks/"
         );
     }
 }

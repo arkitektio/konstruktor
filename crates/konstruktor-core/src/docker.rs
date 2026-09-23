@@ -12,7 +12,7 @@
 //! `compose`.
 
 use std::collections::HashMap;
-use std::fs::canonicalize;
+use crate::paths::canonical as canonicalize;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 

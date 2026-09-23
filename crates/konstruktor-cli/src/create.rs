@@ -56,9 +56,15 @@ pub struct CreateArgs {
     /// Ignored when `--host` is given, which says exactly what to advertise.
     #[arg(long, default_value = "this-network", value_parser = crate::parse_reach)]
     pub reach: hosts::ReachPresetId,
-    /// none · coordination · manual
-    #[arg(long, default_value = "none", value_parser = crate::parse_mesh_mode)]
+    /// none · coordination · manual. By default the hub asks the coordination server for
+    /// a key to join the organization's mesh.
+    #[arg(long, default_value = "coordination", value_parser = crate::parse_mesh_mode)]
     pub mesh: MeshMode,
+    /// Reach the hub over the mesh only: no port is opened on this machine and no
+    /// address on its networks is advertised — just the tailnet node, and the gateway's
+    /// name on the docker network for plugin apps. Every client has to be on the mesh.
+    #[arg(long)]
+    pub mesh_only: bool,
     /// A pre-authorized key, for `--mesh manual`. Prefer KONSTRUKTOR_MESH_KEY.
     #[arg(long)]
     pub mesh_key: Option<String>,
@@ -141,7 +147,7 @@ pub async fn run(args: CreateArgs) -> Result<()> {
     // Load-bearing, and it has to happen before `HubAnswers` is built: the core hands
     // `answers.dir` straight to the registry, which compares paths as raw strings. A
     // relative path there would defeat the collision check and be recorded unusable.
-    let dir = std::fs::canonicalize(requested).with_context(|| format!("resolving {requested}"))?;
+    let dir = konstruktor_core::paths::canonical(requested).with_context(|| format!("resolving {requested}"))?;
 
     if profile::holds_a_hub(&dir) {
         bail!(
@@ -184,8 +190,19 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         None => konstruktor_core::catalog::default_services(),
     };
 
+    if args.mesh_only && args.mesh == MeshMode::None {
+        bail!("`--mesh-only` needs a mesh — drop `--mesh none`");
+    }
+
     // --- addresses ----------------------------------------------------------
-    let hosts = if args.hosts.is_empty() {
+    let hosts = if args.mesh_only {
+        // Nothing on this machine's networks is advertised; the manifest carries the
+        // tailnet node and the in-network gateway by itself.
+        if !args.hosts.is_empty() {
+            ui::warn("--host is ignored with --mesh-only: the hub is advertised on the mesh alone.");
+        }
+        Vec::new()
+    } else if args.hosts.is_empty() {
         // No tailnet identity to go on: the hub has not joined one yet, so any tailscale
         // address on this machine belongs to somebody else's and is not offered.
         let candidates = hosts::host_candidates(
@@ -269,6 +286,7 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         mesh_mode: args.mesh.clone(),
         mesh_auth_key: mesh_key,
         mesh_coord_url: args.mesh_coord_url.clone(),
+        mesh_only: args.mesh_only,
         start: !args.no_start,
         dev_hub: args.dev,
         dev_branch: args.dev_branch.clone(),
@@ -311,9 +329,15 @@ pub async fn run(args: CreateArgs) -> Result<()> {
     if answers.mesh_mode != MeshMode::None {
         if created.mesh_granted {
             ui::step(&ui::dim(
-                "A mesh key was granted. Once the stack is up, find the address the mesh \
-                 gave it and authorize again to advertise it.",
+                "A mesh key was granted. Once the stack is up, the hub joins the mesh and \
+                 the coordination server advertises its tailnet address.",
             ));
+            if !answers.start {
+                ui::warn(
+                    "The mesh key expires 15 minutes after it was issued. Run `konstruktor \
+                     up` before then, or authorize again for a fresh one.",
+                );
+            }
         } else {
             ui::warn("A mesh key was asked for, but the coordination server did not grant one.");
         }
@@ -400,15 +424,27 @@ fn summarise(answers: &HubAnswers) {
         ),
         (
             "advertised".into(),
-            answers
-                .hosts
-                .iter()
-                .map(|h| h.host.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
+            if answers.mesh_only {
+                "the mesh only — no ports opened here".into()
+            } else {
+                answers
+                    .hosts
+                    .iter()
+                    .map(|h| h.host.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
         ),
     ]);
     ui::say("");
+    if answers.mesh_only {
+        ui::warn(
+            "Mesh-only: every request goes through the mesh. Clients and apps on this \
+             network that are not on the mesh cannot reach the hub, and relayed tailnet \
+             traffic is slower than a direct connection.",
+        );
+        ui::say("");
+    }
 }
 
 fn parse_services(names: &[String]) -> Result<Vec<ServiceId>> {

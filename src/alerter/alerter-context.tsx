@@ -1,10 +1,14 @@
 import React, { useContext } from "react";
 
+import type { LogEntry } from "../compose-log";
+
 export type AlertingError = {
   error: string;
   message: string;
   subtitle: string;
   causedBy?: Error;
+  /** The command's output, shown under the message for reading what happened. */
+  log?: LogEntry[];
 };
 
 export type AlerterContext = {

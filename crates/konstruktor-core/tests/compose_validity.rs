@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions, ReporterBlock};
 use konstruktor_core::config::mesh::MeshOptions;
 use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
@@ -20,17 +20,24 @@ fn docker_compose_available() -> bool {
 }
 
 fn write_and_validate(mesh: Option<MeshOptions>, label: &str) {
+    write_and_validate_with(mesh, false, label)
+}
+
+fn write_and_validate_with(mesh: Option<MeshOptions>, reporter: bool, label: &str) {
     if !docker_compose_available() {
         eprintln!("skipping {label}: no docker compose on this machine");
         return;
     }
 
-    let config = build_hub_config(&HubConfigOptions {
+    let mut config = build_hub_config(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: "go.arkitekt.live".into(),
         mesh,
         ..Default::default()
     });
+    if reporter {
+        config.reporter = Some(ReporterBlock::default());
+    }
     let files = generate_hub_files(&config, &IssuedIdentity::default());
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(label);
@@ -65,5 +72,20 @@ fn docker_accepts_a_meshed_project() {
             coord_url: Some("https://mesh.example.org".into()),
         }),
         "meshed",
+    );
+}
+
+/// An authorized hub on a mesh: the reporter beside the gateway, sharing the sidecar's
+/// socket volume. The most moving parts the generator ever writes.
+#[test]
+fn docker_accepts_a_meshed_project_with_a_reporter() {
+    write_and_validate_with(
+        Some(MeshOptions {
+            hostname: "lab-hub".into(),
+            auth_key: "tskey-auth-EXAMPLE".into(),
+            coord_url: Some("https://mesh.example.org".into()),
+        }),
+        true,
+        "meshed-reporter",
     );
 }

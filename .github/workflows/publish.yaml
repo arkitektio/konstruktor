@@ -285,6 +285,47 @@ jobs:
           path: |
             konstruktor-${{ matrix.target }}*
 
+  # The image every authorized hub's `reporter` container runs. Built from the same static
+  # musl binaries as the CLI rather than compiled again, and tagged with the release
+  # version — generation pins the reporter to the Konstruktor that wrote the stack.
+  publish-image:
+    needs: [version, publish-cli]
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*-linux-musl
+          merge-multiple: true
+          path: image
+      - name: check both binaries are there
+        run: ls -l image/konstruktor-x86_64-unknown-linux-musl image/konstruktor-aarch64-unknown-linux-musl
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: image name
+        id: image
+        # GHCR refuses upper-case repository names.
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: image
+          file: docker/reporter.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ needs.version.outputs.version }}
+            ${{ steps.image.outputs.name }}:latest
+
   # One checksum file for the whole release: the installer refuses to install without it.
   publish-checksums:
     needs: [version, publish-cli]

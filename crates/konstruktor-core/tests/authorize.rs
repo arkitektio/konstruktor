@@ -176,6 +176,8 @@ async fn refuses_a_grant_that_carries_no_jwks_url() {
     );
 }
 
+/// The shape current coordination servers answer with: the JWKS URL under `self`, and
+/// `auth` holding the mesh key alone.
 #[tokio::test]
 async fn returns_the_envelope_and_any_mesh_key_with_it() {
     let server = server_with_well_known(json!({})).await;
@@ -185,9 +187,14 @@ async fn returns_the_envelope_and_any_mesh_key_with_it() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "token_type": "Bearer",
             "access_token": "eyJ",
+            "refresh_token": "rt-1",
             "client_id": "9c1d",
+            "self": {
+                "deployment_name": "coord",
+                "alias": {"id": "self", "ssl": true, "host": "coord.example.org", "port": null, "path": "lok"},
+                "jwks_url": "https://coord.example.org/lok/o/jwks/"
+            },
             "auth": {
-                "jwks_url": "https://coord.example.org/.well-known/jwks.json",
                 "ionscale_auth_key": "tskey-auth-minted",
                 "ionscale_coord_url": "https://mesh.example.org"
             }
@@ -203,14 +210,70 @@ async fn returns_the_envelope_and_any_mesh_key_with_it() {
     .await
     .expect("granted");
 
-    assert_eq!(
-        envelope.auth.jwks_url.as_deref(),
-        Some("https://coord.example.org/.well-known/jwks.json")
-    );
+    assert_eq!(envelope.jwks_url(), Some("https://coord.example.org/lok/o/jwks/"));
     assert_eq!(
         envelope.auth.ionscale_auth_key.as_deref(),
         Some("tskey-auth-minted")
     );
+    // `self` is a field, not an unknown extra.
+    assert!(!envelope.extra.contains_key("self"));
+}
+
+/// Servers from before `self` existed put the JWKS URL under `auth`; those still work.
+#[tokio::test]
+async fn still_reads_the_jwks_url_where_older_servers_put_it() {
+    let server = server_with_well_known(json!({})).await;
+    let grant = grant_for(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "client_id": "9c1d",
+            "auth": { "jwks_url": "https://coord.example.org/.well-known/jwks.json" }
+        })))
+        .mount(&server)
+        .await;
+
+    let envelope = konstruktor_core::connect::authorize::wait_for_hub(
+        &grant,
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("granted");
+
+    assert_eq!(
+        envelope.jwks_url(),
+        Some("https://coord.example.org/.well-known/jwks.json")
+    );
+}
+
+/// No mesh key granted: `auth` is absent altogether, never null — and that is not an
+/// error.
+#[tokio::test]
+async fn a_grant_without_auth_is_fine() {
+    let server = server_with_well_known(json!({})).await;
+    let grant = grant_for(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "client_id": "9c1d",
+            "self": { "jwks_url": "https://coord.example.org/lok/o/jwks/" }
+        })))
+        .mount(&server)
+        .await;
+
+    let envelope = konstruktor_core::connect::authorize::wait_for_hub(
+        &grant,
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("granted");
+    assert!(envelope.auth.ionscale_auth_key.is_none());
 }
 
 /// Ctrl-C during a poll interval used to land up to `interval` seconds late; the wait is

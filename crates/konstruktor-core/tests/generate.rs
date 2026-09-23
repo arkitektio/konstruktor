@@ -20,6 +20,15 @@ use serde_norway::Value;
 /// `RUSTFS_*` environment) and every image follows `latest`, where upstream still writes
 /// MinIO and channel tags. `jhnnsrs/init` 2.0.0 provisions only RustFS.
 ///
+/// A third, by hand as well: the datalayer, as the services read it today. Every block
+/// carries `role_arn` and `session_duration_seconds` — without a role the services refuse
+/// every upload and download grant; Rekuest gets a block of its own, since its schema
+/// serves media uploads; and every service has a bucket for each store its schema mounts
+/// a mutation for — mikro `fabriks` and `konnektion`, elektro `parquet` and `bigfile`,
+/// kraph `zarr` and `bigfile` — with their bucket entries and Caddy routes. The fixture
+/// profiles predate those buckets, so they also exercise the `<service><purpose>` fallback
+/// an older hub takes. See `ServiceId::bucket_purposes` and `build_datalayer`.
+///
 /// YAML is compared as *parsed structures*: PyYAML, the `yaml` npm package and
 /// `serde_norway` all render the same data differently (sequence indentation, quote
 /// style, block scalars for PEMs), and none of that is meaningful. The Caddyfile is not
@@ -269,6 +278,78 @@ mod mesh {
             .get("TS_EXTRA_ARGS")
             .is_none());
     }
+
+    /// The gateway has no name of its own inside the sidecar's namespace, so the sidecar
+    /// carries it — or plugin apps on the hub's network lose the gateway the moment a
+    /// hub joins a mesh.
+    #[test]
+    fn the_sidecar_answers_to_the_gateway_name() {
+        let config = meshed();
+        let compose = compose(&config);
+        let networks = &compose["services"]["tailscale"]["networks"];
+
+        for network in [config.internal_network.as_str(), "default"] {
+            assert_eq!(
+                networks[network]["aliases"],
+                serde_norway::from_str::<Value>("[gateway]").unwrap(),
+                "{network}"
+            );
+        }
+    }
+
+    /// An authorized hub reports its own health, from inside the stack. On a mesh it reads
+    /// the sidecar's socket for the name the tailnet gave it.
+    #[test]
+    fn an_authorized_hub_on_a_mesh_runs_a_reporter_that_can_see_the_sidecar() {
+        let mut config = meshed();
+        config.reporter = Some(konstruktor_core::config::hub::ReporterBlock::default());
+        let compose = compose(&config);
+
+        let reporter = &compose["services"]["reporter"];
+        assert_eq!(reporter["command"], serde_norway::from_str::<Value>("[hub-report]").unwrap());
+        let mounts: Vec<&str> = reporter["volumes"]
+            .as_sequence()
+            .expect("volumes")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(mounts.contains(&"./hub_credentials.json:/seed/hub_credentials.json:ro"), "{mounts:?}");
+        assert!(mounts.contains(&"./hub_config.yaml:/seed/hub_config.yaml:ro"), "{mounts:?}");
+        assert!(mounts.contains(&"reporter_state:/state"), "{mounts:?}");
+        assert!(mounts.contains(&"tailscale_socket:/var/run/tailscale:ro"), "{mounts:?}");
+
+        let sidecar = &compose["services"]["tailscale"];
+        assert_eq!(
+            sidecar["environment"]["TS_SOCKET"].as_str(),
+            Some("/var/run/tailscale/tailscaled.sock")
+        );
+        assert!(compose["volumes"].get("reporter_state").is_some());
+        assert!(compose["volumes"].get("tailscale_socket").is_some());
+    }
+
+    /// No reporter, no socket to share: a meshed hub that was never authorized is
+    /// generated exactly as before.
+    #[test]
+    fn the_socket_is_only_shared_with_a_reporter() {
+        let compose = compose(&meshed());
+        assert!(compose["services"].get("reporter").is_none());
+        assert!(compose["services"]["tailscale"]["environment"].get("TS_SOCKET").is_none());
+        assert!(compose["volumes"].get("tailscale_socket").is_none());
+    }
+
+    /// Mesh-only publishes nothing on the host: no ports on the sidecar, none on the
+    /// gateway, and no empty `ports:` left behind.
+    #[test]
+    fn a_mesh_only_hub_publishes_no_ports() {
+        let mut config = meshed();
+        config.gateway.exposed_http_port = None;
+        config.gateway.exposed_https_port = None;
+        config.mesh.as_mut().unwrap().mesh_only = true;
+
+        let compose = compose(&config);
+        assert!(compose["services"]["tailscale"].get("ports").is_none());
+        assert!(compose["services"]["gateway"].get("ports").is_none());
+    }
 }
 
 /// The dashboard joins the images a profile declares to the containers Docker reports, on
@@ -337,12 +418,34 @@ mod stack_images {
             .any(|(service, _)| service == "tailscale"));
     }
 
+    /// The reporter runs an image like everything else, so updates and rollbacks see it.
+    #[test]
+    fn the_reporter_is_reported_both_ways() {
+        let mut config = config_of("hub_config.yaml");
+        config.reporter = Some(konstruktor_core::config::hub::ReporterBlock::default());
+
+        let written = compose_service_names(&config);
+        assert!(written.contains(&"reporter".to_string()), "{written:?}");
+        assert!(config
+            .stack_images()
+            .iter()
+            .any(|(service, _)| service == "reporter"));
+
+        // And the way back: a pinned or rolled-back reporter image lands in the profile.
+        config.set_service_image("reporter", "ghcr.io/arkitektio/konstruktor:0.0.1");
+        assert_eq!(
+            config.reporter.as_ref().map(|r| r.image.as_str()),
+            Some("ghcr.io/arkitektio/konstruktor:0.0.1")
+        );
+    }
+
     /// Nothing in the stack runs without an image, so every service compose writes has to
     /// be accounted for — otherwise a whole container silently drops out of the update
     /// check.
     #[test]
     fn no_compose_service_is_left_unaccounted_for() {
-        let config = config_of("hub_config.yaml");
+        let mut config = config_of("hub_config.yaml");
+        config.reporter = Some(konstruktor_core::config::hub::ReporterBlock::default());
         let reported: Vec<String> = config
             .stack_images()
             .into_iter()

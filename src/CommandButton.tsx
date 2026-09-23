@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, ScrollText } from "lucide-react";
 import * as api from "./api";
 import type { ComposeAction } from "./api";
 import { Button } from "./components/ui/button";
@@ -10,6 +10,8 @@ import {
   newProgressState,
   type ComposeProgress,
 } from "./compose-progress";
+import { appendLine, errorLines, type LogEntry } from "./compose-log";
+import { ComposeLog } from "./components/ComposeLog";
 import { Input } from "./components/ui/input";
 import { useAlerter } from "./alerter/alerter-context";
 import { Popover, PopoverContent } from "./components/ui/popover";
@@ -45,30 +47,89 @@ export const useComposeAction = (props: ComposeButtonProps) => {
   const { alert } = useAlerter();
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ComposeProgress>(EMPTY_PROGRESS);
+  const [log, setLog] = useState<LogEntry[]>([]);
   const state = useRef(newProgressState());
+  // The log as of the last line, for the failure alert: state read in the catch below
+  // would be the value from when `run` started.
+  const latest = useRef<LogEntry[]>([]);
 
   const run = async () => {
     setRunning(true);
     state.current = newProgressState();
+    latest.current = [];
     setProgress(EMPTY_PROGRESS);
+    setLog([]);
     try {
-      await api.composeCommandStreamed(props.path, props.action, (line) =>
-        setProgress(advance(state.current, line, props.project))
-      );
+      await api.composeCommandStreamed(props.path, props.action, (line) => {
+        setProgress(advance(state.current, line, props.project));
+        latest.current = appendLine(latest.current, line);
+        setLog(latest.current);
+      });
       props.callback?.();
     } catch (error) {
+      const output = typeof error === "string" ? error : String(error);
+      const errors = errorLines(output);
+      // Nothing streamed — compose failed before it said anything — so the output
+      // that came back with the error is the whole log.
+      const shown =
+        latest.current.length > 0
+          ? latest.current
+          : output
+              .split(/\r?\n/)
+              .reduce((entries, line) => appendLine(entries, { line, stderr: true }), [] as LogEntry[]);
       alert({
-        error: `Error while running ${props.title}`,
-        message: typeof error === "string" ? error : String(error),
-        subtitle: "docker compose refused the command.",
+        error: `${props.title} failed`,
+        message: errors.length > 0 ? errors.join("\n") : output.trim().split(/\r?\n/).slice(-3).join("\n"),
+        subtitle: "docker compose stopped with an error. Its full output is below.",
+        log: shown,
       });
     } finally {
       setRunning(false);
     }
   };
 
-  return { run, running, progress };
+  return { run, running, progress, log };
 };
+
+/**
+ * "What is it doing?" while a command runs: the current step, which opens the live log.
+ * Clicks stop here, so a button inside a confirmation popover's trigger does not reopen
+ * the confirmation.
+ */
+export const LiveLogTrigger = ({
+  step,
+  log,
+  className,
+}: {
+  step: string | undefined;
+  log: LogEntry[];
+  className?: string;
+}) => (
+  <Popover>
+    <PopoverTrigger asChild>
+      <button
+        type="button"
+        onClick={(e) => e.stopPropagation()}
+        className={cn(
+          "inline-flex items-center gap-1 text-xs text-muted-foreground font-mono truncate max-w-[26ch]",
+          "underline decoration-dotted underline-offset-2 hover:text-foreground cursor-pointer",
+          className
+        )}
+        title="Show the output"
+      >
+        <ScrollText className="size-3 shrink-0" />
+        <span className="truncate">{step ?? "Show output"}</span>
+      </button>
+    </PopoverTrigger>
+    <PopoverContent
+      align="end"
+      className="w-[min(40rem,calc(100vw-2rem))] p-2"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <ComposeLog entries={log} />
+    </PopoverContent>
+  </Popover>
+);
 
 /**
  * The button while its command runs: a fill creeping in from the left edge for how far
@@ -82,6 +143,7 @@ const ProgressButton = ({
   runningTitle,
   running,
   progress,
+  log,
   onClick,
   variant,
 }: {
@@ -89,18 +151,12 @@ const ProgressButton = ({
   runningTitle?: string;
   running: boolean;
   progress: ComposeProgress;
+  log: LogEntry[];
   onClick?: () => void;
   variant?: "default" | "destructive";
 }) => (
   <span className="inline-flex items-center gap-2 min-w-0">
-    {running && progress.step && (
-      <span
-        className="hidden sm:inline text-xs text-muted-foreground font-mono truncate max-w-[26ch]"
-        title={`${progress.done} of ${progress.total}`}
-      >
-        {progress.step}
-      </span>
-    )}
+    {running && <LiveLogTrigger step={progress.step} log={log} className="hidden sm:inline-flex" />}
     <Button
       variant={variant}
       onClick={onClick}
@@ -136,7 +192,7 @@ const ProgressButton = ({
 );
 
 export const CommandButton = (props: ComposeButtonProps) => {
-  const { run, running, progress } = useComposeAction(props);
+  const { run, running, progress, log } = useComposeAction(props);
 
   return (
     <ProgressButton
@@ -144,6 +200,7 @@ export const CommandButton = (props: ComposeButtonProps) => {
       runningTitle={props.runningTitle}
       running={running}
       progress={progress}
+      log={log}
       onClick={() => void run()}
     />
   );
@@ -155,7 +212,7 @@ export const DangerousCommandButton = (
     confirmDescription?: string;
   }
 ) => {
-  const { run, running, progress } = useComposeAction(props);
+  const { run, running, progress, log } = useComposeAction(props);
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -166,6 +223,7 @@ export const DangerousCommandButton = (
             runningTitle={props.runningTitle}
             running={running}
             progress={progress}
+            log={log}
             onClick={() => setOpen(true)}
           />
         </span>

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::fs::canonicalize;
+use konstruktor_core::paths::canonical as canonicalize;
 use std::sync::Mutex;
 
 use konstruktor_core::connect::reachability;
@@ -710,8 +710,13 @@ async fn run_streamed(
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     // Plain, line-by-line narration. Without a TTY compose already avoids the redrawing
-    // progress UI; `--ansi never` also keeps colour codes out of the lines.
-    args.splice(1..1, ["--ansi".to_string(), "never".to_string()]);
+    // progress UI; `--ansi never` also keeps colour codes out of the lines. `--progress
+    // plain` adds each layer's download and extract steps, which is what a pull of several
+    // gigabytes is otherwise silent about for minutes — the panel folds those per layer.
+    args.splice(
+        1..1,
+        ["--ansi", "never", "--progress", "plain"].map(String::from),
+    );
 
     let engine = konstruktor_core::engine_probe::engine();
     let mut child = engine
@@ -1047,6 +1052,12 @@ pub async fn cancel_install(state: tauri::State<'_, InstallState>) -> Result<(),
 #[command]
 pub async fn start_engine(target: StartTarget) -> Result<(), String> {
     konstruktor_core::remedy::launch(target).await
+}
+
+/// Restarts Windows after an installer asked for it. The panel confirms first.
+#[command]
+pub async fn restart_computer() -> Result<(), String> {
+    konstruktor_core::remedy::restart_computer().await
 }
 
 // --- restore -----------------------------------------------------------------------

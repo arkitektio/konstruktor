@@ -4,11 +4,17 @@ buckets:
 - name: mikrozarr
 - name: mikroparquet
 - name: mikrobigfile
+- name: mikrofabriks
+- name: mikrokonnektion
 - name: flussmedia
 - name: elektromedia
 - name: elektrozarr
+- name: elektroparquet
+- name: elektrobigfile
 - name: alpakamedia
 - name: kraphmedia
+- name: kraphzarr
+- name: kraphbigfile
 users:
 - access_key: fixture-access-key-not-a-real-secret
   name: Default User

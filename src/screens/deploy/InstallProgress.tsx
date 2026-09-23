@@ -49,6 +49,11 @@ export type CreateState = {
    * which must not be shown as a failure.
    */
   cancelled: boolean;
+  /**
+   * A mesh key came back with the grant. It expires 15 minutes after it was minted, so
+   * the stack has to be started before then or the hub never joins the mesh.
+   */
+  meshKey: boolean;
 };
 
 export const emptyCreateState: CreateState = {
@@ -57,6 +62,7 @@ export const emptyCreateState: CreateState = {
   error: null,
   done: false,
   cancelled: false,
+  meshKey: false,
 };
 
 /**
@@ -74,6 +80,7 @@ export const reduceCreate = (previous: CreateState, event: CreateEvent): CreateS
         ? undefined
         : previous.staged,
   waiting: event.event === "waiting" ? event : previous.waiting,
+  meshKey: event.event === "granted" ? event.mesh_key : previous.meshKey,
   logs:
     event.event === "log"
       ? [...previous.logs, event.line]
@@ -166,6 +173,18 @@ export const InstallPanel = ({
     <div className="flex flex-col gap-4">
       {/* A cancelled run is not a failure, so its "Cancelled." is not shown in red. */}
       {state.error && !stopped && <Alert variant="destructive">{state.error}</Alert>}
+
+      {state.done && state.meshKey && (
+        <Alert>
+          <TriangleAlert />
+          <div>
+            <strong>Start the stack within 15 minutes.</strong> The mesh key that came with
+            the authorization is single-use and expires 15 minutes after it was issued. If
+            the stack first starts later, the hub cannot join the mesh — authorize it again
+            from the dashboard to get a fresh key.
+          </div>
+        </Alert>
+      )}
 
       {/* The one part a person has to act on. */}
       {staged && !state.done && !state.error && (

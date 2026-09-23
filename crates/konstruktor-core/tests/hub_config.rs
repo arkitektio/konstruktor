@@ -69,12 +69,25 @@ fn produces_the_same_shape_for_every_block() {
             .map(|id| id.as_str().to_string()),
     );
 
+    // Buckets the services' schemas need that the Python CLI does not seed yet — elektro's
+    // settings even dereference `parquet` on boot. See `ServiceId::bucket_purposes`.
+    let ahead_of_upstream = [
+        ("mikro", "fabriks_bucket"),
+        ("mikro", "konnektion_bucket"),
+        ("elektro", "parquet_bucket"),
+        ("elektro", "bigfile_bucket"),
+        ("kraph", "zarr_bucket"),
+        ("kraph", "bigfile_bucket"),
+    ];
+
     for block in blocks {
-        assert_eq!(
-            keys(&ours[&block]),
-            keys(&theirs[&block]),
-            "block `{block}` has a different shape"
-        );
+        let mut ours = keys(&ours[&block]);
+        for (service, key) in ahead_of_upstream {
+            if service == block {
+                ours.remove(key);
+            }
+        }
+        assert_eq!(ours, keys(&theirs[&block]), "block `{block}` has a different shape");
     }
 }
 

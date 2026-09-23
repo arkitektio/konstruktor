@@ -238,6 +238,11 @@ export type HubAnswers = {
   mesh_mode: MeshMode;
   mesh_auth_key?: string | null;
   mesh_coord_url?: string | null;
+  /**
+   * Reach the hub over the mesh and nothing else: no port is published, `hosts` is
+   * ignored, and only the tailnet node and the in-network gateway are advertised.
+   */
+  mesh_only?: boolean;
   start: boolean;
   /**
    * Every service's source, checked out and mounted into its container. The CLI's
@@ -425,6 +430,8 @@ export type HubConfigView = {
     exposed_https_port: number | null;
     ssl: boolean;
   };
+  /** Absent on a hub that never joined a mesh. */
+  mesh?: { enabled: boolean; hostname: string; mesh_only?: boolean } | null;
 };
 
 /**

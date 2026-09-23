@@ -19,7 +19,7 @@ serde_json.workspace = true
 serde_norway.workspace = true
 strip-ansi-escapes.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "rt", "macros", "process", "fs", "io-util"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "process", "fs", "io-util", "net"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

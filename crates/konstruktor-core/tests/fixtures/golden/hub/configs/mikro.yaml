@@ -35,6 +35,8 @@ authentikate:
       jwks_uri: http://rekuest:80/rekuest/.well-known/jwks.json
       kind: jwks_uri
 datalayer:
+  role_arn: arn:aws:iam::000000000000:role/datalayer
+  session_duration_seconds: 3600
   access_key: fixture-access-key-not-a-real-secret
   secret_key: fixture-secret-key-not-a-real-secret
   host: rustfs
@@ -49,3 +51,7 @@ datalayer:
     bucket: mikroparquet
   bigfile:
     bucket: mikrobigfile
+  fabriks:
+    bucket: mikrofabriks
+  konnektion:
+    bucket: mikrokonnektion

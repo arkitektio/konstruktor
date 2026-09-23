@@ -107,6 +107,8 @@ pub struct Prereqs {
     /// Homebrew, resolved to a path because a GUI app's `PATH` may not have it.
     pub brew: Option<PathBuf>,
     pub winget: Option<PathBuf>,
+    /// Rancher Desktop is installed on Windows, whether or not its CLI can be found.
+    pub rancher_desktop: bool,
 }
 
 impl Prereqs {
@@ -114,11 +116,12 @@ impl Prereqs {
         match platform {
             Platform::Macos => Prereqs {
                 brew: engine_probe::find_tool("brew"),
-                winget: None,
+                ..Prereqs::default()
             },
             Platform::Windows => Prereqs {
-                brew: None,
                 winget: engine_probe::find_tool("winget"),
+                rancher_desktop: !engine_probe::rancher_desktop_installs().is_empty(),
+                ..Prereqs::default()
             },
             _ => Prereqs::default(),
         }
@@ -135,6 +138,10 @@ pub enum InstallAction {
         title: &'static str,
         program: &'static str,
         args: Vec<&'static str>,
+        /// On Windows, when the program fails saying it needs administrator rights, run
+        /// the same command again through a UAC prompt. Only asked for when needed, so a
+        /// per-user install never sees the prompt.
+        elevate_if_denied: bool,
     },
     /// Put Homebrew's `docker-compose` where the `docker` CLI looks for plugins.
     LinkComposePlugin,
@@ -183,6 +190,7 @@ impl InstallerId {
                     title: "Installing Colima, the Docker CLI and Compose",
                     program: "brew",
                     args: vec!["install", "colima", "docker", "docker-compose"],
+                    elevate_if_denied: false,
                 },
                 InstallAction::LinkComposePlugin,
                 InstallAction::Launch(StartTarget::Colima),
@@ -192,6 +200,7 @@ impl InstallerId {
                     title: "Installing Compose",
                     program: "brew",
                     args: vec!["install", "docker-compose"],
+                    elevate_if_denied: false,
                 },
                 InstallAction::LinkComposePlugin,
             ],
@@ -207,6 +216,8 @@ impl InstallerId {
                         "--accept-package-agreements",
                         "--accept-source-agreements",
                     ],
+                    // Its WSL dependency, and the all-users MSI, need an administrator.
+                    elevate_if_denied: true,
                 },
                 InstallAction::Launch(StartTarget::RancherDesktop),
             ],
@@ -383,6 +394,18 @@ fn missing(platform: Platform, prereqs: &Prereqs) -> Vec<Remedy> {
                 ),
             ]
         }
+        // Installed, but no CLI to be found: Rancher Desktop only puts `docker` in place
+        // on its first start, or — for a per-user install — in `~/.rd/bin` once set up.
+        // Installing it again would not help.
+        Platform::Windows if prereqs.rancher_desktop => vec![remedy(
+            "Finish setting up Rancher Desktop",
+            "Rancher Desktop is installed, but its `docker` command line is not in place yet. Start it once and let it finish its first-run setup; this page picks it up by itself.",
+            vec![
+                start(StartTarget::RancherDesktop),
+                note("When it asks, choose dockerd (moby) as the container engine — Kubernetes can stay off."),
+                note("If it says WSL is missing or needs a restart, or it was just installed and nothing happens, restart Windows and open Konstruktor again."),
+            ],
+        )],
         Platform::Windows => {
             let mut rancher_steps = Vec::new();
             if prereqs.winget.is_some() {
@@ -527,6 +550,19 @@ fn no_daemon(brand: EngineBrand, kind: Option<EngineKind>, platform: Platform) -
             StartTarget::OrbStack,
             "OrbStack is installed but not running. Open it; the daemon comes up in a moment.",
         )],
+        EngineBrand::RancherDesktop if platform == Platform::Windows => {
+            let mut steps = Vec::new();
+            if StartTarget::RancherDesktop.launch(platform).is_some() {
+                steps.push(start(StartTarget::RancherDesktop));
+            }
+            steps.push(note("The first start sets up its WSL distribution and takes a few minutes. When it asks, choose dockerd (moby) as the container engine — Kubernetes can stay off. This page turns green by itself once the engine answers."));
+            steps.push(note("If Rancher Desktop says WSL is missing or needs an update, or it never gets past starting, restart Windows: a fresh WSL install only works after a restart."));
+            vec![remedy(
+                "Start Rancher Desktop",
+                "Rancher Desktop is installed, but its engine is not answering yet. Open it and wait until it reports the engine is up.",
+                steps,
+            )]
+        }
         EngineBrand::RancherDesktop => vec![started(
             StartTarget::RancherDesktop,
             "Rancher Desktop is installed but not running. Open it and wait until it reports the engine is up.",
@@ -633,15 +669,29 @@ mod tests {
     fn with_brew() -> Prereqs {
         Prereqs {
             brew: Some(PathBuf::from("/opt/homebrew/bin/brew")),
-            winget: None,
+            ..Prereqs::default()
         }
     }
 
     fn with_winget() -> Prereqs {
         Prereqs {
-            brew: None,
             winget: Some(PathBuf::from("winget")),
+            ..Prereqs::default()
         }
+    }
+
+    /// Installed but no CLI yet — the state right after winget, before a first start or
+    /// a restart. Offering the install again would only repeat it.
+    #[test]
+    fn installed_rancher_is_not_offered_again() {
+        let prereqs = Prereqs {
+            rancher_desktop: true,
+            ..with_winget()
+        };
+        let win = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Windows, &prereqs);
+        assert_eq!(win[0].title, "Finish setting up Rancher Desktop");
+        assert!(!has_installer(&win[0], InstallerId::WingetRancherDesktop));
+        assert!(win[0].steps.iter().any(|s| matches!(s, Step::StartEngine { target: StartTarget::RancherDesktop, .. })));
     }
 
     fn has_installer(remedy: &Remedy, id: InstallerId) -> bool {
@@ -725,6 +775,14 @@ mod tests {
             assert!(matches!(plan[0], InstallAction::Run { .. }));
             assert!(!id.command().is_empty());
         }
+    }
+
+    #[test]
+    fn winget_admin_failure_is_recognised() {
+        let out = "Installer failed with exit code: 0x80073d28 : The package installation failed because administrator privileges are required.";
+        assert!(needs_admin(1, out));
+        assert!(needs_admin(0x8007_3D28_u32 as i32, ""));
+        assert!(!needs_admin(1, "Installer hash does not match"));
     }
 }
 
@@ -820,6 +878,29 @@ pub async fn launch(target: StartTarget) -> Result<(), String> {
     Ok(())
 }
 
+/// Restarts Windows, for an installer that said it needs one before the engine can
+/// start. `shutdown` gives running programs a few seconds' notice; a standard user may
+/// restart their own workstation, so no elevation is involved.
+pub async fn restart_computer() -> Result<(), String> {
+    if Platform::current() != Platform::Windows {
+        return Err("Restarting from here is only supported on Windows".into());
+    }
+    // `p:4:2`: planned, application installation — what the event log files it under.
+    let status = crate::process::async_command("shutdown.exe")
+        .args(["/r", "/t", "5", "/d", "p:4:2", "/c", "Konstruktor: finishing the container engine install"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Windows refused to restart (exit code {})", status.code().unwrap_or(-1)))
+    }
+}
+
 async fn run_plan(
     plan: Vec<InstallAction>,
     platform: Platform,
@@ -844,6 +925,7 @@ async fn run_plan(
                 title,
                 program,
                 args,
+                elevate_if_denied,
             } => {
                 stage(title);
                 let program = resolve_program(program)?;
@@ -854,11 +936,30 @@ async fn run_plan(
                 cmd.env("NONINTERACTIVE", "1")
                     .env("HOMEBREW_NO_ENV_HINTS", "1")
                     .env("HOMEBREW_NO_AUTO_UPDATE", "1");
-                let (status, output) = stream(cmd, token, on_line).await?;
+                let (mut status, mut output) = stream(cmd, token, on_line).await?;
+                let mut elevated = false;
+                if cfg!(windows)
+                    && elevate_if_denied
+                    && status.is_some_and(|s| !s.success() && needs_admin(s.code().unwrap_or(-1), &output))
+                {
+                    stage("Asking Windows for administrator rights");
+                    (status, output) = stream_elevated(&program, &args, token, on_line).await?;
+                    elevated = true;
+                }
                 let Some(status) = status else {
                     return Ok(cancelled());
                 };
                 let code = status.code().unwrap_or(-1);
+                if elevated && code == ERROR_CANCELLED {
+                    return Ok(InstallOutcome {
+                        ok: false,
+                        needs_reboot,
+                        cancelled: false,
+                        message: Some(format!(
+                            "{title} needs administrator rights, and the prompt was declined"
+                        )),
+                    });
+                }
                 // winget's "installed, restart to finish" codes, and the word itself.
                 let restart_hinted = program.to_string_lossy().contains("winget")
                     && (code == 3010
@@ -991,6 +1092,102 @@ async fn stream(
         }
     };
 
+    Ok((status, collected))
+}
+
+/// `ERROR_CANCELLED`: what the elevation wrapper exits with when the UAC prompt is declined.
+const ERROR_CANCELLED: i32 = 1223;
+
+/// Whether a failed Windows installer failed for want of administrator rights. winget
+/// prints the package's HRESULT — `0x80073d28` for an MSIX dependency like WSL — along
+/// with a sentence saying so; either is enough.
+fn needs_admin(code: i32, output: &str) -> bool {
+    const APPX_NEEDS_ADMIN: i32 = 0x8007_3D28_u32 as i32;
+    let output = output.to_ascii_lowercase();
+    code == APPX_NEEDS_ADMIN
+        || output.contains("0x80073d28")
+        || output.contains("administrator privileges are required")
+        || output.contains("requires administrator")
+}
+
+/// Asks UAC to elevate `Start-Process -Verb RunAs`, and exits with the elevated command's
+/// code — or `ERROR_CANCELLED` when the prompt is declined. The command line comes in
+/// through the environment so none of it is parsed as PowerShell.
+const ELEVATE_PS: &str = "try { \
+    $p = Start-Process -FilePath $env:ComSpec -ArgumentList $env:KONSTRUKTOR_ELEVATED \
+         -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop; \
+    exit $p.ExitCode \
+} catch { exit 1223 }";
+
+/// Runs `program` elevated, streaming what it prints the way [`stream`] does.
+///
+/// An elevated process cannot write to a non-elevated parent's pipes, so its output goes
+/// to a log file in the temp directory and is tailed from there. Cancelling stops the
+/// wait, not the installer: a non-elevated process has no right to kill an elevated one.
+async fn stream_elevated(
+    program: &std::path::Path,
+    args: &[&str],
+    token: &CancellationToken,
+    on_line: &(dyn Fn(InstallLine) + Sync),
+) -> Result<(Option<std::process::ExitStatus>, String), String> {
+    let log = std::env::temp_dir().join(format!("konstruktor-elevated-{}.log", std::process::id()));
+    tokio::fs::write(&log, b"").await.map_err(|e| e.to_string())?;
+    // `/s` strips the outer pair of quotes and leaves the rest as written; every piece
+    // is a literal from `plan()` or a path we resolved, and no Windows path holds a `"`.
+    let command_line = format!(
+        "/d /s /c \"\"{}\" {} > \"{}\" 2>&1\"",
+        program.display(),
+        args.join(" "),
+        log.display()
+    );
+    let mut child = crate::process::async_command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", ELEVATE_PS])
+        .env("KONSTRUKTOR_ELEVATED", command_line)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let mut read = 0usize;
+    let mut pending = Vec::new();
+    let mut collected = String::new();
+    let mut emit = |raw: &[u8]| {
+        let line = clean(String::from_utf8_lossy(raw).trim_end_matches(['\r', '\n']));
+        if !line.trim().is_empty() {
+            collected.push_str(&line);
+            collected.push('\n');
+            on_line(InstallLine { line, stderr: false, stage: false });
+        }
+    };
+
+    let status = loop {
+        let exited = tokio::select! {
+            status = child.wait() => Some(status.map_err(|e| e.to_string())?),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => None,
+            _ = token.cancelled() => {
+                let _ = child.kill().await;
+                break None;
+            }
+        };
+        if let Ok(bytes) = tokio::fs::read(&log).await {
+            if bytes.len() > read {
+                pending.extend_from_slice(&bytes[read..]);
+                read = bytes.len();
+            }
+        }
+        while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+            let raw: Vec<u8> = pending.drain(..=end).collect();
+            emit(&raw);
+        }
+        if let Some(status) = exited {
+            emit(&std::mem::take(&mut pending));
+            break Some(status);
+        }
+    };
+
+    let _ = tokio::fs::remove_file(&log).await;
     Ok((status, collected))
 }
 

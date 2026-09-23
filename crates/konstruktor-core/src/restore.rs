@@ -903,7 +903,7 @@ async fn copy_back(
     step: &str,
     on_event: &(dyn Fn(BackupEvent) + Send + Sync),
 ) -> Result<(), RestoreError> {
-    let from = std::fs::canonicalize(from)
+    let from = crate::paths::canonical(from)
         .map_err(|source| RestoreError::Io {
             path: from.display().to_string(),
             source,
@@ -917,7 +917,7 @@ async fn copy_back(
                 path: path.display().to_string(),
                 source,
             })?;
-            std::fs::canonicalize(path)
+            crate::paths::canonical(path)
                 .unwrap_or_else(|_| path.clone())
                 .to_string_lossy()
                 .to_string()

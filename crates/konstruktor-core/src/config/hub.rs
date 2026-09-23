@@ -85,6 +85,10 @@ pub struct ServiceBlock {
     pub parquet_bucket: Option<LocalBucket>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bigfile_bucket: Option<LocalBucket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fabriks_bucket: Option<LocalBucket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub konnektion_bucket: Option<LocalBucket>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_config: Option<Kinded>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,8 +109,31 @@ impl ServiceBlock {
             "zarr" => self.zarr_bucket.as_ref(),
             "parquet" => self.parquet_bucket.as_ref(),
             "bigfile" => self.bigfile_bucket.as_ref(),
+            "fabriks" => self.fabriks_bucket.as_ref(),
+            "konnektion" => self.konnektion_bucket.as_ref(),
             _ => None,
         }
+    }
+
+    /// The bucket name for one of `id`'s purposes, falling back to `<service><purpose>`
+    /// when the profile does not name one.
+    ///
+    /// The fallback is what keeps an older hub working: a profile written before a service
+    /// gained a bucket has no entry for it, and a service whose settings dereference the
+    /// bucket crashes on boot without it. The name matches what a new profile is seeded
+    /// with, so regenerating an old hub gives the same stack a new one gets.
+    pub fn bucket_name(&self, id: ServiceId, purpose: &str) -> String {
+        self.bucket(purpose)
+            .map(|b| b.bucket_name.clone())
+            .unwrap_or_else(|| format!("{}{purpose}", id.as_str()))
+    }
+
+    /// Every bucket `id` declares, in `bucket_purposes()` order.
+    pub fn bucket_names(&self, id: ServiceId) -> Vec<(&'static str, String)> {
+        id.bucket_purposes()
+            .iter()
+            .map(|purpose| (*purpose, self.bucket_name(id, purpose)))
+            .collect()
     }
 }
 
@@ -228,6 +255,39 @@ impl OllamaBlock {
     }
 }
 
+/// The image the `reporter` container runs: this Konstruktor, as a CLI, in a container.
+/// Pinned to the version that generated the stack, so the reporter speaks the contract
+/// this build was written against.
+pub const REPORTER_IMAGE: &str = concat!("ghcr.io/arkitektio/konstruktor:", env!("CARGO_PKG_VERSION"));
+
+/// The container that reports the hub's health to its coordination server — see
+/// `crate::hubhealth`. Present once the hub has been authorized, since it logs in as
+/// the client that authorization created.
+///
+/// Like [`MeshBlock`] it is omitted entirely rather than written disabled: upstream's
+/// model has no key for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReporterBlock {
+    pub enabled: bool,
+    /// The compose service name.
+    pub host: String,
+    pub image: String,
+    /// Where the rotating refresh token is kept, so a restart does not fall back to the
+    /// stale one in `hub_credentials.json`.
+    pub volume_name: String,
+}
+
+impl Default for ReporterBlock {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            host: "reporter".into(),
+            image: REPORTER_IMAGE.into(),
+            volume_name: "reporter_state".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubConfig {
     pub alpaka: ServiceBlock,
@@ -259,6 +319,9 @@ pub struct HubConfig {
     pub minio: MinioBlock,
     pub rekuest: ServiceBlock,
     pub rekuest_server: String,
+    /// Present once the hub is authorized. See [`ReporterBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reporter: Option<ReporterBlock>,
     pub lovekit: ServiceBlock,
 }
 
@@ -338,6 +401,9 @@ impl HubConfig {
         if let Some(ollama) = self.local_ollama.as_ref().filter(|o| o.enabled) {
             images.push((ollama.host.clone(), ollama.image.clone()));
         }
+        if let Some(reporter) = self.reporter.as_ref().filter(|r| r.enabled) {
+            images.push((reporter.host.clone(), reporter.image.clone()));
+        }
         images
     }
 
@@ -379,6 +445,10 @@ impl HubConfig {
         }
         if let Some(ollama) = self.local_ollama.as_mut().filter(|o| o.host == service) {
             ollama.image = image.to_string();
+            return;
+        }
+        if let Some(reporter) = self.reporter.as_mut().filter(|r| r.host == service) {
+            reporter.image = image.to_string();
             return;
         }
         for id in self.enabled_services() {
@@ -478,6 +548,8 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         zarr_bucket: None,
         parquet_bucket: None,
         bigfile_bucket: None,
+        fabriks_bucket: None,
+        konnektion_bucket: None,
         ollama_config: None,
         ensured_repositories: None,
         provenance_issuer: None,
@@ -494,9 +566,17 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
             block.zarr_bucket = Some(LocalBucket::new("mikrozarr"));
             block.parquet_bucket = Some(LocalBucket::new("mikroparquet"));
             block.bigfile_bucket = Some(LocalBucket::new("mikrobigfile"));
+            block.fabriks_bucket = Some(LocalBucket::new("mikrofabriks"));
+            block.konnektion_bucket = Some(LocalBucket::new("mikrokonnektion"));
         }
         ServiceId::Elektro => {
             block.zarr_bucket = Some(LocalBucket::new("elektrozarr"));
+            block.parquet_bucket = Some(LocalBucket::new("elektroparquet"));
+            block.bigfile_bucket = Some(LocalBucket::new("elektrobigfile"));
+        }
+        ServiceId::Kraph => {
+            block.zarr_bucket = Some(LocalBucket::new("kraphzarr"));
+            block.bigfile_bucket = Some(LocalBucket::new("kraphbigfile"));
         }
         ServiceId::Kabinet => {
             block.ensured_repositories = Some(vec![
@@ -830,6 +910,9 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             internal_port: 6379,
         },
         mesh: options.mesh.as_ref().map(build_mesh_block),
+        // Added when the hub is authorized; a profile that never was has nothing to log
+        // in as.
+        reporter: None,
         minio: MinioBlock {
             access_key: generate_alpha_numeric_string(40),
             console_port: 9001,

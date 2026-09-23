@@ -36,12 +36,31 @@ pub struct HubGrant {
     pub interval: u64,
 }
 
+/// The mesh key, on the first device-code response only — and only when one was granted.
+/// A refresh never carries it, so it is taken from the grant once and kept.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HubAuthClaim {
-    /// Where the hub's services fetch the keys that verify inbound tokens.
+    /// Where older coordination servers put the JWKS URL. Current ones put it under
+    /// `self`; see [`HubEnvelope::jwks_url`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
+    #[serde(default)]
     pub ionscale_auth_key: Option<String>,
+    #[serde(default)]
     pub ionscale_coord_url: Option<String>,
+}
+
+/// What the coordination server says about itself, on every token response.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HubSelf {
+    #[serde(default)]
+    pub deployment_name: Option<String>,
+    /// The server's own alias. Kept as it came; nothing here reads into it.
+    #[serde(default)]
+    pub alias: Option<serde_json::Value>,
+    /// Where the hub's services fetch the keys that verify inbound tokens. Absolute.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
 }
 
 /// The token response with the hub envelope appended. `instances` and `clients` are keyed
@@ -57,6 +76,8 @@ pub struct HubEnvelope {
     #[serde(default)]
     pub scope: Option<String>,
     pub client_id: String,
+    #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
+    pub self_: Option<HubSelf>,
     #[serde(default)]
     pub auth: HubAuthClaim,
     #[serde(default)]
@@ -65,6 +86,18 @@ pub struct HubEnvelope {
     pub clients: BTreeMap<String, serde_json::Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl HubEnvelope {
+    /// The JWKS URL, wherever the server put it: under `self` now, under `auth` on
+    /// servers from before the two token responses were given one shape.
+    pub fn jwks_url(&self) -> Option<&str> {
+        self.self_
+            .as_ref()
+            .and_then(|s| s.jwks_url.as_deref())
+            .or(self.auth.jwks_url.as_deref())
+            .filter(|url| !url.is_empty())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,7 +266,7 @@ pub async fn wait_for_hub(
                 // `poll_once` accepts any 2xx as the envelope. A grant with no JWKS URL
                 // would produce services that trust nothing, so refuse it here rather
                 // than writing a deployment that cannot verify a single token.
-                if envelope.auth.jwks_url.is_none() {
+                if envelope.jwks_url().is_none() {
                     return Err(HubAuthorizationError::NoJwksUrl);
                 }
                 return Ok(*envelope);

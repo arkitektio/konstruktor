@@ -168,7 +168,7 @@ impl EngineBrand {
             return EngineBrand::Unknown;
         }
         if cfg!(windows) {
-            if at_home(".rd") {
+            if at_home(".rd") || !rancher_desktop_installs().is_empty() {
                 return EngineBrand::RancherDesktop;
             }
             let program_files =
@@ -198,11 +198,35 @@ pub struct Engine {
 impl Engine {
     /// A command for this engine, ready for `.args(…)`.
     pub fn command(&self) -> std::process::Command {
-        crate::process::command(&self.binary)
+        let mut cmd = crate::process::command(&self.binary);
+        if let Some(path) = self.child_path() {
+            cmd.env("PATH", path);
+        }
+        cmd
     }
 
     pub fn async_command(&self) -> tokio::process::Command {
-        crate::process::async_command(&self.binary)
+        let mut cmd = crate::process::async_command(&self.binary);
+        if let Some(path) = self.child_path() {
+            cmd.env("PATH", path);
+        }
+        cmd
+    }
+
+    /// `PATH` for the child, with the binary's own directory in front — when it was found
+    /// by absolute path rather than on `PATH`.
+    ///
+    /// The CLI runs its helpers by bare name: `docker-credential-wincred` for a
+    /// `credsStore`, `docker-credential-osxkeychain` on a Mac. They ship beside the binary,
+    /// in the directory our stale `PATH` did not have, so without this a pull fails with
+    /// "executable file not found in %PATH%" although everything is installed.
+    fn child_path(&self) -> Option<std::ffi::OsString> {
+        let dir = self.binary.parent().filter(|d| !d.as_os_str().is_empty())?;
+        let current = std::env::var_os("PATH").unwrap_or_default();
+        if std::env::split_paths(&current).any(|p| p == dir) {
+            return None;
+        }
+        std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&current))).ok()
     }
 }
 
@@ -291,6 +315,14 @@ fn candidates(name: &str) -> Vec<PathBuf> {
         if let Some(home) = dirs::home_dir() {
             dirs.push(home.join(".rd").join("bin"));
         }
+        // Rancher Desktop's own copy of the CLI. Its installer adds this directory to the
+        // machine `PATH`, which a Konstruktor started before the install never sees until
+        // the user signs out or restarts — though the engine itself already works.
+        dirs.extend(
+            rancher_desktop_installs()
+                .into_iter()
+                .map(|root| root.join("resources").join("resources").join("win32").join("bin")),
+        );
         if let Ok(program_files) = std::env::var("ProgramFiles") {
             dirs.push(
                 PathBuf::from(program_files)
@@ -324,6 +356,26 @@ fn candidates(name: &str) -> Vec<PathBuf> {
         }
         dirs.into_iter().map(|dir| dir.join(name)).collect()
     }
+}
+
+/// Where Rancher Desktop is installed on Windows: per user under `LocalAppData`, or for
+/// all users under `ProgramFiles` — winget picks the latter. Empty elsewhere, or when it
+/// is not installed.
+pub fn rancher_desktop_installs() -> Vec<PathBuf> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let mut roots = Vec::new();
+    if let Ok(base) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(base).join("Programs").join("Rancher Desktop"));
+    }
+    if let Ok(base) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(base).join("Rancher Desktop"));
+    }
+    roots
+        .into_iter()
+        .filter(|root| root.join("Rancher Desktop.exe").is_file())
+        .collect()
 }
 
 /// Finds the binary for one engine, or `None` if it is not installed.
@@ -527,5 +579,24 @@ mod tests {
         };
         assert_eq!(engine.binary.to_str(), Some("docker"));
         assert_eq!(engine.kind.label(), "Docker");
+    }
+
+    /// A binary found off `PATH` brings its directory along, so its credential helpers
+    /// resolve; one found on `PATH` leaves the environment alone.
+    #[test]
+    fn an_absolute_binary_puts_its_directory_first() {
+        let bare = Engine {
+            kind: EngineKind::Docker,
+            binary: PathBuf::from("docker"),
+        };
+        assert_eq!(bare.child_path(), None);
+
+        let dir = std::env::temp_dir().join("konstruktor-engine-bin");
+        let found = Engine {
+            kind: EngineKind::Docker,
+            binary: dir.join("docker"),
+        };
+        let path = found.child_path().expect("a PATH");
+        assert_eq!(std::env::split_paths(&path).next(), Some(dir));
     }
 }

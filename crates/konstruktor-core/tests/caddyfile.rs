@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use konstruktor_core::catalog::SERVICE_IDS;
+use konstruktor_core::config::hub::ServiceBlock;
 use konstruktor_core::generate::caddy::{build_caddyfile, CaddyService};
 use serde_norway::Value;
 
@@ -45,16 +46,13 @@ fn services_of(config: &Value) -> Vec<CaddyService<'_>> {
                 id,
                 host: str_at(config, id.as_str(), "host"),
                 internal_port: block["internal_port"].as_u64().expect("a port") as u16,
-                buckets: id
-                    .bucket_purposes()
-                    .iter()
-                    .filter_map(|purpose| {
-                        block
-                            .get(format!("{purpose}_bucket"))
-                            .and_then(|b| b.get("bucket_name"))
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
+                // Through the real lookup, so a bucket the fixture predates gets the same
+                // `<service><purpose>` fallback the generator gives an older hub.
+                buckets: serde_norway::from_value::<ServiceBlock>(block.clone())
+                    .expect("a service block")
+                    .bucket_names(id)
+                    .into_iter()
+                    .map(|(_, name)| name)
                     .collect(),
             }
         })

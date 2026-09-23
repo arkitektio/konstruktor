@@ -26,21 +26,31 @@ fn exclusive() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The registry lives in the platform data directory. Point every variable `dirs` reads at
-/// a scratch folder before anything touches it, so a test never reads or writes the real
-/// one.
+/// Points the registry at a scratch folder before anything touches it, so a test never
+/// reads or writes the real one.
+///
+/// Through the explicit override, not `APPDATA`/`HOME`/`XDG_DATA_HOME`: on Windows
+/// `dirs` ignores `APPDATA`, and these tests used to delete the machine's real registry
+/// there. The assertion makes a regression fail loudly instead of quietly doing it again.
 fn isolate() -> PathBuf {
     use std::sync::OnceLock;
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("konstruktor-reg-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("a scratch data directory");
-        std::env::set_var("XDG_DATA_HOME", &root);
-        std::env::set_var("HOME", &root);
-        std::env::set_var("APPDATA", &root);
-        root
-    })
-    .clone()
+    let root = ROOT
+        .get_or_init(|| {
+            let root =
+                std::env::temp_dir().join(format!("konstruktor-reg-{}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("a scratch data directory");
+            std::env::set_var(registry::DATA_DIR_ENV, &root);
+            root
+        })
+        .clone();
+    let path = registry::registry_path().expect("a registry path");
+    assert!(
+        path.starts_with(&root),
+        "refusing to touch a registry outside the scratch folder: {}",
+        path.display()
+    );
+    root
 }
 
 fn write_registry(text: &str) -> PathBuf {

@@ -40,7 +40,7 @@ impl HubCredentials {
     pub fn issued_identity(&self) -> IssuedIdentity {
         IssuedIdentity {
             issuer: self.issuer.clone(),
-            jwks_url: self.envelope.auth.jwks_url.clone(),
+            jwks_url: self.envelope.jwks_url().map(str::to_string),
         }
     }
 }

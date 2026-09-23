@@ -198,7 +198,7 @@ export const ConnectScreen: React.FC<{}> = () => {
           path: deployment.path,
           coordServer: server,
           identifier: identifier.trim(),
-          hosts: selected,
+          hosts: meshOnly ? [] : selected,
           // Only a confirmed probe. Marking an alias public invites the coordination
           // server to health check it, and one it cannot reach would look permanently
           // broken — so matching this machine's egress address is not enough.
@@ -241,6 +241,9 @@ export const ConnectScreen: React.FC<{}> = () => {
   }
 
   const busy = authorizing.running;
+  // A mesh-only hub advertises nothing on this machine's networks: the manifest carries
+  // its tailnet node and in-network gateway itself, so there are no addresses to pick.
+  const meshOnly = Boolean(status?.profile.config.mesh?.mesh_only);
 
   return (
     <>
@@ -261,7 +264,10 @@ export const ConnectScreen: React.FC<{}> = () => {
           <>
             <Button
               disabled={
-                selected.length === 0 || busy || !server || identifier.trim() === ""
+                (!meshOnly && selected.length === 0) ||
+                busy ||
+                !server ||
+                identifier.trim() === ""
               }
               onClick={connect}
             >
@@ -319,6 +325,13 @@ export const ConnectScreen: React.FC<{}> = () => {
             </StepField>
           </div>
 
+          {meshOnly ? (
+            <Alert className="max-w-2xl">
+              This hub is reached over the mesh only. It is advertised at its mesh name,
+              and inside Docker for plugin apps running next to it — nothing on this
+              machine's networks, so there are no addresses to pick.
+            </Alert>
+          ) : (
           <div>
             <div className="flex flex-row items-center justify-between max-w-2xl mb-3">
               <SectionHeading>Addresses</SectionHeading>
@@ -351,6 +364,7 @@ export const ConnectScreen: React.FC<{}> = () => {
               error={error}
             />
           </div>
+          )}
 
           <div>
             <SectionHeading>What will be advertised</SectionHeading>

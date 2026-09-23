@@ -43,6 +43,11 @@ export type HubForm = {
   meshAuthKey: string;
   meshCoordUrl: string;
   /**
+   * Reach the hub over the mesh alone. Skips the ports and addresses steps — nothing is
+   * published on this machine, and nothing on its networks is advertised.
+   */
+  meshOnly: boolean;
+  /**
    * What was asked of individual services under the gear on the services step: whether
    * each runs from a checkout of its source rather than its published image, and on
    * which branch. Only the services somebody touched are in here.

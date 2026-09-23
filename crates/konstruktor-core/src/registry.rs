@@ -57,9 +57,17 @@ impl RegistryFile {
     }
 }
 
+/// Overrides where the registry lives. Tests set it: `dirs::data_dir()` asks the shell
+/// for the known folder on Windows and ignores `APPDATA`, so pointing environment
+/// variables at a scratch folder does not keep a test away from the real registry there.
+pub const DATA_DIR_ENV: &str = "KONSTRUKTOR_DATA_DIR";
+
 /// Tauri's `BaseDirectory::AppData`: the platform data directory joined with the bundle
-/// identifier.
+/// identifier — unless [`DATA_DIR_ENV`] says otherwise.
 pub fn registry_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os(DATA_DIR_ENV).filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
     dirs::data_dir().map(|d| d.join(BUNDLE_IDENTIFIER))
 }
 
