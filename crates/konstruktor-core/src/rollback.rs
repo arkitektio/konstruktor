@@ -33,6 +33,8 @@ pub enum RollbackError {
     NothingToDo,
     #[error("{0}")]
     Write(#[from] std::io::Error),
+    #[error("{0}")]
+    Compose(String),
 }
 
 /// One service moving from the image it runs to the one it ran before.
@@ -145,6 +147,28 @@ pub async fn record_applied(dir: &Path) -> Result<(), RollbackError> {
         .map_err(|e| RollbackError::Profile(e.to_string()))?;
     lock::record(dir, &config, "rolled back", lock::now()).await?;
     Ok(())
+}
+
+/// The whole rollback, as both front ends run it: rewrite the profile, fetch and recreate
+/// each service that moves — `--no-deps`, nothing else is touched — and record the state
+/// it landed on.
+pub async fn run(
+    dir: &Path,
+    plan: &RollbackPlan,
+    on_line: &(dyn Fn(crate::compose::ComposeLine) + Send + Sync),
+) -> Result<(), RollbackError> {
+    apply(dir, plan)?;
+    for change in &plan.changes {
+        for argv in [
+            crate::compose::pull_service(&change.service),
+            crate::compose::up_service(&change.service),
+        ] {
+            crate::compose::run_streamed(dir, argv, on_line)
+                .await
+                .map_err(RollbackError::Compose)?;
+        }
+    }
+    record_applied(dir).await
 }
 
 #[cfg(test)]

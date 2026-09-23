@@ -305,6 +305,25 @@ export type EngineAnswers = {
   identifier: string;
   description?: string | null;
   start: boolean;
+  /** A hub's folder: the engine joins its network, so plugins reach it as `gateway`. */
+  hub?: string | null;
+  /** Join the mesh: plugins reach the hub the engine is bound to over the tailnet. */
+  mesh?: boolean;
+};
+
+/** An engine on the mesh: its tailnet name, and what its sidecar reports right now. */
+export type EngineMesh = {
+  hostname: string;
+  /** `null` while the sidecar is not running. */
+  live: { connected: boolean; hostname?: string; ipv4?: string } | null;
+};
+
+/** Which hub's network an engine joins; `null` from the backend when it joins none. */
+export type EngineAttachment = {
+  network: string;
+  /** The registered hub that owns the network — absent when none does any more. */
+  hub_name: string | null;
+  hub_path: string | null;
 };
 
 /**
@@ -357,6 +376,11 @@ export type ServiceView = {
   host: string;
   /** Where a browser reaches it through the gateway. */
   url: string;
+  /**
+   * Where this machine asks whether it is healthy — the same URL the restore's and the
+   * update's health checks use. `null` on a mesh-only hub, which publishes no port here.
+   */
+  health_url: string | null;
   /** The image the profile pins this service to, e.g. `jhnnsrs/rekuest:next`. */
   image: string | null;
   /** That image's tag on its own — the service's release channel. */
@@ -417,6 +441,83 @@ export type HubStatus = {
   channel: ChannelView;
   /** Where the database and object storage live. */
   storage: StorageMode;
+};
+
+/** What the infrastructure could move to; `updates::InfrastructureUpdates`. */
+export type InfrastructureUpdates = {
+  moved: string[];
+  advances: Advance[];
+};
+
+/** What a rollback would put back; `rollback::RollbackPlan`. */
+export type RollbackPlan = {
+  recorded_at: number;
+  reason: string;
+  changes: { service: string; from: string; to: string }[];
+  unrollable: string[];
+  warnings: string[];
+};
+
+/** A pin, and the version it could move to; `updates::Advance`. */
+export type Advance = { service: string; from: string; to: string };
+
+/** `updates::UpdateRequest`. */
+export type UpdateRequest = {
+  services: string[];
+  advances: Advance[];
+  pull: boolean;
+  backup_into: string | null;
+  health_check: boolean;
+};
+
+export type UpdateEvent =
+  | { event: "step"; title: string }
+  | { event: "line"; line: string; stderr: boolean }
+  | { event: "warning"; message: string }
+  | { event: "refused"; service: string; reason: string }
+  | { event: "updated"; service: string };
+
+export type UpdateReport = {
+  backup: string | null;
+  updated: string[];
+  refused: [string, string][];
+  health: ServiceHealth[] | null;
+};
+
+/** What a new hub is when nobody says otherwise; `konstruktor_core::defaults`. */
+export type Defaults = {
+  coordination_server: string;
+  services: ServiceId[];
+  http_port: number;
+  https_port: number;
+  reach: ReachPresetId;
+  mesh_mode: MeshMode;
+  mesh_only: boolean;
+  storage: StorageMode;
+  start: boolean;
+};
+
+/** One service, asked through one advertised address. */
+export type ServiceProbe = {
+  service: string;
+  url: string;
+  status: number | null;
+  healthy: boolean;
+  detail: string | null;
+};
+
+/**
+ * One address the hub advertises, and what every service said through it. `reachable`
+ * false means this machine could not connect at all — a limit of where the check runs,
+ * not a verdict on the hub — and `services` is empty.
+ */
+export type AliasProbe = {
+  host: string;
+  port: number;
+  kind: "advertised" | "mesh";
+  reachable: boolean;
+  detail: string | null;
+  services: ServiceProbe[];
 };
 
 /** Only the parts of the profile the UI reads; the rest round-trips untouched. */

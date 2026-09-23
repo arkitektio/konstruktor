@@ -1,4 +1,4 @@
-import { Loader2, RefreshCw, ScrollText } from "lucide-react";
+import { Loader2, Radio, RefreshCw, ScrollText } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
@@ -19,6 +19,25 @@ export const Logs: React.FC<{
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  /** Streaming new lines as they are written — `konstruktor logs --follow`. */
+  const [following, setFollowing] = useState(false);
+
+  useEffect(() => {
+    if (!following) return;
+    setError(null);
+    setLogs([]);
+    // A follow starts from the last 200 lines, like the reload, and keeps the screen to
+    // the last 2000 so a chatty service cannot grow it without bound.
+    api
+      .followLogs(deployment.path, { service, tail: 200 }, (line) =>
+        setLogs((current) => [...current, line.line].slice(-2000))
+      )
+      .catch((e) => setError(typeof e === "string" ? e : String(e)))
+      .finally(() => setFollowing(false));
+    return () => {
+      void api.stopFollowingLogs();
+    };
+  }, [following, deployment.path, service]);
 
   const reload = useCallback(() => {
     setRunning(true);
@@ -56,15 +75,25 @@ export const Logs: React.FC<{
           title="Logs"
           subtitle={service ? `${deployment.name} · ${service}` : deployment.name}
           actions={
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={running}
-              onClick={() => reload()}
-            >
-              <RefreshCw className={cn("size-3.5", running && "animate-spin")} />
-              {running ? "Reading…" : "Reload"}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant={following ? "default" : "outline"}
+                size="sm"
+                onClick={() => setFollowing((on) => !on)}
+              >
+                <Radio className={cn("size-3.5", following && "animate-pulse")} />
+                {following ? "Following" : "Follow"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={running || following}
+                onClick={() => reload()}
+              >
+                <RefreshCw className={cn("size-3.5", running && "animate-spin")} />
+                {running ? "Reading…" : "Reload"}
+              </Button>
+            </div>
           }
         />
         {error && (

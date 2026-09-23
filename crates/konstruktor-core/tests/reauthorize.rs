@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
 use konstruktor_core::connect::authorize::HubAuthorizationError;
 use konstruktor_core::connect::manifest::AdvertisedHost;
-use konstruktor_core::create::{reauthorize, CreateError, CreateEvent, ReauthorizeAnswers};
+use konstruktor_core::create::{
+    reauthorize, CreateError, CreateEvent, MeshKeyRequest, ReauthorizeAnswers,
+};
 use konstruktor_core::hosts::HostCategory;
 use konstruktor_core::profile::{self, hub_profile, write_profile};
 use serde_json::json;
@@ -89,7 +91,7 @@ fn answers(dir: &Path, server: &MockServer) -> ReauthorizeAnswers {
             kind: HostCategory::Fqdn,
         }],
         reachable_hosts: Vec::new(),
-        request_auth_key: false,
+        mesh_key: MeshKeyRequest::Never,
     }
 }
 
@@ -133,17 +135,22 @@ async fn coordination_server(token: ResponseTemplate) -> MockServer {
 }
 
 /// The person at the browser pressed Accept. The response is the current shape: the JWKS
-/// URL under `self`, and `auth` present only when it has a mesh key in it.
-fn accepted(auth: serde_json::Value) -> ResponseTemplate {
+/// URL and whose login this is under `self`, and `mesh` present only when it has a key.
+fn accepted(mesh: serde_json::Value) -> ResponseTemplate {
     let mut body = json!({
         "token_type": "Bearer",
         "access_token": "eyJ",
         "refresh_token": "rt-1",
         "client_id": "9c1d",
-        "self": { "jwks_url": "https://coord.example.org/.well-known/jwks.json" },
+        "self": {
+            "jwks_url": "https://coord.example.org/.well-known/jwks.json",
+            "sub": "2",
+            "organization": "3",
+            "hub": "50"
+        },
     });
-    if auth.as_object().is_some_and(|a| !a.is_empty()) {
-        body["auth"] = auth;
+    if mesh.as_object().is_some_and(|a| !a.is_empty()) {
+        body["mesh"] = mesh;
     }
     ResponseTemplate::new(200).set_body_json(body)
 }
@@ -179,13 +186,14 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
     let server = coordination_server(accepted(json!({}))).await;
     let events = std::sync::Mutex::new(Vec::new());
 
-    let credentials = reauthorize(
+    let done = reauthorize(
         &answers(&dir, &server),
         &CancellationToken::new(),
         &collect(&events),
     )
     .await
     .expect("the hub is authorized");
+    let credentials = &done.credentials;
 
     assert_eq!(credentials.identifier, "lab-hub");
     assert_eq!(
@@ -219,10 +227,10 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Asking for a mesh key is the reason `authorize` exists a second time: the tailnet
-/// address only exists once the hub has joined, and joining needs the key.
+/// A hub that is not on a mesh asks for a key by default, and a granted one becomes its
+/// mesh block.
 #[tokio::test]
-async fn a_granted_mesh_key_lands_in_the_profile() {
+async fn a_hub_off_the_mesh_asks_for_a_key_and_keeps_it() {
     let dir = a_hub();
     let server = coordination_server(accepted(json!({
         "ionscale_auth_key": "tskey-auth-minted",
@@ -231,11 +239,14 @@ async fn a_granted_mesh_key_lands_in_the_profile() {
     .await;
 
     let mut wanted = answers(&dir, &server);
-    wanted.request_auth_key = true;
+    wanted.mesh_key = MeshKeyRequest::Auto;
 
-    reauthorize(&wanted, &CancellationToken::new(), &|_| {})
+    let done = reauthorize(&wanted, &CancellationToken::new(), &|_| {})
         .await
         .expect("the hub is authorized");
+    assert!(done.mesh_requested);
+    assert!(done.mesh_granted);
+    assert!(done.reporter_enabled);
 
     let profile = profile::read_profile(&dir).expect("the profile still reads");
     let mesh = profile.config.mesh.expect("a mesh block was written");
@@ -243,8 +254,26 @@ async fn a_granted_mesh_key_lands_in_the_profile() {
     assert_eq!(mesh.auth_key, "tskey-auth-minted");
     assert_eq!(mesh.hostname, "lab-hub");
     assert_eq!(mesh.coord_url.as_deref(), Some("https://mesh.example.org"));
+    // The key belongs to the login that was granted; the node's state is kept under it.
+    assert_eq!(mesh.login.as_deref(), Some("2-3-50"));
     // The grant carried a refresh token, so the hub can report its own health now.
     assert!(profile.config.reporter.is_some(), "no reporter after authorization");
+
+    // And asked again next time: which login that grant is only shows once accepted.
+    let server = coordination_server(accepted(json!({
+        "ionscale_auth_key": "tskey-auth-second",
+        "ionscale_coord_url": "https://mesh.example.org"
+    })))
+    .await;
+    let mut again = answers(&dir, &server);
+    again.mesh_key = MeshKeyRequest::Auto;
+    let done = reauthorize(&again, &CancellationToken::new(), &|_| {})
+        .await
+        .expect("the hub is authorized again");
+    assert!(done.mesh_requested);
+    let mesh = profile::read_profile(&dir).unwrap().config.mesh.unwrap();
+    assert_eq!(mesh.auth_key, "tskey-auth-second");
+    assert_eq!(mesh.login.as_deref(), Some("2-3-50"));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -265,8 +294,42 @@ async fn a_mesh_key_that_was_not_requested_is_not_written() {
     let profile = profile::read_profile(&dir).expect("the profile still reads");
     assert!(
         profile.config.mesh.is_none(),
-        "a mesh block appeared without --request-auth-key"
+        "a mesh block appeared although no key was asked for"
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A mesh-only hub publishes no port, so an address on this machine's networks is never
+/// advertised for it — whoever passed one. A fresh key keeps it mesh-only.
+#[tokio::test]
+async fn a_mesh_only_hub_advertises_no_host_and_stays_mesh_only() {
+    let dir = a_hub();
+    let mut profile = profile::read_profile(&dir).unwrap();
+    let mut block = konstruktor_core::config::mesh::build_mesh_block(
+        &konstruktor_core::config::mesh::MeshOptions {
+            hostname: "lab-hub".into(),
+            auth_key: "tskey-auth-old".into(),
+            coord_url: None,
+            login: None,
+        },
+    );
+    block.mesh_only = true;
+    profile.config.mesh = Some(block);
+    write_profile(&dir, &profile).unwrap();
+
+    let server = coordination_server(accepted(json!({ "ionscale_auth_key": "tskey-auth-fresh" }))).await;
+    let mut wanted = answers(&dir, &server);
+    wanted.mesh_key = MeshKeyRequest::Fresh;
+
+    let done = reauthorize(&wanted, &CancellationToken::new(), &|_| {})
+        .await
+        .expect("the hub is authorized");
+
+    assert!(done.credentials.advertised_hosts.is_empty(), "{:?}", done.credentials.advertised_hosts);
+    let mesh = profile::read_profile(&dir).unwrap().config.mesh.expect("a mesh block");
+    assert_eq!(mesh.auth_key, "tskey-auth-fresh");
+    assert!(mesh.mesh_only, "a fresh key must not undo mesh-only");
 
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -154,6 +154,20 @@ pub fn save(registry: &RegistryFile) -> std::io::Result<()> {
     std::fs::write(dir.join(REGISTRY_FILENAME), json)
 }
 
+/// Stops listing a deployment. Nothing on disk is touched — and nothing needs to exist
+/// there: a record whose folder is gone is exactly the one worth forgetting. Answers
+/// whether there was such a record.
+pub fn forget(id: &str) -> std::io::Result<bool> {
+    let mut store = load();
+    let before = store.deployments.len();
+    store.deployments.retain(|d| d.id != id);
+    let found = store.deployments.len() != before;
+    if found {
+        save(&store)?;
+    }
+    Ok(found)
+}
+
 pub fn normalize_path(path: &str) -> String {
     path.trim_end_matches(['/', '\\']).to_string()
 }

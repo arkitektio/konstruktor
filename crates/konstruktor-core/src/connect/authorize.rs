@@ -38,8 +38,10 @@ pub struct HubGrant {
 
 /// The mesh key, on the first device-code response only — and only when one was granted.
 /// A refresh never carries it, so it is taken from the grant once and kept.
+///
+/// Sent as `mesh`; servers before the rename sent it as `auth`, which is still read.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HubAuthClaim {
+pub struct HubMeshGrant {
     /// Where older coordination servers put the JWKS URL. Current ones put it under
     /// `self`; see [`HubEnvelope::jwks_url`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,7 +52,8 @@ pub struct HubAuthClaim {
     pub ionscale_coord_url: Option<String>,
 }
 
-/// What the coordination server says about itself, on every token response.
+/// What the coordination server says about itself, and about whom it issued the grant
+/// to, on every token response.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HubSelf {
     #[serde(default)]
@@ -61,6 +64,47 @@ pub struct HubSelf {
     /// Where the hub's services fetch the keys that verify inbound tokens. Absolute.
     #[serde(default)]
     pub jwks_url: Option<String>,
+    /// The user who accepted the grant — the token's `sub`.
+    #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
+    pub sub: Option<String>,
+    /// The organization it was accepted into — the token's `org`.
+    #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    /// The hub's primary key on the server — not the identifier the token's `hub` claim
+    /// carries.
+    #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
+    pub hub: Option<String>,
+}
+
+impl HubSelf {
+    /// Who a grant is a login of: `sub-organization-hub`, filename-safe. A mesh node's
+    /// saved state belongs to one login; `None` from servers that do not say. The same
+    /// for a hub's grant and an app's — for an app, `hub` is the hub it is bound to.
+    pub fn login(&self) -> Option<String> {
+        let part = |p: &Option<String>| -> Option<String> {
+            let p = p.as_deref()?;
+            Some(
+                p.chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect(),
+            )
+        };
+        Some(format!(
+            "{}-{}-{}",
+            part(&self.sub)?,
+            part(&self.organization)?,
+            part(&self.hub)?
+        ))
+    }
+}
+
+/// A primary key, whether the server sends it as a string or a number.
+fn id_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    })
 }
 
 /// The token response with the hub envelope appended. `instances` and `clients` are keyed
@@ -78,8 +122,14 @@ pub struct HubEnvelope {
     pub client_id: String,
     #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
     pub self_: Option<HubSelf>,
+    /// Read through [`HubEnvelope::mesh_grant`], which also looks under `auth`.
     #[serde(default)]
-    pub auth: HubAuthClaim,
+    pub mesh: HubMeshGrant,
+    /// Where servers before the rename sent the same thing. A field of its own rather than
+    /// an alias: credentials saved in between carry both keys, and an alias would reject
+    /// them as a duplicate `mesh`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<HubMeshGrant>,
     #[serde(default)]
     pub instances: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -95,8 +145,21 @@ impl HubEnvelope {
         self.self_
             .as_ref()
             .and_then(|s| s.jwks_url.as_deref())
-            .or(self.auth.jwks_url.as_deref())
+            .or(self.auth.as_ref().and_then(|a| a.jwks_url.as_deref()))
             .filter(|url| !url.is_empty())
+    }
+
+    /// The mesh key and control server, under `mesh` now or `auth` on older servers.
+    pub fn mesh_grant(&self) -> &HubMeshGrant {
+        match &self.auth {
+            Some(legacy) if self.mesh.ionscale_auth_key.is_none() => legacy,
+            _ => &self.mesh,
+        }
+    }
+
+    /// Who this grant is a login of; see [`HubSelf::login`].
+    pub fn login(&self) -> Option<String> {
+        self.self_.as_ref()?.login()
     }
 }
 

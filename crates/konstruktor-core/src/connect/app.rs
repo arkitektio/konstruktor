@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::authorize::{WaitProgress, DEVICE_CODE_GRANT_TYPE};
+use super::authorize::{HubMeshGrant, HubSelf, WaitProgress, DEVICE_CODE_GRANT_TYPE};
 use super::wellknown::{base_url, discover, CoordinationServerError};
 
 /// What can go wrong claiming an app.
@@ -61,6 +61,11 @@ pub enum AppAuthorizationError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceCodeStartRequest {
     pub manifest: AppManifest,
+    /// Ask for a mesh key with the grant. Beside the manifest, never in it: the server
+    /// hashes the manifest for redeem, and this is a request about one grant, not part of
+    /// what the app is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub request_auth_key: bool,
 }
 
 /// What an app says about itself when it asks to be let in.
@@ -129,11 +134,30 @@ pub struct AppEnvelope {
     pub client_id: String,
     #[serde(default)]
     pub client_secret: Option<String>,
+    /// Who accepted the grant, into which organization, bound to which hub.
+    #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
+    pub self_: Option<HubSelf>,
+    /// The mesh key, on this first response only and only when one was asked for and
+    /// granted — the same shape a hub's grant carries it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<HubMeshGrant>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl AppEnvelope {
+    /// The granted mesh key and its control server, when there is a key.
+    pub fn mesh_key(&self) -> Option<(&str, Option<&str>)> {
+        let mesh = self.mesh.as_ref()?;
+        let key = mesh.ionscale_auth_key.as_deref().filter(|k| !k.is_empty())?;
+        Some((key, mesh.ionscale_coord_url.as_deref()))
+    }
+
+    /// Who this grant is a login of; see [`HubSelf::login`].
+    pub fn login(&self) -> Option<String> {
+        self.self_.as_ref()?.login()
+    }
+
     /// What the token endpoint actually sent, for the error raised when the one field
     /// that matters is not among it.
     pub fn declared_fields(&self) -> String {
@@ -157,10 +181,11 @@ impl AppEnvelope {
     }
 }
 
-/// Stage a device code for an app.
+/// Stage a device code for an app, asking for a mesh key with it when `request_auth_key`.
 pub async fn start(
     server: &str,
     manifest: &AppManifest,
+    request_auth_key: bool,
 ) -> Result<AppGrant, AppAuthorizationError> {
     let well_known = discover(server).await?;
     let endpoint = well_known.app_device_endpoint().ok_or_else(|| {
@@ -176,6 +201,7 @@ pub async fn start(
         .header("Accept", "application/json")
         .json(&DeviceCodeStartRequest {
             manifest: manifest.clone(),
+            request_auth_key,
         })
         .send()
         .await?;
@@ -324,6 +350,7 @@ mod tests {
     fn the_manifest_is_posted_as_a_field_not_as_the_body() {
         let body = serde_json::to_value(DeviceCodeStartRequest {
             manifest: manifest(),
+            request_auth_key: false,
         })
         .expect("serializes");
 
@@ -335,5 +362,55 @@ mod tests {
             body.get("identifier").is_none(),
             "the manifest's own keys must not sit at the top level"
         );
+        // Not asked for, not sent.
+        assert!(body.get("request_auth_key").is_none());
+    }
+
+    /// The mesh key request sits beside the manifest — the server hashes the manifest for
+    /// redeem, so inside it the request would change what the app is.
+    #[test]
+    fn a_mesh_key_is_asked_for_beside_the_manifest() {
+        let body = serde_json::to_value(DeviceCodeStartRequest {
+            manifest: manifest(),
+            request_auth_key: true,
+        })
+        .unwrap();
+        assert_eq!(body["request_auth_key"], serde_json::Value::Bool(true));
+        assert!(body["manifest"].get("request_auth_key").is_none());
+    }
+
+    /// The first app grant as lok sends it: `self` and, when a key was granted, `mesh`.
+    #[test]
+    fn reads_the_mesh_key_and_login_off_an_app_grant() {
+        let envelope: AppEnvelope = serde_json::from_value(serde_json::json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "refresh_token": "rt",
+            "client_id": "7c7e",
+            "self": {
+                "deployment_name": "test",
+                "jwks_url": "https://go.arkitekt.live/lok/o/jwks/",
+                "sub": "2", "organization": "9", "hub": "48"
+            },
+            "instances": {},
+            "statuses": {},
+            "mesh": {
+                "ionscale_auth_key": "key",
+                "ionscale_coord_url": "https://mesh.arkitekt.live"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            envelope.mesh_key(),
+            Some(("key", Some("https://mesh.arkitekt.live")))
+        );
+        assert_eq!(envelope.login().as_deref(), Some("2-9-48"));
+        assert!(!envelope.extra.contains_key("mesh"));
+
+        let refreshed: AppEnvelope = serde_json::from_value(serde_json::json!({
+            "token_type": "Bearer", "access_token": "eyJ", "client_id": "7c7e"
+        }))
+        .unwrap();
+        assert_eq!(refreshed.mesh_key(), None);
     }
 }

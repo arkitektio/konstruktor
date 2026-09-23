@@ -748,7 +748,16 @@ pub async fn run(
 
     // --- 6. start -----------------------------------------------------------------------
     step("start", "Starting the hub");
-    backup::compose_streamed(dir, &["up", "-d"], "start", &forward).await?;
+    let narrate = |line: crate::compose::ComposeLine| {
+        on_event(RestoreEvent::Line {
+            step: "start".into(),
+            line: line.line,
+            stderr: line.stderr,
+        })
+    };
+    crate::start::start(dir, &narrate)
+        .await
+        .map_err(|e| RestoreError::Engine(e.to_string()))?;
 
     // --- 7. and see whether it works --------------------------------------------------
     step("health", "Checking that the services answer");

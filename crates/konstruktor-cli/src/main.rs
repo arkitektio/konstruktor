@@ -1,4 +1,5 @@
 mod authorize;
+mod compose_cmd;
 mod coord;
 mod create;
 mod engine;
@@ -111,6 +112,11 @@ enum Command {
     Report(manage::ReportArgs),
     /// Check whether Docker is ready, and optionally fix it.
     Doctor(manage::DoctorArgs),
+    /// Ask every service through every address the hub advertises, from this machine.
+    Gateway(manage::Target),
+    /// The compose file by hand: show, validate, edit, reset to the generated one.
+    #[command(subcommand)]
+    Compose(compose_cmd::ComposeCommand),
 
     /// Report this hub's health to its coordination server, forever. What the stack's
     /// `reporter` container runs; not for people.
@@ -164,6 +170,10 @@ enum CoordCommand {
 enum EngineCommand {
     /// Create a plugin engine.
     Create(Box<engine::EngineCreateArgs>),
+    /// Join a hub's network, so the engine and its plugins reach it from inside Docker.
+    Attach(engine::EngineAttachArgs),
+    /// Leave the hub's network; plugins run on the engine's own network again.
+    Detach(engine::EngineDetachArgs),
 }
 
 /// Exit codes, so a script can tell the failures apart.
@@ -174,17 +184,39 @@ mod exit {
     pub const AUTHORIZATION: i32 = 4;
 }
 
-#[tokio::main]
-async fn main() {
+/// The runtime runs on a thread of its own, with room to spare.
+///
+/// `run` is one state machine holding every command's, so it is as large as the largest —
+/// creating a hub, authorizing it, an update with its backup and health check — and an
+/// unoptimized build builds it on the stack before it can be moved anywhere. Windows gives
+/// the main thread 1 MiB, which that outgrew: `status` overflowed before it printed a line.
+const STACK: usize = 16 * 1024 * 1024;
+
+fn main() {
     let cli = Cli::parse();
 
-    let code = match run(cli).await {
-        Ok(()) => 0,
-        Err(error) => {
-            ui::fail(&format!("{error:#}"));
-            classify(&error)
-        }
-    };
+    let code = std::thread::Builder::new()
+        .name("konstruktor".into())
+        .stack_size(STACK)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK)
+                .build()
+                .expect("a tokio runtime");
+            runtime.block_on(async {
+                match run(cli).await {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        ui::fail(&format!("{error:#}"));
+                        classify(&error)
+                    }
+                }
+            })
+        })
+        .expect("the main thread")
+        .join()
+        .unwrap_or(exit::FAILURE);
     std::process::exit(code);
 }
 
@@ -200,6 +232,8 @@ fn classify(error: &anyhow::Error) -> i32 {
             // An engine's claim failing is the same kind of failure as a hub's, and a
             // script branching on the exit code should not have to tell them apart.
             CreateError::AppAuthorization(_) => exit::AUTHORIZATION,
+            // After the grant, not before it: the coordination server said no to the mesh.
+            CreateError::NoMeshKey | CreateError::EngineNoMeshKey => exit::AUTHORIZATION,
             CreateError::Folder(_) | CreateError::Answers(_) => exit::USAGE,
             _ => exit::FAILURE,
         };
@@ -221,6 +255,10 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
+        Command::Engine(EngineCommand::Attach(args)) => {
+            engine::attach(args.engine, Some(args.hub)).await
+        }
+        Command::Engine(EngineCommand::Detach(args)) => engine::attach(args.engine, None).await,
         Command::Coord(CoordCommand::Create(args)) => coord::run(*args).await,
         Command::Authorize(args) => authorize::run(*args).await,
         Command::Checkout(args) => manage::checkout(&args),
@@ -239,7 +277,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Rollback(args) => manage::rollback(args, json).await,
         Command::Ps(target) => manage::ps(&target, json).await,
         Command::Logs(args) => manage::logs(args),
-        Command::Superuser(args) => manage::superuser(args),
+        Command::Superuser(args) => manage::superuser(args).await,
         Command::Restart(args) => manage::restart(args).await,
         Command::Open(args) => manage::open(args),
         Command::Destroy(args) => manage::destroy(args),
@@ -249,6 +287,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Backup(args) => manage::backup(args).await,
         Command::Restore(args) => manage::restore(args).await,
         Command::HubReport(args) => hub_report(args).await,
+        Command::Gateway(target) => manage::gateway(&target, json).await,
+        Command::Compose(command) => compose_cmd::run(command).await,
     }
 }
 

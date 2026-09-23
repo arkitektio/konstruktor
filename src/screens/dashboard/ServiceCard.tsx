@@ -125,14 +125,34 @@ export const ServiceCard = ({
     progressState.current = newProgressState();
     setProgress(EMPTY_PROGRESS);
     try {
-      await api.updateService(
+      const report = await api.updateService(
         deployment.path,
         service.host,
         Boolean(needsPull),
-        (line) =>
-          setProgress(advance(progressState.current, line, deployment.project))
+        (event) => {
+          if (event.event === "line") {
+            setProgress(advance(progressState.current, event, deployment.project));
+          }
+        }
       );
       onUpdated();
+      // The core recreates the container and then asks whether it answers — a migration
+      // that fails leaves it restarting while compose reports success.
+      const refused = report.refused.find(([name]) => name === service.host);
+      const sick = report.health?.find((h) => h.service === service.host && !h.healthy);
+      if (refused) {
+        alert({
+          error: `${service.name} was not updated`,
+          message: refused[1],
+          subtitle: "The running container was left alone.",
+        });
+      } else if (sick) {
+        alert({
+          error: `${service.name} was updated, but does not answer`,
+          message: sick.detail,
+          subtitle: "Its logs say why; rollback puts the previous image back.",
+        });
+      }
     } catch (error) {
       alert({
         error: `Could not update ${service.name}`,
@@ -156,7 +176,7 @@ export const ServiceCard = ({
       )}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <HealthDot url={stackUp ? service.url : undefined} />
+        <HealthDot url={stackUp ? service.health_url : undefined} />
         <div className="text-sm font-medium truncate flex-1" title={service.host}>
           {service.name}
         </div>

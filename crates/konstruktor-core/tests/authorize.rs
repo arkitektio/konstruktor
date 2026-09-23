@@ -177,7 +177,7 @@ async fn refuses_a_grant_that_carries_no_jwks_url() {
 }
 
 /// The shape current coordination servers answer with: the JWKS URL under `self`, and
-/// `auth` holding the mesh key alone.
+/// `mesh` holding the mesh key alone.
 #[tokio::test]
 async fn returns_the_envelope_and_any_mesh_key_with_it() {
     let server = server_with_well_known(json!({})).await;
@@ -192,9 +192,12 @@ async fn returns_the_envelope_and_any_mesh_key_with_it() {
             "self": {
                 "deployment_name": "coord",
                 "alias": {"id": "self", "ssl": true, "host": "coord.example.org", "port": null, "path": "lok"},
-                "jwks_url": "https://coord.example.org/lok/o/jwks/"
+                "jwks_url": "https://coord.example.org/lok/o/jwks/",
+                "sub": "2",
+                "organization": "3",
+                "hub": 50
             },
-            "auth": {
+            "mesh": {
                 "ionscale_auth_key": "tskey-auth-minted",
                 "ionscale_coord_url": "https://mesh.example.org"
             }
@@ -212,11 +215,72 @@ async fn returns_the_envelope_and_any_mesh_key_with_it() {
 
     assert_eq!(envelope.jwks_url(), Some("https://coord.example.org/lok/o/jwks/"));
     assert_eq!(
-        envelope.auth.ionscale_auth_key.as_deref(),
+        envelope.mesh_grant().ionscale_auth_key.as_deref(),
         Some("tskey-auth-minted")
     );
-    // `self` is a field, not an unknown extra.
+    // Whose login this is — a number or a string, the same key either way.
+    assert_eq!(envelope.login().as_deref(), Some("2-3-50"));
+    // `self` and `mesh` are fields, not unknown extras.
     assert!(!envelope.extra.contains_key("self"));
+    assert!(!envelope.extra.contains_key("mesh"));
+}
+
+/// Credentials saved by a build from before the rename, against a server from after it,
+/// carry both keys: that build's own empty `auth`, and the server's `mesh` passed through.
+/// They must still load, with the key found under `mesh`.
+#[test]
+fn credentials_saved_with_both_auth_and_mesh_still_load() {
+    let envelope: konstruktor_core::connect::authorize::HubEnvelope =
+        serde_json::from_value(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "client_id": "9c1d",
+            "auth": { "ionscale_auth_key": null, "ionscale_coord_url": null },
+            "mesh": {
+                "ionscale_auth_key": "tskey-auth-passed-through",
+                "ionscale_coord_url": "https://mesh.example.org"
+            }
+        }))
+        .expect("both keys load");
+    assert_eq!(
+        envelope.mesh_grant().ionscale_auth_key.as_deref(),
+        Some("tskey-auth-passed-through")
+    );
+    // Saved again, only `auth` from the old build survives beside `mesh`, never twice.
+    let saved = serde_json::to_value(&envelope).unwrap();
+    assert!(saved.get("mesh").is_some());
+}
+
+/// Servers from before the rename sent the mesh key as `auth`; it is still read.
+#[tokio::test]
+async fn still_reads_a_mesh_key_sent_as_auth() {
+    let server = server_with_well_known(json!({})).await;
+    let grant = grant_for(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "client_id": "9c1d",
+            "self": { "jwks_url": "https://coord.example.org/lok/o/jwks/" },
+            "auth": { "ionscale_auth_key": "tskey-auth-old-shape" }
+        })))
+        .mount(&server)
+        .await;
+
+    let envelope = konstruktor_core::connect::authorize::wait_for_hub(
+        &grant,
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("granted");
+    assert_eq!(
+        envelope.mesh_grant().ionscale_auth_key.as_deref(),
+        Some("tskey-auth-old-shape")
+    );
+    // Nor did that server say whose login it was.
+    assert_eq!(envelope.login(), None);
 }
 
 /// Servers from before `self` existed put the JWKS URL under `auth`; those still work.
@@ -249,7 +313,7 @@ async fn still_reads_the_jwks_url_where_older_servers_put_it() {
     );
 }
 
-/// No mesh key granted: `auth` is absent altogether, never null — and that is not an
+/// No mesh key granted: `mesh` is absent altogether, never null — and that is not an
 /// error.
 #[tokio::test]
 async fn a_grant_without_auth_is_fine() {
@@ -273,7 +337,7 @@ async fn a_grant_without_auth_is_fine() {
     )
     .await
     .expect("granted");
-    assert!(envelope.auth.ionscale_auth_key.is_none());
+    assert!(envelope.mesh_grant().ionscale_auth_key.is_none());
 }
 
 /// Ctrl-C during a poll interval used to land up to `interval` seconds late; the wait is

@@ -27,6 +27,7 @@ fn main() {
         .manage(tray::TrayState::default())
         .manage(cmd::InstallState::default())
         .manage(cmd::AuthorizeState::default())
+        .manage(cmd::FollowState::default())
         .setup(|app| {
             tray::init(app.handle())?;
 
@@ -59,12 +60,20 @@ fn main() {
             cmd::host_candidates,
             cmd::egress_identity,
             cmd::probe_reachability,
-            cmd::update_service,
+            cmd::gateway_check,
+            cmd::defaults,
+            cmd::mesh_hostname,
+            cmd::apply_update,
+            cmd::rollback_plan,
+            cmd::infrastructure_updates,
+            cmd::follow_logs,
+            cmd::stop_following_logs,
+            cmd::default_backup_folder,
+            cmd::rollback_apply,
             report::bug_report,
             cmd::create_hub,
             cmd::preview_hub_files,
             cmd::discover_server,
-            cmd::mesh_domain,
             cmd::suggest_folder,
             cmd::identifier_from_folder,
             cmd::inspect_folder,
@@ -77,6 +86,9 @@ fn main() {
             cmd::service_catalog,
             cmd::create_superuser,
             cmd::create_engine,
+            cmd::engine_attachment,
+            cmd::attach_engine,
+            cmd::engine_mesh,
             cmd::reauthorize_hub,
             cmd::compose_command,
             cmd::compose_command_streamed,

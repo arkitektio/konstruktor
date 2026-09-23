@@ -7,8 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ui;
 
-const DEFAULT_COORDINATION_SERVER: &str = "go.arkitekt.live";
-
 /// `konstruktor engine create`: the second path, next to `hub create`.
 ///
 /// Far fewer questions than a hub, because an engine is one container: no services, no
@@ -28,6 +26,15 @@ pub struct EngineCreateArgs {
     pub identifier: Option<String>,
     #[arg(long)]
     pub description: Option<String>,
+    /// Join this hub's network (a name or a path), so the engine and the plugins it
+    /// starts reach the hub from inside Docker.
+    #[arg(long)]
+    pub hub: Option<String>,
+    /// Put the engine on the mesh, so the plugins it starts reach the hub it is bound to
+    /// over the tailnet — from this machine or any other. A mesh key is asked for with
+    /// the authorization; the engine is not written if none is granted.
+    #[arg(long)]
+    pub mesh: bool,
     /// Write it, but leave it stopped.
     #[arg(long)]
     pub no_start: bool,
@@ -63,12 +70,14 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
     let server = args
         .server
         .clone()
-        .unwrap_or_else(|| DEFAULT_COORDINATION_SERVER.to_string());
+        .unwrap_or_else(|| konstruktor_core::defaults::COORDINATION_SERVER.to_string());
 
     let identifier = args
         .identifier
         .clone()
         .unwrap_or_else(|| identifier_from_folder(&dir));
+
+    let hub = args.hub.as_deref().map(resolve_hub).transpose()?;
 
     let answers = EngineAnswers {
         dir: dir.to_string_lossy().to_string(),
@@ -77,14 +86,26 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
         identifier,
         description: args.description.clone(),
         start: !args.no_start,
+        hub: hub.as_ref().map(|h| h.to_string_lossy().to_string()),
+        mesh: args.mesh,
     };
 
-    ui::table(&[
+    let mut rows = vec![
         ("folder".into(), answers.dir.clone()),
         ("coordination".into(), answers.coord_server.clone()),
         ("identifier".into(), answers.identifier.clone()),
         ("runs".into(), DEPLOYER_IMAGE.to_string()),
-    ]);
+    ];
+    if let Some(hub) = &answers.hub {
+        rows.push(("attached to".into(), hub.clone()));
+    }
+    if answers.mesh {
+        rows.push((
+            "mesh".into(),
+            "joins as the app it is authorized as; plugins run in its namespace".into(),
+        ));
+    }
+    ui::table(&rows);
     ui::say("");
 
     // Ctrl-C during the wait cancels the poll rather than leaving it running.
@@ -106,6 +127,82 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
         "The engine is at {}.",
         ui::bold(&created.path.to_string_lossy())
     ));
+    ui::say("");
+    Ok(())
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EngineAttachArgs {
+    /// The engine: a path, or the name of a registered one. Defaults to here.
+    pub engine: Option<String>,
+    /// The hub whose network it joins: a name or a path.
+    #[arg(long)]
+    pub hub: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct EngineDetachArgs {
+    /// The engine: a path, or the name of a registered one. Defaults to here.
+    pub engine: Option<String>,
+}
+
+/// A hub's folder, from its name or path — refused, by name, when it is not a hub.
+fn resolve_hub(given: &str) -> Result<std::path::PathBuf> {
+    crate::manage::Target {
+        target: Some(given.to_string()),
+    }
+    .resolve()
+}
+
+fn resolve_engine(given: Option<String>) -> Result<std::path::PathBuf> {
+    let resolved = crate::manage::Target { target: given }.resolve_any()?;
+    if resolved.kind != konstruktor_core::profile::DeploymentKind::Engine {
+        bail!(
+            "{} is a {}, not a plugin engine",
+            resolved.dir.display(),
+            resolved.kind.label()
+        );
+    }
+    Ok(resolved.dir)
+}
+
+/// `konstruktor engine attach` / `detach`: rewrites the engine's compose file, then
+/// restarts the engine if it is running so the deployer picks the network up.
+pub async fn attach(engine: Option<String>, hub: Option<String>) -> Result<()> {
+    let dir = resolve_engine(engine)?;
+    let hub = hub.as_deref().map(resolve_hub).transpose()?;
+
+    konstruktor_core::engine::attach(&dir, hub.as_deref()).await?;
+    ui::say("");
+    match &hub {
+        Some(hub) => ui::ok(&format!(
+            "The engine now joins the network of {}.",
+            ui::bold(&hub.to_string_lossy())
+        )),
+        None => ui::ok("The engine is detached; plugins run on its own network."),
+    }
+
+    let containers = konstruktor_core::docker::list_deployment_containers(&dir.to_string_lossy())
+        .await
+        .unwrap_or_default();
+    if konstruktor_core::status::run_summary(&containers).state
+        == konstruktor_core::status::RunState::Stopped
+        || containers.is_empty()
+    {
+        ui::step("Start the engine to apply it.");
+        ui::say("");
+        return Ok(());
+    }
+
+    ui::step("Restarting the engine to apply it…");
+    let print = |line: konstruktor_core::compose::ComposeLine| {
+        eprintln!("  {}", ui::dim(&line.line));
+    };
+    let report = konstruktor_core::start::start(&dir, &print).await?;
+    for warning in &report.warnings {
+        ui::warn(warning);
+    }
+    ui::ok("Done. Plugins already running stay where they are until they are restarted.");
     ui::say("");
     Ok(())
 }

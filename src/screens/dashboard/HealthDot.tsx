@@ -4,42 +4,29 @@ import { useEffect, useState } from "react";
 import { cn } from "../../utils";
 
 /**
- * Polls a service's health endpoint through the gateway.
+ * Polls a service's health check.
+ *
+ * The URL is the core's (`ServiceView.health_url`, from `konstruktor_core::health`), the
+ * same one the restore's and the update's checks ask — building it here as well is how
+ * the dot and those checks came to ask different hosts once a hub had a domain.
  *
  * Through the HTTP plugin rather than the webview's `fetch`: the services send no CORS
  * headers for the webview's origin, so a browser request would fail on every healthy
  * service. The plugin's allow-list lives in `capabilities/migrated.json`.
- *
- * The whole URL is built here rather than by the caller. It used to be assembled at the
- * call site and handed over already interpolated, which made the `if (!url)` guard below
- * useless — a service without a URL produced the truthy string `"undefined/health/"` and
- * was polled anyway, forever reporting itself unhealthy.
- *
- * The path is `ht`, not `health/`: it is `django-health-check` as each service's own
- * `urls.py` mounts it, and it is the same route the manifest hands the coordination
- * server as an alias's `challenge`. `/health/` is a 404 on every service, so every dot on
- * the page was red on a hub where everything answered. Kept in step with
- * `konstruktor_core::health::HEALTH_PATH`, which the restore's verification uses.
  */
-/**
- * See `konstruktor_core::health::health_url` — the two have to ask for the same thing.
- * `?format=json` is part of it: without it the check renders its HTML page, which is four
- * kilobytes of markup to answer a yes/no question every five seconds.
- */
-const HEALTH_QUERY = "ht?format=json";
-
-const useHealth = (base: string | undefined) => {
+const useHealth = (url: string | null | undefined) => {
   const [healthy, setHealthy] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
-    if (!base) return;
+    if (!url) {
+      setHealthy(undefined);
+      return;
+    }
     let cancelled = false;
 
     const check = async () => {
       try {
-        const response = await fetch(`${base}/${HEALTH_QUERY}`, {
-          method: "GET",
-        });
+        const response = await fetch(url, { method: "GET" });
         if (!cancelled) setHealthy(response.ok);
       } catch {
         if (!cancelled) setHealthy(false);
@@ -52,18 +39,24 @@ const useHealth = (base: string | undefined) => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [base]);
+  }, [url]);
 
   return healthy;
 };
 
-export const HealthDot = ({ url }: { url: string | undefined }) => {
+/**
+ * `url` is `null` for a service this machine cannot ask — a mesh-only hub publishes no
+ * port here — and the dot stays grey rather than red.
+ */
+export const HealthDot = ({ url }: { url: string | null | undefined }) => {
   const healthy = useHealth(url);
   return (
     <div
       title={
         healthy === undefined
-          ? "Not reachable yet"
+          ? url === null
+            ? "Not reachable from this machine — see the gateway check"
+            : "Not reachable yet"
           : healthy
             ? "Healthy"
             : "Not responding"

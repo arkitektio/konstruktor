@@ -394,10 +394,14 @@ pub async fn advances(config: &HubConfig) -> Vec<Advance> {
 /// that is not an enabled service's host is infrastructure, so a service added upstream is
 /// classified correctly without this having to be edited.
 pub fn is_infrastructure(config: &HubConfig, service: &str) -> bool {
-    !config
-        .enabled_services()
-        .into_iter()
-        .any(|id| config.service(id).host == service)
+    // The health reporter holds no data and follows `latest`: moving it risks nothing the
+    // infrastructure's caution exists for.
+    let reporter = config.reporter.as_ref().is_some_and(|r| r.host == service);
+    !reporter
+        && !config
+            .enabled_services()
+            .into_iter()
+            .any(|id| config.service(id).host == service)
 }
 
 /// What has to be said before one service's image is allowed to move.
@@ -446,6 +450,249 @@ pub async fn guard(dir: &std::path::Path, config: &HubConfig, service: &str) -> 
                 .to_string(),
         ),
     }
+}
+
+/// Where a backup taken before an update goes unless somebody says otherwise: a
+/// `konstruktor-backups` folder beside the deployment, so it survives the deployment.
+pub fn default_backup_folder(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    dir.parent().map(|parent| parent.join("konstruktor-backups"))
+}
+
+/// What the infrastructure could move to: images whose tag moved upstream, and pins with a
+/// newer version published. Held back from ordinary updates — see [`is_infrastructure`].
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct InfrastructureUpdates {
+    /// Compose services whose image moved, or was never pulled.
+    pub moved: Vec<String>,
+    pub advances: Vec<Advance>,
+}
+
+impl InfrastructureUpdates {
+    pub fn is_empty(&self) -> bool {
+        self.moved.is_empty() && self.advances.is_empty()
+    }
+}
+
+/// Asks the registries what the infrastructure of the hub in `dir` could move to.
+pub async fn infrastructure(dir: &std::path::Path) -> Result<InfrastructureUpdates, String> {
+    let config = crate::profile::read_profile(dir)
+        .map_err(|e| e.to_string())?
+        .config;
+    let checks = for_deployment(dir).await?;
+    Ok(InfrastructureUpdates {
+        moved: checks
+            .into_iter()
+            .filter(|c| matches!(c.state, UpstreamState::Newer | UpstreamState::Missing))
+            .filter(|c| is_infrastructure(&config, &c.service))
+            .map(|c| c.service)
+            .collect(),
+        advances: advances(&config).await,
+    })
+}
+
+/// What to update, and how carefully. Both front ends build one of these: the CLI's
+/// `update` from its flags, the dashboard's per-service button from the card it sits on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateRequest {
+    /// Compose services to recreate, in order.
+    pub services: Vec<String>,
+    /// Pins to move first. The profile is rewritten before any pull, since it decides
+    /// which image the pull fetches; every advanced service is recreated too.
+    #[serde(default)]
+    pub advances: Vec<Advance>,
+    /// Fetch the image before recreating. Off only for an image that was already pulled —
+    /// applying it must work with the registry unreachable.
+    pub pull: bool,
+    /// Back the hub up into this folder first. Migrations run when a service starts and
+    /// are one-way, so this is the only way back.
+    #[serde(default)]
+    pub backup_into: Option<std::path::PathBuf>,
+    /// Ask every service whether it still answers, afterwards.
+    pub health_check: bool,
+}
+
+/// What an update is doing, as it does it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+pub enum UpdateEvent {
+    Step { title: String },
+    /// A line of output from compose, the backup or the health check.
+    Line { line: String, stderr: bool },
+    Warning { message: String },
+    /// This service was left alone: recreating it would break it.
+    Refused { service: String, reason: String },
+    Updated { service: String },
+}
+
+/// What an update did.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateReport {
+    /// Where the backup taken first went.
+    pub backup: Option<String>,
+    pub updated: Vec<String>,
+    pub refused: Vec<(String, String)>,
+    /// Present when a health check was asked for.
+    pub health: Option<Vec<crate::health::ServiceHealth>>,
+}
+
+impl UpdateReport {
+    /// Everything asked for was updated, and — when checked — everything answers.
+    pub fn succeeded(&self) -> bool {
+        self.refused.is_empty()
+            && !self.updated.is_empty()
+            && self
+                .health
+                .as_ref()
+                .is_none_or(|health| health.iter().all(|s| s.healthy))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum UpdateError {
+    #[error(transparent)]
+    Profile(#[from] crate::profile::ProfileError),
+    #[error(transparent)]
+    Backup(#[from] crate::backup::BackupError),
+    #[error("{0}")]
+    Compose(String),
+    #[error("{0}")]
+    Health(String),
+}
+
+/// Applies an update: back up, record what is running, move pins, then pull, guard and
+/// recreate each service, record again, and check it all came back.
+///
+/// The one sequence both front ends run — it used to be written twice, and the dashboard's
+/// copy took no backup and never asked whether the services survived.
+///
+/// A refused service is reported and skipped, not an error: the rest still move. The
+/// caller decides what a partial update means for its exit code.
+pub async fn apply(
+    dir: &std::path::Path,
+    request: &UpdateRequest,
+    on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
+) -> Result<UpdateReport, UpdateError> {
+    use crate::lock;
+
+    let mut report = UpdateReport::default();
+    let step = |title: String| on_event(UpdateEvent::Step { title });
+    let warn = |message: String| on_event(UpdateEvent::Warning { message });
+    let line = |l: crate::compose::ComposeLine| {
+        on_event(UpdateEvent::Line {
+            line: l.line,
+            stderr: l.stderr,
+        })
+    };
+
+    // --- the backup ----------------------------------------------------------------
+    if let Some(into) = &request.backup_into {
+        step(format!("Backing up into {} first", into.to_string_lossy()));
+        let backup = crate::backup::run(
+            &crate::backup::BackupRequest {
+                dir: dir.to_path_buf(),
+                target: into.clone(),
+            },
+            &|event| match event {
+                crate::backup::BackupEvent::Step { title, .. } => step(title),
+                crate::backup::BackupEvent::Line { line, stderr, .. } => {
+                    on_event(UpdateEvent::Line { line, stderr })
+                }
+                crate::backup::BackupEvent::Skipped { reason, .. } => warn(reason),
+            },
+        )
+        .await?;
+        for warning in backup.warnings {
+            warn(warning);
+        }
+        report.backup = Some(backup.path);
+    }
+
+    // --- what is running now -------------------------------------------------------
+    // What `rollback` reads. Not fatal: an unwritable lock costs the way back, which is
+    // worth saying, and is no reason to refuse an update somebody asked for.
+    let config = crate::profile::read_profile(dir)?.config;
+    if let Err(error) = lock::record(dir, &config, "before update", lock::now()).await {
+        warn(format!(
+            "could not record what this hub is running ({error}) — rollback will have \
+             nothing to go back to"
+        ));
+    }
+
+    // --- pins ----------------------------------------------------------------------
+    let mut services = request.services.clone();
+    if !request.advances.is_empty() {
+        let images: Vec<(String, String)> = request
+            .advances
+            .iter()
+            .map(|a| (a.service.clone(), a.to.clone()))
+            .collect();
+        crate::profile::rewrite_images(dir, &images)?;
+        step(format!(
+            "Profile moved to {}",
+            images.iter().map(|(_, to)| to.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+        // It is the profile that moved, not the tag: these have to be recreated even
+        // though the registry said their old reference was current.
+        for advance in &request.advances {
+            if !services.contains(&advance.service) {
+                services.push(advance.service.clone());
+            }
+        }
+    }
+    let config = crate::profile::read_profile(dir)?.config;
+
+    // --- pull, guard, recreate -------------------------------------------------------
+    for service in &services {
+        step(format!("Updating {service}"));
+        // Pull first, then ask whether the image that arrived may be run: the guard reads
+        // what the *new* image declares.
+        if request.pull {
+            crate::compose::run_streamed(dir, crate::compose::pull_service(service), &line)
+                .await
+                .map_err(UpdateError::Compose)?;
+        }
+        match guard(dir, &config, service).await {
+            Guard::Refuse(reason) => {
+                on_event(UpdateEvent::Refused {
+                    service: service.clone(),
+                    reason: reason.clone(),
+                });
+                report.refused.push((service.clone(), reason));
+                continue;
+            }
+            Guard::Warn(detail) => warn(detail),
+            Guard::Clear => {}
+        }
+        // `--no-deps`: updating one service on a stopped stack must not boot the rest.
+        crate::compose::run_streamed(dir, crate::compose::up_service(service), &line)
+            .await
+            .map_err(UpdateError::Compose)?;
+        on_event(UpdateEvent::Updated {
+            service: service.clone(),
+        });
+        report.updated.push(service.clone());
+    }
+
+    if !report.updated.is_empty() {
+        let _ = lock::record(dir, &config, "updated", lock::now()).await;
+    }
+
+    // --- did it come back? ---------------------------------------------------------
+    // A migration that fails leaves a container restarting, and `compose up` reports
+    // success regardless: it started the container, which is all it claims.
+    if request.health_check && !report.updated.is_empty() {
+        step("Checking the services still answer".into());
+        let health = crate::health::check(dir, &config, &|event| {
+            if let crate::health::HealthEvent::Line { line } = event {
+                on_event(UpdateEvent::Line { line, stderr: false });
+            }
+        })
+        .await
+        .map_err(UpdateError::Health)?;
+        report.health = Some(health);
+    }
+
+    Ok(report)
 }
 
 async fn check_one(local: ImageState) -> UpstreamCheck {
@@ -501,6 +748,56 @@ async fn check_one(local: ImageState) -> UpstreamCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refusal, or a service that no longer answers, is not a successful update — even
+    /// though compose recreated everything it was asked to.
+    #[test]
+    fn an_update_succeeds_only_when_everything_moved_and_answers() {
+        let health = |healthy| crate::health::ServiceHealth {
+            service: "mikro".into(),
+            container_state: Some("running".into()),
+            restarts_seen: false,
+            http_status: Some(200),
+            url: None,
+            healthy,
+            detail: String::new(),
+        };
+        let updated = UpdateReport {
+            updated: vec!["mikro".into()],
+            health: Some(vec![health(true)]),
+            ..Default::default()
+        };
+        assert!(updated.succeeded());
+
+        let sick = UpdateReport {
+            health: Some(vec![health(false)]),
+            ..updated.clone()
+        };
+        assert!(!sick.succeeded());
+
+        let refused = UpdateReport {
+            refused: vec![("db".into(), "a new major".into())],
+            ..updated.clone()
+        };
+        assert!(!refused.succeeded());
+
+        // Unchecked is not unhealthy.
+        let unchecked = UpdateReport {
+            health: None,
+            ..updated
+        };
+        assert!(unchecked.succeeded());
+    }
+
+    /// The reporter follows `latest` and holds no data; it moves with the services.
+    #[test]
+    fn the_reporter_is_not_held_back_as_infrastructure() {
+        let mut config = crate::config::hub::build_hub_config(&Default::default());
+        config.reporter = Some(crate::config::hub::ReporterBlock::default());
+        assert!(!is_infrastructure(&config, "reporter"));
+        assert!(is_infrastructure(&config, "db"));
+        assert!(!is_infrastructure(&config, "mikro"));
+    }
 
     #[test]
     fn hub_references() {

@@ -115,19 +115,17 @@ pub struct HostCandidate {
 /// exactly nobody the coordination server knows about. Telling them apart needs to know
 /// which tailnet is *ours*, and that is not something an address can be asked.
 ///
-/// Two signals, both weak on their own and both absent often enough that "unknown" has to
-/// be the safe answer:
+/// Two signals: `domain`, the MagicDNS suffix (`hyena-sole.ts.net` and the like), and
+/// `hostname`, the name a hub takes on the tailnet.
 ///
-/// * `domain` — the MagicDNS suffix, `hyena-sole.ts.net` and the like. The coordination
-///   server is the only thing that really knows this, so it belongs in its well-known;
-///   [`crate::connect::wellknown::WellKnownFakts::mesh_domain`] reads it from there when
-///   a server declares it.
-/// * `hostname` — the name this hub takes on the tailnet, out of its own mesh config.
-///   Enough to recognise the hub's own node once it has joined, even with no domain.
+/// Every caller passes neither today, and that is correct rather than a gap: a hub's own
+/// node lives in its mesh sidecar's network namespace, which no scan of this machine
+/// reaches, so any tailnet address found here really is somebody else's
+/// ([`HostCategory::OtherMesh`]). The hub's own mesh address is declared as a mesh alias
+/// instead, and the coordination server fills it in.
 ///
-/// With neither, every tailnet address is [`HostCategory::OtherMesh`]. That is not a
-/// failure: during the wizard the hub has not joined anything yet, so a tailnet address
-/// on this machine genuinely is somebody else's.
+/// Kept for a host whose tailnet address *is* the hub's — a machine-wide tailscale
+/// serving a hub without a sidecar — which the classification still handles.
 #[derive(Debug, Clone, Default)]
 pub struct KnownMesh {
     pub domain: Option<String>,
@@ -605,6 +603,28 @@ pub fn reach_presets(candidates: &[HostCandidate]) -> Vec<ReachPreset> {
             .collect(),
     })
     .collect()
+}
+
+/// The candidates a preset selects, as the manifest advertises them — the same rule
+/// [`reach_presets`] resolves for the wizard, for a caller that has no picker.
+pub fn select(
+    candidates: &[HostCandidate],
+    reach: ReachPresetId,
+) -> Vec<crate::connect::manifest::AdvertisedHost> {
+    candidates
+        .iter()
+        .filter(|c| c.usable && reach.accepts(c.kind))
+        .map(|c| crate::connect::manifest::AdvertisedHost {
+            host: c.value.clone(),
+            kind: c.kind,
+        })
+        .collect()
+}
+
+/// Scans this machine and selects what `reach` takes: what `--reach` means on the CLI.
+pub async fn discover(reach: ReachPresetId) -> Vec<crate::connect::manifest::AdvertisedHost> {
+    let candidates = host_candidates(&bindings().await.unwrap_or_default(), &KnownMesh::default());
+    select(&candidates, reach)
 }
 
 /// Everything the address step needs, in one answer.

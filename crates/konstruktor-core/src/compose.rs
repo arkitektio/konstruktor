@@ -6,6 +6,156 @@
 pub fn up() -> Vec<&'static str> {
     vec!["compose", "up", "-d"]
 }
+
+/// What `up` should run in a deployment folder, and why, when it is not plain [`up`].
+///
+/// The health reporter is the one container a hub can run without. Its image lives on a
+/// registry this machine may not reach, or — on a development build — may not be
+/// published yet, and compose treats a failed pull as fatal for the whole project: a hub
+/// would not start at all for want of its health reports.
+///
+/// So when the reporter's image is neither on this machine nor pullable, every *other*
+/// service is started by name, and the second element says what was left out. Anything
+/// that is not the reporter still fails `up` exactly as before.
+pub async fn up_in(dir: &std::path::Path) -> (Vec<String>, Option<String>) {
+    let plain = || up().into_iter().map(String::from).collect::<Vec<_>>();
+
+    let Some(reporter) = crate::profile::read_profile(dir)
+        .ok()
+        .and_then(|p| p.config.reporter)
+        .filter(|r| r.enabled)
+    else {
+        return (plain(), None);
+    };
+
+    let docker_ok = |args: &'static [&'static str], image: String| async move {
+        crate::engine_probe::engine()
+            .async_command()
+            .args(args)
+            .arg(&image)
+            .current_dir(dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|s| s.success())
+    };
+    if docker_ok(&["image", "inspect"], reporter.image.clone()).await
+        || docker_ok(&["pull"], reporter.image.clone()).await
+    {
+        return (plain(), None);
+    }
+
+    // The services the file on disk declares — not a regeneration, which could disagree
+    // with a compose file somebody edited.
+    let declared: Vec<String> = std::fs::read_to_string(dir.join("docker-compose.yaml"))
+        .ok()
+        .and_then(|text| serde_norway::from_str::<serde_norway::Value>(&text).ok())
+        .and_then(|doc| {
+            doc.get("services")?.as_mapping().map(|services| {
+                services
+                    .keys()
+                    .filter_map(|k| k.as_str().map(str::to_string))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    let others: Vec<String> = declared.into_iter().filter(|s| *s != reporter.host).collect();
+    if others.is_empty() {
+        return (plain(), None);
+    }
+
+    let mut args = plain();
+    args.extend(others);
+    (
+        args,
+        Some(format!(
+            "Starting without the health reporter: its image {} is not on this machine and \
+             could not be pulled. The hub runs, but its coordination server will show it \
+             as offline until the image is available.",
+            reporter.image
+        )),
+    )
+}
+
+/// One line a compose invocation wrote, and on which stream.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeLine {
+    pub line: String,
+    pub stderr: bool,
+}
+
+/// Runs one compose invocation in a deployment folder, handing every line of both
+/// streams to `on_line` as it is written, and returns what it put on stdout.
+///
+/// `args` starts with `compose`. Plain, line-by-line narration is asked for: without a
+/// TTY compose already avoids its redrawing progress UI, `--ansi never` keeps colour codes
+/// out, and `--progress plain` adds each layer's download and extract steps — what a pull
+/// of several gigabytes is otherwise silent about for minutes. A failure carries both
+/// streams, since compose explains itself on stderr.
+pub async fn run_streamed(
+    dir: &std::path::Path,
+    mut args: Vec<String>,
+    on_line: &(dyn Fn(ComposeLine) + Send + Sync),
+) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    args.splice(1..1, ["--ansi", "never", "--progress", "plain"].map(String::from));
+
+    let mut child = crate::engine_probe::engine()
+        .async_command()
+        .args(&args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let clean = |raw: &str| String::from_utf8_lossy(&strip_ansi_escapes::strip(raw)).into_owned();
+
+    // Both streams in this one task: a callback borrowed for the call cannot be handed to
+    // a spawned one, and neither needs to be.
+    let read_out = async {
+        let mut collected = String::new();
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(raw)) = lines.next_line().await {
+            let line = clean(&raw);
+            collected.push_str(&line);
+            collected.push('\n');
+            on_line(ComposeLine { line, stderr: false });
+        }
+        collected
+    };
+    let read_err = async {
+        let mut collected = String::new();
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(raw)) = lines.next_line().await {
+            let line = clean(&raw);
+            if line.trim().is_empty() {
+                continue;
+            }
+            collected.push_str(&line);
+            collected.push('\n');
+            on_line(ComposeLine { line, stderr: true });
+        }
+        collected
+    };
+    let (out, err) = tokio::join!(read_out, read_err);
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+
+    if status.success() {
+        Ok(out)
+    } else {
+        Err(format!("{out}{err}"))
+    }
+}
+
 pub fn stop() -> Vec<&'static str> {
     vec!["compose", "stop"]
 }
@@ -64,6 +214,40 @@ pub fn down_volumes() -> Vec<&'static str> {
 pub fn down_everything() -> Vec<&'static str> {
     vec!["compose", "down", "--volumes", "--remove-orphans"]
 }
+/// Creates a Django superuser in one running service, answering with what Django printed.
+///
+/// A failure carries both streams: Django says why on stderr — "that username is already
+/// taken", most often — which is what a person needs to read, not an exit code.
+pub async fn run_superuser(
+    dir: &std::path::Path,
+    service: &str,
+    username: &str,
+    password: &str,
+    email: Option<&str>,
+) -> Result<String, String> {
+    let username = username.trim();
+    if username.is_empty() || password.is_empty() {
+        return Err("a username and a password are both required".into());
+    }
+    let email = email.map(str::trim).filter(|e| !e.is_empty());
+    let output = crate::engine_probe::engine()
+        .async_command()
+        .args(create_superuser(service, username, password, email))
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Err(format!("{stdout}{}", String::from_utf8_lossy(&output.stderr))
+            .trim()
+            .to_string())
+    }
+}
+
 /// Create a Django superuser inside one running service.
 ///
 /// Per service on purpose: each service keeps its own database and its own admin site,

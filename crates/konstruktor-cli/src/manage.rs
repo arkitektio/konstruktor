@@ -295,7 +295,7 @@ pub async fn doctor(json: bool, fix: bool, yes: bool) -> Result<()> {
 fn show_remedies(probe: &docker::DockerProbe) {
     use konstruktor_core::remedy::Step;
 
-    for (index, remedy) in probe.remedies.iter().enumerate() {
+    for remedy in &probe.remedies {
         ui::say("");
         let heading = if remedy.primary {
             ui::bold(&remedy.title)
@@ -323,7 +323,6 @@ fn show_remedies(probe: &docker::DockerProbe) {
                 Step::Note { text } => ui::step(&ui::dim(text)),
             }
         }
-        let _ = index;
     }
     ui::say("");
 }
@@ -601,6 +600,34 @@ async fn other_status(resolved: &Resolved) -> Result<()> {
             rows.push(("identifier".into(), identifier.clone()));
         }
     }
+    if resolved.kind == profile::DeploymentKind::Engine {
+        let attached = match (
+            konstruktor_core::engine::attached_hub(&resolved.dir),
+            konstruktor_core::engine::attached_network(&resolved.dir),
+        ) {
+            (Some(hub), _) => hub.name,
+            (None, Some(network)) => format!("network {network} (no registered hub owns it)"),
+            (None, None) => "no hub — plugins run on the engine's own network".into(),
+        };
+        rows.push(("attached to".into(), attached));
+
+        let mesh = match konstruktor_core::engine::engine_mesh(&resolved.dir) {
+            None => "not on a mesh".to_string(),
+            Some(mesh) => {
+                match konstruktor_core::hubhealth::from_sidecar_service(&resolved.dir, &mesh.host)
+                    .await
+                {
+                    Some(m) if m.connected => format!(
+                        "connected as {}",
+                        m.hostname.or(m.ipv4).unwrap_or_else(|| mesh.hostname.clone())
+                    ),
+                    Some(_) => "not connected".to_string(),
+                    None => format!("joins as {} — sidecar not running", mesh.hostname),
+                }
+            }
+        };
+        rows.push(("mesh".into(), mesh));
+    }
     ui::table(&rows);
     report_containers(&resolved.dir).await;
     ui::say("");
@@ -652,11 +679,18 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
             profile::DeploymentKind::Hub => Some(status::hub_view(&dir)?),
             _ => None,
         };
+        let mesh = match &hub {
+            Some(view) => konstruktor_core::hubhealth::from_sidecar(&dir, &view.profile.config).await,
+            None => None,
+        };
+        let aliases = hub.as_ref().map(advertised_aliases);
         return ui::emit_json(&serde_json::json!({
             "path": dir,
             "kind": resolved.kind,
             "record": resolved.record,
             "hub": hub,
+            "mesh": mesh,
+            "advertised": aliases,
             "run": status::run_summary(&containers),
             "containers": containers,
         }));
@@ -717,10 +751,43 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
         ),
     ];
 
-    match &view.mesh_hostname {
-        Some(hostname) => rows.push(("mesh".into(), format!("joins as {hostname}"))),
-        None => rows.push(("mesh".into(), "not joined".into())),
-    }
+    // The mesh as the sidecar sees it right now, not just what the profile asks for.
+    let mesh_only = status::is_mesh_only(config);
+    let mesh = match &view.mesh_hostname {
+        None => "not on a mesh".to_string(),
+        Some(hostname) => {
+            let live = match konstruktor_core::hubhealth::from_sidecar(&dir, config).await {
+                Some(m) if m.connected => format!(
+                    "connected as {}",
+                    m.hostname.or(m.ipv4).unwrap_or_else(|| hostname.clone())
+                ),
+                Some(_) => "not connected".to_string(),
+                None => format!("joins as {hostname} — sidecar not running"),
+            };
+            if mesh_only {
+                format!("{live} · mesh only")
+            } else {
+                live
+            }
+        }
+    };
+    rows.push(("mesh".into(), mesh));
+
+    let containers = docker::list_deployment_containers(&dir.to_string_lossy())
+        .await
+        .unwrap_or_default();
+    let reporter = match &config.reporter {
+        Some(reporter) if reporter.enabled => containers
+            .iter()
+            .find(|c| c.service.as_deref() == Some(reporter.host.as_str()))
+            .and_then(|c| c.state.clone())
+            .map(|state| format!("reports health — container {state}"))
+            .unwrap_or_else(|| "reports health once started".into()),
+        _ => "none — authorize the hub to report its health".into(),
+    };
+    rows.push(("reporter".into(), reporter));
+
+    rows.push(("advertised".into(), advertised_aliases(&view).join(", ")));
 
     match (&view.identifier, &view.authorized_at) {
         (Some(identifier), Some(at)) => {
@@ -734,6 +801,29 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
 
     ui::say("");
     Ok(())
+}
+
+/// What the hub hands the coordination server as its addresses, per service and for the
+/// S3 datalayer: the recorded hosts, the mesh node, and — mesh-only — the in-network
+/// gateway. Mirrors `build_hub_request`, as words.
+fn advertised_aliases(view: &status::HubView) -> Vec<String> {
+    let config = &view.profile.config;
+    let port = view.advertised_port;
+    let mut aliases: Vec<String> = view
+        .advertised_hosts
+        .iter()
+        .map(|h| format!("{}:{port}", h.host))
+        .collect();
+    if config.mesh.as_ref().is_some_and(|m| m.enabled) {
+        aliases.push("the mesh node (filled in by the coordination server)".into());
+    }
+    if status::is_mesh_only(config) {
+        aliases.push(format!("{} inside Docker", config.gateway.host));
+    }
+    if aliases.is_empty() {
+        aliases.push("nothing yet — authorize the hub".into());
+    }
+    aliases
 }
 
 /// Runs a compose subcommand in the deployment folder, streaming its output through.
@@ -758,29 +848,93 @@ pub fn compose(target: &Target, args: Vec<&str>, verb: &str) -> Result<()> {
     }
 }
 
-/// `konstruktor up`: the stack, with the one check that has to happen before it.
-///
-/// `compose up` recreates any container whose image reference now resolves to something
-/// else on this machine — so a `db` image that was pulled at some point, by an update that
-/// then refused to apply it or by a plain `konstruktor pull`, is applied *here*, with
-/// nothing in the way. Postgres will not open a cluster from another major, so that is a
-/// crash loop rather than a start. The same guard the update path asks, asked in the other
-/// place that can move a running database.
+/// `konstruktor gateway`: every service, through every advertised address this machine
+/// can reach. Exits non-zero when a reachable address has a service that does not answer;
+/// an address that is simply not reachable from here is reported, not failed.
+pub async fn gateway(target: &Target, json: bool) -> Result<()> {
+    let dir = target.resolve_any()?.dir;
+    let profile = konstruktor_core::profile::read_profile(&dir)?;
+    let aliases = konstruktor_core::gateway_check::check(&dir, &profile.config).await;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&aliases)?);
+    } else {
+        ui::say("");
+        if aliases.is_empty() {
+            // Nothing to ask — and why depends on the hub.
+            let authorized = konstruktor_core::credentials::read_credentials(&dir).is_some();
+            ui::step(if !authorized {
+                "This hub advertises no address yet — authorize it first."
+            } else if status::is_mesh_only(&profile.config) {
+                "This hub is reached over the mesh alone, and the sidecar is not running to \
+                 say its name — start the hub, then check again."
+            } else {
+                "This hub advertises no address this machine could name."
+            });
+        }
+        for alias in &aliases {
+            let label = format!("{}:{} ({})", alias.host, alias.port, alias.kind);
+            if !alias.reachable {
+                ui::step(&ui::dim(&format!(
+                    "{label} — {}",
+                    alias.detail.as_deref().unwrap_or("not reachable from this machine")
+                )));
+                continue;
+            }
+            ui::step(&ui::bold(&label));
+            for service in &alias.services {
+                let line = format!(
+                    "{} {}",
+                    service.service,
+                    service
+                        .detail
+                        .clone()
+                        .or_else(|| service.status.map(|s| s.to_string()))
+                        .unwrap_or_default()
+                );
+                if service.healthy {
+                    ui::ok(&line);
+                } else {
+                    ui::fail(&line);
+                }
+            }
+        }
+        ui::say("");
+    }
+
+    let broken = aliases
+        .iter()
+        .filter(|a| a.reachable)
+        .any(|a| a.services.iter().any(|s| !s.healthy));
+    if broken {
+        bail!("some services do not answer on an address this hub advertises");
+    }
+    Ok(())
+}
+
+/// `konstruktor up`: the same start the desktop app runs — the database guard, the mesh
+/// sidecar's networks, and the reporter fallback. See `konstruktor_core::start`.
 pub async fn up(target: &Target) -> Result<()> {
     let dir = target.resolve_any()?.dir;
-    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
-        use konstruktor_core::updates::{guard, Guard};
-        match guard(&dir, &profile.config, konstruktor_core::config::hub::DB_COMPOSE_SERVICE).await
-        {
-            Guard::Refuse(reason) => {
-                ui::say("");
-                bail!("{reason}");
-            }
-            Guard::Warn(detail) => ui::warn(&detail),
-            Guard::Clear => {}
+    ui::say("");
+    ui::step(&format!("Starting {}…", ui::bold(&dir.to_string_lossy())));
+
+    let print = |line: konstruktor_core::compose::ComposeLine| {
+        if line.stderr {
+            eprintln!("  {}", ui::dim(&line.line));
+        } else {
+            println!("  {}", line.line);
         }
+    };
+    let report = konstruktor_core::start::start(&dir, &print).await?;
+
+    ui::say("");
+    for warning in &report.warnings {
+        ui::warn(warning);
     }
-    compose(target, konstruktor_core::compose::up(), "Starting")
+    ui::ok("Done.");
+    ui::say("");
+    Ok(())
 }
 
 pub fn down(args: DownArgs) -> Result<()> {
@@ -847,7 +1001,7 @@ pub async fn ps(target: &Target, json: bool) -> Result<()> {
 /// The same `docker compose exec` the desktop app runs. Deliberately not part of
 /// creating a hub — the container has to be up and its migrations applied before there
 /// is a table to write to.
-pub fn superuser(args: SuperuserArgs) -> Result<()> {
+pub async fn superuser(args: SuperuserArgs) -> Result<()> {
     let dir = Target {
         target: args.in_deployment.clone(),
     }
@@ -871,20 +1025,6 @@ pub fn superuser(args: SuperuserArgs) -> Result<()> {
         None => bail!("--password is required when this is not a terminal"),
     };
 
-    if username.trim().is_empty() || password.is_empty() {
-        bail!("a username and a password are both required");
-    }
-
-    let argv = compose::create_superuser(
-        &args.service,
-        username.trim(),
-        &password,
-        args.email
-            .as_deref()
-            .map(str::trim)
-            .filter(|e| !e.is_empty()),
-    );
-
     ui::say("");
     ui::step(&format!(
         "Creating {} in {}…",
@@ -892,22 +1032,11 @@ pub fn superuser(args: SuperuserArgs) -> Result<()> {
         ui::bold(&args.service)
     ));
 
-    let output = konstruktor_core::docker::command()
-        .args(&argv)
-        .current_dir(&dir)
-        .output()
-        .context("running docker")?;
-
-    if !output.status.success() {
-        // Django's own complaint — "that username is already taken" and the like — is
-        // what the user needs, not the exit code.
-        let message = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        bail!("{}", message.trim());
-    }
+    // Django's own complaint — "that username is already taken" and the like — is what
+    // comes back on failure, not an exit code.
+    compose::run_superuser(&dir, &args.service, &username, &password, args.email.as_deref())
+        .await
+        .map_err(|message| anyhow!("{message}"))?;
 
     ui::say("");
     ui::ok(&format!(
@@ -1319,16 +1448,27 @@ pub fn purge(args: DestroyArgs) -> Result<()> {
 
 /// `konstruktor forget`: stop listing it. Nothing on disk is touched.
 pub fn forget(target: &Target) -> Result<()> {
-    let (dir, record, _) = record_for(target)?;
-    let mut store = registry::load();
-    store.deployments.retain(|d| d.id != record.id);
-    registry::save(&store).context("writing the registry")?;
+    // Looked up in the registry directly, not resolved to a folder: a deployment whose
+    // folder was moved or deleted is exactly the one worth forgetting, and resolving it
+    // would refuse for that very reason.
+    let store = registry::load();
+    let given = target.target.clone().unwrap_or_else(|| ".".into());
+    let by_path = konstruktor_core::paths::canonical(&given)
+        .ok()
+        .and_then(|path| registry::find_by_path(&store, &path.to_string_lossy()).cloned());
+    let record = registry::find_by_name(&store, &given)
+        .cloned()
+        .or(by_path)
+        .ok_or_else(|| {
+            anyhow!("no registered deployment is called `{given}` or lives there — `konstruktor list` shows them")
+        })?;
+    registry::forget(&record.id).context("writing the registry")?;
 
     ui::say("");
     ui::ok(&format!("Konstruktor no longer lists {}.", record.name));
     ui::step(&ui::dim(&format!(
         "Everything in {} is untouched.",
-        dir.display()
+        record.path
     )));
     ui::say("");
     Ok(())
@@ -1641,9 +1781,7 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         true => None,
         false => Some(match &args.backup_into {
             Some(path) => path.clone(),
-            None => dir
-                .parent()
-                .map(|parent| parent.join("konstruktor-backups"))
+            None => updates::default_backup_folder(&dir)
                 .ok_or_else(|| anyhow!("no folder to back up into — pass --backup-into <FOLDER>"))?,
         }),
     };
@@ -1675,193 +1813,73 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         }
     }
 
-    // --- the backup ---------------------------------------------------------------------
+    // --- apply ----------------------------------------------------------------------
     //
-    // An image can be moved back; a migration cannot. Every service here runs `bash
-    // run.sh`, which migrates the database forward on start, so the moment a new image
-    // boots, the old one is running against a schema it has never seen. The backup taken
-    // here is the only thing that makes the whole update reversible, which is why it is
-    // the default rather than a flag.
-    if let Some(into) = backup_into {
-        let request = konstruktor_core::backup::BackupRequest {
-            dir: dir.clone(),
-            target: into,
-        };
-        ui::say("");
-        ui::step(&format!(
-            "Backing up into {} first…",
-            ui::bold(&request.target.to_string_lossy())
-        ));
-        let report = konstruktor_core::backup::run(&request, &|event| {
-            use konstruktor_core::backup::BackupEvent;
-            match event {
-                BackupEvent::Step { title, .. } => ui::step(&ui::dim(&format!("  {title}"))),
-                BackupEvent::Line { .. } => {}
-                BackupEvent::Skipped { reason, .. } => ui::warn(&format!("skipped — {reason}")),
-            }
-        })
-        .await?;
-        for warning in &report.warnings {
-            ui::warn(warning);
+    // The same sequence the dashboard's update button runs: back up (an image can be
+    // moved back, a migration cannot), record what is running for `rollback`, move pins,
+    // then pull, guard and recreate each service, and check it all came back.
+    let request = updates::UpdateRequest {
+        services: stale.iter().map(|c| c.service.clone()).collect(),
+        advances,
+        pull: true,
+        backup_into,
+        health_check: true,
+    };
+    ui::say("");
+    let report = updates::apply(&dir, &request, &|event| match event {
+        updates::UpdateEvent::Step { title } => ui::step(&format!("{title}…")),
+        updates::UpdateEvent::Line { line, .. } => ui::say(&ui::dim(&format!("  {line}"))),
+        updates::UpdateEvent::Warning { message } => ui::warn(&message),
+        updates::UpdateEvent::Refused { service, reason } => {
+            ui::fail(&reason);
+            ui::step(&ui::dim(&format!(
+                "The running {service} container was not touched — but its image was \
+                 pulled, and anything that calls `docker compose up` directly would \
+                 recreate it onto that image. `konstruktor up` refuses to."
+            )));
         }
-        ui::ok(&format!("Backed up to {}", report.path));
+        updates::UpdateEvent::Updated { service } => ui::ok(&format!("{service} updated")),
+    })
+    .await?;
+
+    if let Some(path) = &report.backup {
         ui::step(&ui::dim(&format!(
-            "If this update goes wrong: konstruktor restore {}",
-            report.path
+            "If this update goes wrong: konstruktor restore {path}"
         )));
-        ui::say("");
     }
-
-    // What the hub is on right now, written down before anything moves it. This is what
-    // `konstruktor rollback` reads — and recording it here rather than at create means a
-    // hub made before any of this existed still gets a state to go back to, the first time
-    // it is updated.
-    use konstruktor_core::lock;
-    if let Err(error) = lock::record(&dir, &config, "before update", lock::now()).await {
-        // Not fatal: an unwritable lock file costs the ability to roll back, which is
-        // worth saying, and is not a reason to refuse an update the user asked for.
-        ui::warn(&format!(
-            "could not record what this hub is running ({error}) — `konstruktor rollback` \
-             will have nothing to go back to"
-        ));
-    }
-
-    // The profile rewrite comes before any pull, because it is what decides *which* image
-    // the pull fetches — the reference in the compose file is generated from it.
-    if !advances.is_empty() {
-        let images: Vec<(String, String)> = advances
-            .iter()
-            .map(|advance| (advance.service.clone(), advance.to.clone()))
-            .collect();
-        konstruktor_core::profile::rewrite_images(&dir, &images).map_err(|e| anyhow!("{e}"))?;
-        ui::ok(&format!(
-            "Profile moved to {}.",
-            advances
-                .iter()
-                .map(|advance| advance.to.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-        ui::step(&ui::dim(
-            "`konstruktor rollback` puts the previous versions back.",
-        ));
-        ui::say("");
-    }
-
-    // The advanced services have to be recreated even though the registry said their old
-    // reference was current — it is the profile that moved, not the tag.
-    let config = konstruktor_core::profile::read_profile(&dir)
-        .map(|p| p.config)
-        .map_err(|e| anyhow!("{e}"))?;
-    let to_recreate: Vec<String> = names.iter().map(|name| name.to_string()).collect();
-
-    // --- pull, check, recreate ------------------------------------------------------
-    let mut updated: Vec<String> = Vec::new();
-    let mut refused: Vec<(String, String)> = Vec::new();
-    for service in &to_recreate {
-        ui::step(&format!("{}…", ui::bold(service)));
-        // Pull first, then ask whether the image that arrived may be run. A fetched image
-        // changes nothing until a container is recreated on it, and the guard reads what
-        // the *new* image declares — asked before the pull it would be reading the image
-        // already running, and would always agree with itself.
-        run_compose(&dir, compose::pull_service(service)).with_context(|| match args.no_backup {
-            true => format!("pulling {service}"),
-            false => format!("pulling {service} — the backup taken above is already on disk"),
-        })?;
-
-        match updates::guard(&dir, &config, service).await {
-            updates::Guard::Refuse(reason) => {
-                let image = config
-                    .stack_images()
-                    .into_iter()
-                    .find(|(name, _)| name == service)
-                    .map(|(_, image)| image)
-                    .unwrap_or_else(|| service.clone());
-                ui::fail(&reason);
-                ui::step(&ui::dim(&format!(
-                    "The running {service} container was not touched — but the image was \
-                     pulled, so `{image}` now resolves to it on this machine and a plain \
-                     `up` would recreate the container onto it. `konstruktor up` refuses \
-                     that for the same reason; anything that calls `docker compose up` \
-                     directly will not."
-                )));
-                refused.push((service.clone(), reason));
-                continue;
-            }
-            updates::Guard::Warn(detail) => ui::warn(&detail),
-            updates::Guard::Clear => {}
-        }
-
-        // `up_service` carries --no-deps for a reason its doc comment spells out: without
-        // it, updating one service on a stopped stack would quietly boot the
-        // infrastructure and leave the hub half up.
-        run_compose(&dir, compose::up_service(service))?;
-        updated.push(service.clone());
-    }
-
-    if updated.is_empty() {
+    if report.updated.is_empty() {
         ui::say("");
         bail!("nothing was updated — see above");
     }
-
     ui::say("");
-    ui::ok(&format!("Updated {}.", updated.join(", ")));
-    let _ = lock::record(&dir, &config, "updated", lock::now()).await;
-
-    // --- did it come back? ----------------------------------------------------------
-    //
-    // A migration that fails leaves a container restarting, and `docker compose up`
-    // reports success regardless: it started the container, which is all it claims. The
-    // same check a restore runs is what turns that into a failed update rather than a red
-    // dot somebody notices later.
-    ui::say("");
-    ui::step("Checking the services still answer…");
-    let health = konstruktor_core::health::check(&dir, &config, &|event| {
-        if let konstruktor_core::health::HealthEvent::Line { line } = event {
-            ui::say(&ui::dim(&format!("  {line}")));
-        }
-    })
-    .await
-    .map_err(|e| anyhow!("{e}"))?;
-
-    ui::say("");
-    for service in &health {
-        if service.healthy {
-            ui::ok(&format!("{}: {}", service.service, service.detail));
-        } else {
-            ui::fail(&format!("{}: {}", service.service, service.detail));
+    ui::ok(&format!("Updated {}.", report.updated.join(", ")));
+    if let Some(health) = &report.health {
+        ui::say("");
+        for service in health {
+            if service.healthy {
+                ui::ok(&format!("{}: {}", service.service, service.detail));
+            } else {
+                ui::fail(&format!("{}: {}", service.service, service.detail));
+            }
         }
     }
     ui::say("");
 
-    if !refused.is_empty() {
-        let names: Vec<&str> = refused.iter().map(|(service, _)| service.as_str()).collect();
+    if !report.refused.is_empty() {
+        let names: Vec<&str> = report.refused.iter().map(|(s, _)| s.as_str()).collect();
         bail!("{} was not updated — see above", names.join(", "));
     }
-    if !health.iter().all(|service| service.healthy) {
+    if !report.succeeded() {
         bail!(
             "updated, but not every service is healthy — the previous state is in the \
              backup taken above"
         );
     }
-    ui::ok(&format!("All {} services answer.", health.len()));
+    ui::ok("All services answer.");
     ui::say("");
     Ok(())
 }
 
-/// One `docker compose` invocation in a deployment folder, its output left on the
-/// terminal where the user can watch it.
-fn run_compose(dir: &Path, argv: Vec<String>) -> Result<()> {
-    let status = konstruktor_core::docker::command()
-        .args(&argv)
-        .current_dir(dir)
-        .status()
-        .context("running docker")?;
-    if !status.success() {
-        bail!("docker {} exited with {status}", argv.join(" "));
-    }
-    Ok(())
-}
 
 #[derive(Args, Debug, Clone)]
 pub struct RollbackArgs {
@@ -1939,15 +1957,13 @@ pub async fn rollback(args: RollbackArgs, json: bool) -> Result<()> {
         }
     }
 
-    rollback::apply(&dir, &plan).map_err(|e| anyhow!("{e}"))?;
-    ui::ok("Profile rewritten and the deployment files regenerated.");
-
-    for change in &plan.changes {
-        ui::step(&format!("{}…", ui::bold(&change.service)));
-        run_compose(&dir, compose::pull_service(&change.service))?;
-        run_compose(&dir, compose::up_service(&change.service))?;
-    }
-    rollback::record_applied(&dir).await.map_err(|e| anyhow!("{e}"))?;
+    // The same sequence the dashboard's rollback runs.
+    let print = |line: konstruktor_core::compose::ComposeLine| {
+        ui::say(&ui::dim(&format!("  {}", line.line)))
+    };
+    rollback::run(&dir, &plan, &print)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
 
     ui::say("");
     ui::ok(&format!(

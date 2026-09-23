@@ -52,6 +52,7 @@ pub fn build_caddyfile(services: &[CaddyService<'_>], minio_host: &str, minio_po
     };
 
     let mut out = String::from("http:// {\n");
+    out.push_str(CORS);
 
     ordered(&mut |service| route(&mut out, service.host, service.host, service.internal_port));
     ordered(&mut |service| {
@@ -67,6 +68,57 @@ pub fn build_caddyfile(services: &[CaddyService<'_>], minio_host: &str, minio_po
     let _ = write!(out, "\t\treverse_proxy {minio_host}:{minio_port}\n");
     out.push_str("\t}\n\n");
 
+    // The object store's own endpoints, under a prefix that is stripped on the way in —
+    // which is what makes `/rustfs/health` the store's `/health`. That is the challenge
+    // the `live.arkitekt.s3` instance advertises, as upstream's generator does.
+    let _ = write!(out, "\t@rustfs path {RUSTFS_PREFIX}/*\n");
+    let _ = write!(out, "\thandle @rustfs {OPEN_BRACE_BARE}\n");
+    let _ = write!(out, "\t\turi strip_prefix {RUSTFS_PREFIX}\n");
+    let _ = write!(out, "\t\treverse_proxy {minio_host}:{minio_port}\n");
+    out.push_str("\t}\n\n");
+
     out.push_str("}\n");
     out
 }
+
+/// The response headers every route gets, and the preflight answer — the same set the
+/// Arkitekt lab gateway serves.
+///
+/// Browser and Electron clients reach every alias cross-origin — fakts checks each one
+/// with a `fetch` — and the object store answers no CORS at all, so its health check,
+/// every presigned upload and every ranged zarr read were discarded by the browser
+/// however well they went.
+///
+/// * The origin is echoed rather than `*`.
+/// * The allowed headers are listed, not `*`: a wildcard does not cover `Authorization`,
+///   and `Range` is there because ranged zarr reads preflight on it.
+/// * S3's headers are exposed so zarr clients can read ETags, lengths and ranges.
+/// * The CORS fields are set with `>`, deferred until the response is written, so they
+///   replace what a Django service sends instead of adding a second value — two
+///   `Access-Control-Allow-Origin` values are rejected just like none.
+/// * Preflights are answered here, in the first `handle`, and reach no service: named
+///   `handle` blocks run in the order they are written.
+const CORS: &str = "\theader {\n\
+\t\t-Server\n\
+\t\tX-Forwarded-Proto {scheme}\n\
+\t\tX-Forwarded-For {remote}\n\
+\t\tX-Forwarded-Port {server_port}\n\
+\t\tX-Forwarded-Host {host}\n\
+\t\t>Access-Control-Allow-Origin \"{header.Origin}\"\n\
+\t\t>Access-Control-Allow-Methods \"GET, POST, PUT, PATCH, DELETE, OPTIONS\"\n\
+\t\t>Access-Control-Allow-Headers \"Origin, Content-Type, Accept, Authorization, X-Requested-With, Range, x-host-override, x-amz-content-sha256, x-amz-date, x-amz-user-agent, x-amz-request-id, x-amz-security-token, x-amz-acl\"\n\
+\t\t>Access-Control-Expose-Headers \"ETag, Content-Length, Content-Range, Accept-Ranges, x-amz-meta-dir, x-amz-request-id, x-amz-id-2\"\n\
+\t\t>Access-Control-Max-Age \"86400\"\n\
+\t\tTiming-Allow-Origin \"*\"\n\
+\t}\n\n\
+\t@options {\n\
+\t\tmethod OPTIONS\n\
+\t}\n\
+\thandle @options {\n\
+\t\trespond 204\n\
+\t}\n\n";
+
+/// Where the gateway exposes the object store's own endpoints.
+pub const RUSTFS_PREFIX: &str = "/rustfs";
+/// The object store's health check, through the gateway, relative to its root.
+pub const S3_CHALLENGE: &str = "rustfs/health";

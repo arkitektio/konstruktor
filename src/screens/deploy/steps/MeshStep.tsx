@@ -7,7 +7,9 @@ import {
   TriangleAlert,
   Waypoints,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
+import * as api from "../../../api";
 import { ErrorDisplay } from "../../../components/Error";
 import { UIField } from "../../../components/FormInput";
 import { Alert } from "../../../components/ui/alert";
@@ -20,19 +22,21 @@ import { AdvancedFields, StepField, StepFrame } from "../../wizard/StepFrame";
 import type { MeshMode } from "../../../api";
 import { HubForm } from "../hub-form";
 
-/**
- * A preview of the name this hub will take on the tailnet.
- *
- * The fold that actually decides it lives in `konstruktor-core`; this only has to agree
- * closely enough to show the user what to expect, and never feeds anything.
- */
-const previewHostname = (identifier: string): string =>
-  identifier
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 63);
+/** The name this hub will take on the tailnet, as the core folds it. */
+const usePreviewHostname = (identifier: string): string => {
+  const [name, setName] = useState("hub");
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .meshHostname(identifier || "hub")
+      .then((folded) => !cancelled && setName(folded || "hub"))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [identifier]);
+  return name;
+};
 
 /**
  * Whether this hub joins a mesh, where its key comes from, and whether the mesh is the
@@ -80,6 +84,7 @@ export const MeshStep = () => {
   const values = useWatch() as HubForm;
   const mode = values.meshMode ?? "coordination";
   const meshOnly = mode !== "none" && !!values.meshOnly;
+  const hostname = usePreviewHostname(values.identifier ?? "");
 
   const choose = (value: MeshMode) => {
     setValue("meshMode", value, { shouldValidate: true });
@@ -221,9 +226,7 @@ export const MeshStep = () => {
 
             <Alert className="mt-2 text-xs text-muted-foreground">
               This hub will join as{" "}
-              <code className="text-foreground">
-                {previewHostname(values.identifier || "hub") || "hub"}
-              </code>{" "}
+              <code className="text-foreground">{hostname}</code>{" "}
               once it starts. The key is stored in <code>docker-compose.yaml</code>,
               alongside the other secrets that deployment folder already holds.
             </Alert>

@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use konstruktor_core::config::hub::StorageMode;
+use konstruktor_core::config::hub::{OllamaChoice, ServiceOptions, StorageMode};
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
 use konstruktor_core::connect::manifest::AdvertisedHost;
 use konstruktor_core::create::{
@@ -11,8 +11,6 @@ use konstruktor_core::profile;
 use tokio_util::sync::CancellationToken;
 
 use crate::ui;
-
-const DEFAULT_COORDINATION_SERVER: &str = "go.arkitekt.live";
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
@@ -77,6 +75,22 @@ pub struct CreateArgs {
     /// The branch to check out, with `--dev`. Left out, each repository's default branch.
     #[arg(long)]
     pub dev_branch: Option<String>,
+    /// Run one service from a checkout of its source instead of its image: `mikro`, or
+    /// `mikro@my-branch`. Repeatable. Needs git. `--dev` is the same for every service.
+    #[arg(long = "from-source", value_name = "SERVICE[@BRANCH]")]
+    pub from_source: Vec<String>,
+    /// Turn Django's debug mode on for one service. Repeatable. Debug shows internals to
+    /// anyone who can reach the service.
+    #[arg(long = "debug", value_name = "SERVICE")]
+    pub debug: Vec<String>,
+    /// Where Alpaka's language models come from: `local` runs an Ollama in this stack;
+    /// anything else is the address of one that already exists.
+    #[arg(long, value_name = "local|URL")]
+    pub ollama: Option<String>,
+    /// A repository Kabinet offers apps from, e.g. `jhnnsrs/ome:main`. Repeatable;
+    /// replaces the ones Kabinet starts with.
+    #[arg(long = "repository", value_name = "OWNER/REPO:BRANCH")]
+    pub repositories: Vec<String>,
     /// Where the database and object storage keep their data. `volumes` (the default)
     /// uses Docker's own named volumes, which is by far the fastest on Docker Desktop;
     /// `folder` bind-mounts `./db_data` and `./rustfs_data` inside the deployment folder
@@ -97,6 +111,11 @@ pub struct CreateArgs {
     /// Never prompt; a missing answer with no default is an error.
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Walk through the desktop wizard's questions — services, storage, mesh, ports and
+    /// addresses — instead of taking them from flags. Flags given anyway pre-fill the
+    /// answers.
+    #[arg(long, conflicts_with = "yes")]
+    pub wizard: bool,
 }
 
 /// Asks, when there is somebody to ask. Otherwise takes the default, and fails loudly
@@ -123,10 +142,13 @@ impl Asker {
     }
 }
 
-pub async fn run(args: CreateArgs) -> Result<()> {
+pub async fn run(mut args: CreateArgs) -> Result<()> {
     let ask = Asker {
         interactive: ui::is_interactive() && !args.yes,
     };
+    if args.wizard && !ask.interactive {
+        bail!("--wizard asks questions, and this is not a terminal — pass the answers as flags");
+    }
 
     ui::say("");
     ui::say(&format!("  {}", ui::bold("Creating a hub")));
@@ -168,7 +190,7 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         None => ask.text(
             "Coordination server",
             "--server",
-            Some(DEFAULT_COORDINATION_SERVER.to_string()),
+            Some(konstruktor_core::defaults::COORDINATION_SERVER.to_string()),
         )?,
     };
 
@@ -180,8 +202,12 @@ pub async fn run(args: CreateArgs) -> Result<()> {
             ask.text("Hub identifier", "--identifier", suggested)?
         }
     };
-    if identifier.trim().len() < 2 {
-        bail!("the hub identifier needs at least two characters");
+    // Checked before anything is asked of the coordination server, by the same rule the
+    // wizard holds.
+    konstruktor_core::create::validate_identifier(&identifier)?;
+
+    if args.wizard {
+        wizard(&mut args).await?;
     }
 
     // --- services -----------------------------------------------------------
@@ -203,33 +229,14 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         }
         Vec::new()
     } else if args.hosts.is_empty() {
-        // No tailnet identity to go on: the hub has not joined one yet, so any tailscale
-        // address on this machine belongs to somebody else's and is not offered.
-        let candidates = hosts::host_candidates(
-            &hosts::bindings().await.unwrap_or_default(),
-            &hosts::KnownMesh::default(),
-        );
-        // Exactly what the wizard's preset of the same name would select — the rule lives
-        // in the core precisely so these two cannot answer differently. `usable` matters:
-        // host_candidates reports everything it finds now, bridges included, and without
-        // it `create` would happily advertise docker0.
-        let chosen: Vec<AdvertisedHost> = candidates
-            .iter()
-            .filter(|c| c.usable && args.reach.accepts(c.kind))
-            .map(|c| AdvertisedHost {
-                host: c.value.clone(),
-                kind: c.kind,
-            })
-            .collect();
+        // Exactly what the wizard's preset of the same name selects — the rule lives in
+        // the core precisely so these two cannot answer differently.
+        let chosen = hosts::discover(args.reach).await;
         if chosen.is_empty() {
             bail!(
                 "nothing on this machine matches --reach {} — widen it, or pass --host \
                  so clients have somewhere to reach this hub",
-                match args.reach {
-                    hosts::ReachPresetId::LocalOnly => "local-only",
-                    hosts::ReachPresetId::ThisNetwork => "this-network",
-                    hosts::ReachPresetId::Public => "public",
-                }
+                args.reach.label()
             );
         }
         chosen
@@ -253,15 +260,19 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         .mesh_key
         .clone()
         .or_else(|| std::env::var("KONSTRUKTOR_MESH_KEY").ok());
+    // The core refuses this too; said here first, in terms of the flags.
     if args.mesh == MeshMode::Manual && mesh_key.as_deref().map(str::trim).unwrap_or("").is_empty()
     {
         bail!("`--mesh manual` needs a key — pass --mesh-key or set KONSTRUKTOR_MESH_KEY");
     }
 
+    let service_options = service_options_from(&args, &services)?;
+
     // Checked here rather than at the checkout: by then the hub has been authorized and
     // written, and "install git and try again" would mean creating it a second time.
-    if args.dev && !konstruktor_core::git::probe().is_ready() {
-        bail!("`--dev` checks the services' source out with git, which is not installed");
+    let needs_git = args.dev || service_options.values().any(|o| o.from_source);
+    if needs_git && !konstruktor_core::git::probe().is_ready() {
+        bail!("running services from source checks them out with git, which is not installed");
     }
 
     let answers = HubAnswers {
@@ -291,9 +302,9 @@ pub async fn run(args: CreateArgs) -> Result<()> {
         dev_hub: args.dev,
         dev_branch: args.dev_branch.clone(),
         storage: args.storage,
-        // `--dev` is all or nothing here. Picking source mode for one service at a time
-        // is a wizard affordance; the flag stays the CLI's whole answer.
-        service_options: Default::default(),
+        // `--dev` and these are a union, as in the wizard: `--dev` for every service,
+        // `--from-source` for the ones named.
+        service_options,
     };
 
     summarise(&answers);
@@ -319,33 +330,72 @@ pub async fn run(args: CreateArgs) -> Result<()> {
     });
 
     let open_browser = !args.no_open && ui::is_interactive();
-    let created = create_hub(&answers, &cancel, &|event| report(event, open_browser)).await?;
+    // Remembered from the event rather than the result: a start that fails still leaves a
+    // written hub whose key is ticking, and that is exactly when it has to be said.
+    let granted = std::sync::atomic::AtomicBool::new(false);
+    let result = create_hub(&answers, &cancel, &|event| {
+        if let CreateEvent::Granted { mesh_key } = &event {
+            granted.store(*mesh_key, std::sync::atomic::Ordering::Relaxed);
+        }
+        report(event, open_browser)
+    })
+    .await;
+    let requested = answers.mesh_mode == MeshMode::Coordination;
+    let granted = granted.load(std::sync::atomic::Ordering::Relaxed);
+
+    let created = match result {
+        Ok(created) => created,
+        Err(error @ konstruktor_core::create::CreateError::StartFailed) => {
+            let reporter = profile::read_profile(&dir).is_ok_and(|p| p.config.reporter.is_some());
+            ui::say("");
+            report_outcome(requested, granted, reporter, false);
+            return Err(error.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     ui::say("");
     ui::ok(&format!(
         "Hub created at {}",
         created.path.to_string_lossy()
     ));
-    if answers.mesh_mode != MeshMode::None {
-        if created.mesh_granted {
-            ui::step(&ui::dim(
-                "A mesh key was granted. Once the stack is up, the hub joins the mesh and \
-                 the coordination server advertises its tailnet address.",
-            ));
-            if !answers.start {
-                ui::warn(
-                    "The mesh key expires 15 minutes after it was issued. Run `konstruktor \
-                     up` before then, or authorize again for a fresh one.",
-                );
-            }
-        } else {
-            ui::warn("A mesh key was asked for, but the coordination server did not grant one.");
-        }
-    }
+    report_outcome(
+        requested,
+        created.mesh_granted,
+        created.config.reporter.is_some(),
+        answers.start,
+    );
     ui::say("");
     // The one line a script would want: stdout, not stderr.
     println!("{}", created.path.to_string_lossy());
     Ok(())
+}
+
+/// What an authorization left behind that a person has to know: whether the mesh key
+/// came, the fifteen minutes it lives when the stack is not up yet, and whether the hub
+/// reports its own health. Shared by `hub create` and `authorize`.
+pub(crate) fn report_outcome(requested: bool, granted: bool, reporter: bool, started: bool) {
+    if requested {
+        if !granted {
+            ui::warn("A mesh key was asked for, but the coordination server did not grant one.");
+        } else if started {
+            ui::step(&ui::dim(
+                "A mesh key was granted: the hub is joining the mesh, and the coordination \
+                 server advertises its tailnet address once it has.",
+            ));
+        } else {
+            ui::warn(
+                "A mesh key was granted. It is single-use and expires 15 minutes after it was \
+                 issued — run `konstruktor up` before then, or `konstruktor authorize \
+                 --mesh-key fresh` for a new one.",
+            );
+        }
+    }
+    if reporter {
+        ui::step(&ui::dim(
+            "The hub reports its own health to the coordination server while it runs.",
+        ));
+    }
 }
 
 pub(crate) fn report(event: CreateEvent, open_browser: bool) {
@@ -414,6 +464,14 @@ fn summarise(answers: &HubAnswers) {
         ("coordination".into(), answers.coord_server.clone()),
         ("identifier".into(), answers.identifier.clone()),
         (
+            "mesh".into(),
+            match answers.mesh_mode {
+                MeshMode::Coordination => "asks the coordination server for a key".into(),
+                MeshMode::Manual => "joins with the key you supplied".into(),
+                MeshMode::None => "none".into(),
+            },
+        ),
+        (
             "services".into(),
             answers
                 .services
@@ -447,6 +505,195 @@ fn summarise(answers: &HubAnswers) {
     }
 }
 
+/// `--wizard`: the desktop wizard's questions after the server and the identifier, in its
+/// order — services, storage, mesh, then ports and addresses unless mesh-only. Each is
+/// pre-filled with what the flags say, which are the shared defaults unless given.
+async fn wizard(args: &mut CreateArgs) -> Result<()> {
+    use inquire::{Confirm, CustomType, MultiSelect, Password, Select, Text};
+    use konstruktor_core::catalog::catalog;
+
+    ui::say("");
+
+    // --- services ---------------------------------------------------------------
+    let offered: Vec<_> = catalog().into_iter().filter(|s| s.emitted).collect();
+    let current = match &args.services {
+        Some(names) => parse_services(names)?,
+        None => konstruktor_core::defaults::services(),
+    };
+    let labels: Vec<String> = offered
+        .iter()
+        .map(|s| format!("{} — {}", s.name, s.description))
+        .collect();
+    let ticked: Vec<usize> = offered
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| current.contains(&s.id))
+        .map(|(i, _)| i)
+        .collect();
+    let chosen = MultiSelect::new("Services", labels.clone())
+        .with_default(&ticked)
+        .prompt()?;
+    if chosen.is_empty() {
+        bail!("pick at least one service");
+    }
+    args.services = Some(
+        chosen
+            .iter()
+            .filter_map(|label| labels.iter().position(|l| l == label))
+            .map(|i| offered[i].id.as_str().to_string())
+            .collect(),
+    );
+
+    // --- storage ----------------------------------------------------------------
+    let storage_choices = vec![
+        "Docker volumes — fast; the engine keeps the data",
+        "Folders in the deployment — data you can see, slow on Docker Desktop",
+    ];
+    let storage = Select::new("Where should the data live?", storage_choices.clone())
+        .with_starting_cursor(match args.storage {
+            StorageMode::DockerVolumes => 0,
+            StorageMode::DeploymentFolder => 1,
+        })
+        .prompt()?;
+    args.storage = if storage == storage_choices[0] {
+        StorageMode::DockerVolumes
+    } else {
+        StorageMode::DeploymentFolder
+    };
+
+    // --- mesh -------------------------------------------------------------------
+    let mesh_choices = vec![
+        "Join the organization's mesh — the coordination server grants the key",
+        "Use a key I already have",
+        "No mesh — reachable only at this machine's addresses",
+    ];
+    let mesh = Select::new("Mesh", mesh_choices.clone())
+        .with_starting_cursor(match args.mesh {
+            MeshMode::Coordination => 0,
+            MeshMode::Manual => 1,
+            MeshMode::None => 2,
+        })
+        .prompt()?;
+    args.mesh = match mesh_choices.iter().position(|c| *c == mesh) {
+        Some(0) => MeshMode::Coordination,
+        Some(1) => MeshMode::Manual,
+        _ => MeshMode::None,
+    };
+    if args.mesh == MeshMode::Manual {
+        if args.mesh_key.is_none() && std::env::var("KONSTRUKTOR_MESH_KEY").is_err() {
+            args.mesh_key = Some(
+                Password::new("Mesh auth key")
+                    .with_display_mode(inquire::PasswordDisplayMode::Masked)
+                    .without_confirmation()
+                    .prompt()?,
+            );
+        }
+        let url = Text::new("Control server (empty for Tailscale's own)")
+            .with_default(args.mesh_coord_url.as_deref().unwrap_or(""))
+            .prompt()?;
+        args.mesh_coord_url = Some(url.trim().to_string()).filter(|u| !u.is_empty());
+    }
+    args.mesh_only = args.mesh != MeshMode::None
+        && Confirm::new("Mesh only? No ports are opened here, and only mesh clients can connect")
+            .with_default(args.mesh_only)
+            .prompt()?;
+
+    // --- ports and addresses, unless mesh-only -----------------------------------
+    if !args.mesh_only {
+        args.http_port = CustomType::<u16>::new("HTTP port")
+            .with_default(args.http_port)
+            .prompt()?;
+        args.https_port = CustomType::<u16>::new("HTTPS port")
+            .with_default(args.https_port)
+            .prompt()?;
+        if args.http_port == args.https_port {
+            bail!("the two ports must differ");
+        }
+
+        if args.hosts.is_empty() {
+            let candidates = hosts::host_candidates(
+                &hosts::bindings().await.unwrap_or_default(),
+                &hosts::KnownMesh::default(),
+            );
+            let presets = hosts::reach_presets(&candidates);
+            let labels: Vec<String> = presets
+                .iter()
+                .map(|p| {
+                    let found = if p.values.is_empty() {
+                        "nothing on this machine".to_string()
+                    } else {
+                        p.values.join(", ")
+                    };
+                    format!("{} — {found}", p.label)
+                })
+                .collect();
+            let start = presets.iter().position(|p| p.id == args.reach).unwrap_or(0);
+            let picked = Select::new("How far should the hub reach?", labels.clone())
+                .with_starting_cursor(start)
+                .prompt()?;
+            if let Some(i) = labels.iter().position(|l| *l == picked) {
+                args.reach = presets[i].id;
+            }
+        }
+    }
+    ui::say("");
+    Ok(())
+}
+
+/// The per-service answers the wizard collects under each service's gear, from flags.
+/// Only services somebody said something about are in the map, as in the wizard: an
+/// untouched service takes the defaults.
+fn service_options_from(
+    args: &CreateArgs,
+    services: &[ServiceId],
+) -> Result<std::collections::BTreeMap<ServiceId, ServiceOptions>> {
+    use std::collections::BTreeMap;
+
+    let named = |name: &str, flag: &str| -> Result<ServiceId> {
+        let id = parse_services(&[name.to_string()])?[0];
+        if !services.contains(&id) && id != ServiceId::Rekuest {
+            bail!("{flag} {name}: this hub does not run {name} — add it to --services");
+        }
+        Ok(id)
+    };
+
+    let mut options: BTreeMap<ServiceId, ServiceOptions> = BTreeMap::new();
+    for spec in &args.from_source {
+        let (name, branch) = match spec.split_once('@') {
+            Some((name, branch)) => (name, Some(branch.trim().to_string())),
+            None => (spec.as_str(), None),
+        };
+        let entry = options.entry(named(name, "--from-source")?).or_default();
+        entry.from_source = true;
+        entry.branch = branch.filter(|b| !b.is_empty());
+    }
+    for name in &args.debug {
+        options.entry(named(name, "--debug")?).or_default().debug = true;
+    }
+    if let Some(ollama) = args.ollama.as_deref().map(str::trim) {
+        let choice = match ollama {
+            "local" => OllamaChoice {
+                run_locally: true,
+                url: None,
+            },
+            url => OllamaChoice {
+                run_locally: false,
+                url: Some(url.to_string()),
+            },
+        };
+        options.entry(named("alpaka", "--ollama")?).or_default().ollama = Some(choice);
+    }
+    if !args.repositories.is_empty() {
+        options.entry(named("kabinet", "--repository")?).or_default().repositories =
+            Some(args.repositories.iter().map(|r| r.trim().to_string()).collect());
+    }
+
+    // The core holds the same rules for the wizard; asked here too so a bad flag is
+    // refused before anybody is sent to a browser.
+    konstruktor_core::create::validate_service_options(&options)?;
+    Ok(options)
+}
+
 fn parse_services(names: &[String]) -> Result<Vec<ServiceId>> {
     names
         .iter()
@@ -467,4 +714,80 @@ fn parse_services(names: &[String]) -> Result<Vec<ServiceId>> {
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: CreateArgs,
+    }
+
+    fn args(extra: &[&str]) -> CreateArgs {
+        let mut argv = vec!["konstruktor"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).expect("the flags parse").args
+    }
+
+    /// The flags fill exactly the answers the wizard's gear collects, and nothing for a
+    /// service nobody mentioned.
+    #[test]
+    fn per_service_flags_become_the_wizards_answers() {
+        let args = args(&[
+            "--from-source",
+            "mikro@feature/zarr",
+            "--from-source",
+            "fluss",
+            "--debug",
+            "mikro",
+            "--ollama",
+            "http://gpu-box:11434",
+            "--repository",
+            "jhnnsrs/ome:main",
+        ]);
+        let services = konstruktor_core::defaults::services();
+        let options = service_options_from(&args, &services).expect("valid answers");
+
+        let mikro = &options[&ServiceId::Mikro];
+        assert!(mikro.from_source && mikro.debug);
+        assert_eq!(mikro.branch.as_deref(), Some("feature/zarr"));
+        assert!(options[&ServiceId::Fluss].from_source);
+        assert_eq!(options[&ServiceId::Fluss].branch, None);
+        let ollama = options[&ServiceId::Alpaka].ollama.as_ref().expect("a provider");
+        assert!(!ollama.run_locally);
+        assert_eq!(ollama.url.as_deref(), Some("http://gpu-box:11434"));
+        assert_eq!(
+            options[&ServiceId::Kabinet].repositories.as_deref(),
+            Some(&["jhnnsrs/ome:main".to_string()][..])
+        );
+        assert!(!options.contains_key(&ServiceId::Kraph));
+    }
+
+    /// Naming a service the hub does not run is a mistake worth saying, not an answer to
+    /// drop silently.
+    #[test]
+    fn a_flag_for_a_service_that_is_not_running_is_refused() {
+        let args = args(&["--debug", "elektro"]);
+        let services = konstruktor_core::defaults::services();
+        assert!(!services.contains(&ServiceId::Elektro));
+        assert!(service_options_from(&args, &services).is_err());
+    }
+
+    /// The defaults the wizard starts from are the ones the flags default to.
+    #[test]
+    fn the_flag_defaults_are_the_shared_defaults() {
+        use konstruktor_core::defaults;
+        let args = args(&[]);
+        assert_eq!(args.http_port, defaults::HTTP_PORT);
+        assert_eq!(args.https_port, defaults::HTTPS_PORT);
+        assert_eq!(args.reach, defaults::REACH);
+        assert_eq!(args.mesh, defaults::MESH_MODE);
+        assert_eq!(args.mesh_only, defaults::MESH_ONLY);
+        assert_eq!(args.storage, defaults::STORAGE);
+        assert_eq!(!args.no_start, defaults::START);
+    }
 }

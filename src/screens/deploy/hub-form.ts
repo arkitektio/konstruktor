@@ -107,6 +107,15 @@ export const baseUrl = (server: string): string => {
 };
 
 /**
+ * The known-servers list with `server` in it, once: `go.arkitekt.live` and
+ * `https://go.arkitekt.live/` are the same server. Both wizards remember a server this way.
+ */
+export const withKnownServer = (known: string[], server: string): string[] =>
+  known.some((entry) => baseUrl(entry).toLowerCase() === baseUrl(server).toLowerCase())
+    ? known
+    : [...known, server];
+
+/**
  * A coordination server address, as the picker lets one be given.
  *
  * Either a bare host or a full URL: insisting on the bare-host shape would reject

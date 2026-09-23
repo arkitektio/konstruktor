@@ -196,8 +196,34 @@ mod mesh {
             hostname: "lab-hub".into(),
             auth_key: "tskey-auth-secret".into(),
             coord_url: Some("https://mesh.example.org".into()),
+            login: None,
         }));
         config
+    }
+
+    /// A key minted for a login keeps its node under that login, so another login starts
+    /// a fresh node instead of reviving one the server may have revoked with its session.
+    /// One from before servers named the login keeps the directory it always had.
+    #[test]
+    fn keeps_the_node_state_per_login() {
+        let legacy = compose(&meshed());
+        assert_eq!(
+            legacy["services"]["tailscale"]["environment"]["TS_STATE_DIR"].as_str(),
+            Some("/var/lib/tailscale")
+        );
+
+        let mut keyed = meshed();
+        keyed.mesh.as_mut().unwrap().login = Some("2-3-50".into());
+        let keyed = compose(&keyed);
+        assert_eq!(
+            keyed["services"]["tailscale"]["environment"]["TS_STATE_DIR"].as_str(),
+            Some("/var/lib/tailscale/2-3-50")
+        );
+        // Same volume: the logins sit side by side in it.
+        assert_eq!(
+            keyed["services"]["tailscale"]["volumes"][0].as_str(),
+            Some("tailscale_state:/var/lib/tailscale")
+        );
     }
 
     fn compose(config: &HubConfig) -> Value {
@@ -272,6 +298,7 @@ mod mesh {
             hostname: "lab-hub".into(),
             auth_key: "tskey-auth-secret".into(),
             coord_url: None,
+            login: None,
         }));
         let compose = compose(&config);
         assert!(compose["services"]["tailscale"]["environment"]
@@ -402,6 +429,7 @@ mod stack_images {
             hostname: "lab-hub".into(),
             auth_key: "tskey-auth-secret".into(),
             coord_url: None,
+            login: None,
         }));
 
         let written = compose_service_names(&config);

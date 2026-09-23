@@ -115,9 +115,15 @@ export type ServiceUpdate = {
   imageCreated: string | null;
 };
 
-const tagOf = (image: string | null | undefined): string | null => {
+/**
+ * The tag out of an image reference — `konstruktor_core::status::image_tag`, kept in step.
+ * A digest-pinned `repo:tag@sha256:…` (what an update or rollback writes) has its last
+ * colon in the digest, so the pin is dropped before looking.
+ */
+export const tagOf = (image: string | null | undefined): string | null => {
   if (!image) return null;
-  const last = image.split("/").pop() ?? image;
+  const bare = image.split("@")[0];
+  const last = bare.split("/").pop() ?? bare;
   const colon = last.lastIndexOf(":");
   return colon === -1 ? null : last.slice(colon + 1);
 };

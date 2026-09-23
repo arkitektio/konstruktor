@@ -255,10 +255,10 @@ impl OllamaBlock {
     }
 }
 
-/// The image the `reporter` container runs: this Konstruktor, as a CLI, in a container.
-/// Pinned to the version that generated the stack, so the reporter speaks the contract
-/// this build was written against.
-pub const REPORTER_IMAGE: &str = concat!("ghcr.io/arkitektio/konstruktor:", env!("CARGO_PKG_VERSION"));
+/// The image the `reporter` container runs: Konstruktor's CLI, in a container, published
+/// to Docker Hub by every release. `latest` rather than a version, so a stack written by a
+/// build that was never released still has an image to pull.
+pub const REPORTER_IMAGE: &str = "jhnnsrs/reporter:latest";
 
 /// The container that reports the hub's health to its coordination server — see
 /// `crate::hubhealth`. Present once the hub has been authorized, since it logs in as

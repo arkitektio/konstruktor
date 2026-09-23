@@ -33,6 +33,42 @@ pub struct MeshBlock {
     /// nothing on the LAN. Kept here so a re-authorization advertises the same thing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mesh_only: bool,
+    /// The login the key was minted for (`sub-organization-hub`). The sidecar keeps its
+    /// node state under it, so a hub accepted by another user, into another organization
+    /// or as another hub starts from a fresh node instead of a revoked one. Absent on keys
+    /// from before servers said, which keep the state directory they always had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+}
+
+impl MeshBlock {
+    /// Where the sidecar keeps its node state: one directory per login.
+    pub fn state_dir(&self) -> String {
+        match &self.login {
+            Some(login) => format!("{MESH_STATE_DIR}/{login}"),
+            None => MESH_STATE_DIR.to_string(),
+        }
+    }
+
+    /// What every sidecar is started with, a hub's or an engine's.
+    ///
+    /// The key and the control server, and nothing that advertises tags: the server tags
+    /// a node by the key it was minted for, and an advertised tag would be accepted as
+    /// given — putting the node into groups it was never meant to be in.
+    pub fn sidecar_environment(&self) -> Vec<(&'static str, String)> {
+        let mut environment = vec![
+            ("TS_AUTHKEY", self.auth_key.clone()),
+            ("TS_HOSTNAME", self.hostname.clone()),
+            ("TS_STATE_DIR", self.state_dir()),
+            // The kernel networking path; userspace mode would not carry the traffic of
+            // the containers that share the sidecar's namespace.
+            ("TS_USERSPACE", "false".to_string()),
+        ];
+        if let Some(coord) = &self.coord_url {
+            environment.push(("TS_EXTRA_ARGS", format!("--login-server={coord}")));
+        }
+        environment
+    }
 }
 
 /// Where the sidecar keeps its node identity, so a restart is not a new machine.
@@ -48,6 +84,8 @@ pub struct MeshOptions {
     pub hostname: String,
     pub auth_key: String,
     pub coord_url: Option<String>,
+    /// See [`MeshBlock::login`].
+    pub login: Option<String>,
 }
 
 pub fn build_mesh_block(options: &MeshOptions) -> MeshBlock {
@@ -65,6 +103,7 @@ pub fn build_mesh_block(options: &MeshOptions) -> MeshBlock {
             .map(str::to_string),
         volume_name: "tailscale_state".to_string(),
         mesh_only: false,
+        login: options.login.clone(),
     }
 }
 
@@ -122,6 +161,7 @@ mod tests {
             hostname: "hub".into(),
             auth_key: "tskey-x".into(),
             coord_url: Some("   ".into()),
+            login: None,
         });
         assert_eq!(block.coord_url, None);
         let yaml = serde_norway::to_string(&block).unwrap();

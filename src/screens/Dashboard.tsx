@@ -17,7 +17,9 @@ import type { Container, DeploymentRecord, HubStatus, ImageState, UpstreamCheck 
 import { useCheckouts } from "./dashboard/CheckoutsCard";
 import { DeploymentMenu } from "./dashboard/DeploymentMenu";
 import { EngineDashboard } from "./EngineDashboard";
+import { GatewayCheck, useGatewayCheck } from "./dashboard/GatewayCheck";
 import { InfrastructureRow } from "./dashboard/InfrastructureRow";
+import { InfrastructureUpdates } from "./dashboard/InfrastructureUpdates";
 import { LifecycleRail } from "./dashboard/LifecycleRail";
 import { ServiceCard } from "./dashboard/ServiceCard";
 import { UpdatesCard } from "./dashboard/UpdatesCard";
@@ -190,6 +192,7 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
   const devHub = checkouts.length > 0;
   /** Up or partly up: the difference between a red tile and a grey page. */
   const stackUp = run.state === "running" || run.state === "partial";
+  const gateway = useGatewayCheck(deployment.path, stackUp);
 
   const refreshAll = () => {
     void loadContainers();
@@ -457,6 +460,20 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
           </div>
         )}
 
+        {stackUp && (
+          <div>
+            <SectionHeading hint="Every service, asked through every address this hub advertises — from this machine. Addresses this machine cannot reach are shown greyed, not failed.">
+              Gateway
+            </SectionHeading>
+            <GatewayCheck
+              aliases={gateway.aliases}
+              checking={gateway.checking}
+              error={gateway.error}
+              onCheck={gateway.run}
+            />
+          </div>
+        )}
+
         {infrastructure.length > 0 && (
           <div>
             <SectionHeading hint="The database, cache, object storage and gateway the services run on.">
@@ -468,6 +485,11 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
               deployment={deployment}
               updates={updates}
               onRestart={restart}
+            />
+            <InfrastructureUpdates
+              path={deployment.path}
+              stackUp={stackUp}
+              onUpdated={refreshAll}
             />
           </div>
         )}

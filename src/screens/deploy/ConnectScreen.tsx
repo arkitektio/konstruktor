@@ -57,8 +57,17 @@ export const ConnectScreen: React.FC<{}> = () => {
   const [forgotten, setForgotten] = useState(false);
   const [authorizing, setAuthorizing] = useState<CreateState>(emptyCreateState);
 
+  /** Ask for a new mesh key even though the hub is on a mesh — its last one expired. */
+  const [freshKey, setFreshKey] = useState(false);
+  const [outcome, setOutcome] = useState<api.ReauthorizeOutcome | undefined>();
+
   const server = status?.profile.config.coord_server ?? "";
   const ssl = status?.profile.config.gateway.ssl ?? false;
+  const mesh = status?.profile.config.mesh;
+  const onMesh = Boolean(mesh?.enabled);
+  // A mesh-only hub advertises nothing on this machine's networks: the manifest carries
+  // its tailnet node and in-network gateway itself, so there are no addresses to pick.
+  const meshOnly = onMesh && Boolean(mesh?.mesh_only);
   // From the core, which is where the manifest works it out — a probe has to aim at the
   // socket the coordination server will actually hand out, not a second guess at it.
   const port = status?.advertised_port ?? (ssl ? 443 : 80);
@@ -73,19 +82,7 @@ export const ConnectScreen: React.FC<{}> = () => {
     if (!deployment) return;
     let cancelled = false;
 
-    // The hub's own mesh config names its node on the tailnet, and the coordination
-    // server may name the tailnet itself. Either is enough to tell this hub's tailnet
-    // from the others this machine is on; with neither they are all "other tailscales".
-    const discovery = api
-      .hubStatus(deployment.path)
-      .then(async (status) => {
-        const server = status.profile.config.coord_server;
-        const domain = server ? await api.meshDomain(server).catch(() => null) : null;
-        return [
-          status,
-          await api.hostCandidates({ domain, hostname: status.mesh_hostname }),
-        ] as const;
-      });
+    const discovery = Promise.all([api.hubStatus(deployment.path), api.hostCandidates()]);
 
     discovery
       .then(([status, discovery]) => {
@@ -95,9 +92,8 @@ export const ConnectScreen: React.FC<{}> = () => {
         setCandidates(discovery.candidates);
         setPresets(discovery.presets);
 
-        // What the hub already advertises comes first. This screen exists to *add* the
-        // tailnet address, which no scan of this machine will ever turn up — starting
-        // from a fresh scan would silently drop it every time.
+        // What the hub already advertises comes first: a fresh scan would silently drop
+        // anything this machine cannot see from where it stands, every time.
         const previous = status.advertised_hosts ?? [];
         if (previous.length > 0) {
           setSelected(previous);
@@ -193,11 +189,12 @@ export const ConnectScreen: React.FC<{}> = () => {
       setAuthorizing((previous) => reduceCreate(previous, event));
 
     try {
-      await api.reauthorizeHub(
+      const result = await api.reauthorizeHub(
         {
           path: deployment.path,
           coordServer: server,
           identifier: identifier.trim(),
+          // The core ignores these for a mesh-only hub either way.
           hosts: meshOnly ? [] : selected,
           // Only a confirmed probe. Marking an alias public invites the coordination
           // server to health check it, and one it cannot reach would look permanently
@@ -205,11 +202,13 @@ export const ConnectScreen: React.FC<{}> = () => {
           reachableHosts: selected
             .map((host) => host.host)
             .filter((host) => reachability[host]?.probe?.result === "reachable"),
-          // A hub already on the mesh keeps its key; asking again would mint a second.
-          requestAuthKey: status?.mesh_hostname == null,
+          // The core asks for a key when the hub is not on a mesh yet; "fresh" asks
+          // anyway, for a key that expired before the hub ever joined.
+          meshKey: freshKey ? "fresh" : "auto",
         },
         onEvent
       );
+      setOutcome(result);
       setAuthorizing((previous) => ({ ...previous, running: false, done: true }));
       // Re-authorizing rewrites the record — the identifier above is editable, and the
       // generation timestamp the dashboard's rail reads has just moved. Without this the
@@ -222,7 +221,7 @@ export const ConnectScreen: React.FC<{}> = () => {
         error: typeof error === "string" ? error : String(error),
       }));
     }
-  }, [deployment, server, identifier, selected, status, reachability, refresh]);
+  }, [deployment, server, identifier, selected, meshOnly, freshKey, reachability, refresh]);
 
   if (registryLoading) return null;
 
@@ -241,9 +240,6 @@ export const ConnectScreen: React.FC<{}> = () => {
   }
 
   const busy = authorizing.running;
-  // A mesh-only hub advertises nothing on this machine's networks: the manifest carries
-  // its tailnet node and in-network gateway itself, so there are no addresses to pick.
-  const meshOnly = Boolean(status?.profile.config.mesh?.mesh_only);
 
   return (
     <>
@@ -307,8 +303,26 @@ export const ConnectScreen: React.FC<{}> = () => {
 
           {authorizing.done && (
             <Alert className="max-w-2xl border-primary/50">
-              This hub is authorized and its service configuration has been rewritten.
-              Restart the stack from the dashboard to pick it up.
+              <div className="flex flex-col gap-1">
+                <span>
+                  This hub is authorized and its service configuration has been rewritten.
+                  Restart the stack from the dashboard to pick it up.
+                </span>
+                {outcome?.mesh_requested && !outcome.mesh_granted && (
+                  <span className="text-destructive">
+                    A mesh key was asked for, but the coordination server did not grant one.
+                  </span>
+                )}
+                {outcome?.mesh_granted && (
+                  <strong>
+                    A mesh key was granted. It is single-use and expires 15 minutes after it
+                    was issued — restart the stack before then.
+                  </strong>
+                )}
+                {outcome?.reporter_enabled && (
+                  <span>The hub reports its own health to the coordination server while it runs.</span>
+                )}
+              </div>
             </Alert>
           )}
 
@@ -323,6 +337,29 @@ export const ConnectScreen: React.FC<{}> = () => {
                 onChange={(event) => setIdentifier(event.target.value)}
               />
             </StepField>
+            {onMesh ? (
+              <label className="mt-4 flex items-start gap-3 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={freshKey}
+                  onChange={(event) => setFreshKey(event.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">Get a fresh mesh key</span>
+                  <span className="block text-muted-foreground">
+                    For a hub whose key expired before it joined the mesh — keys are
+                    single-use and live 15 minutes. A hub that already joined keeps its
+                    identity without one.
+                  </span>
+                </span>
+              </label>
+            ) : (
+              <p className="mt-4 text-sm text-muted-foreground">
+                This hub is not on a mesh yet, so a mesh key is asked for with this
+                authorization.
+              </p>
+            )}
           </div>
 
           {meshOnly ? (

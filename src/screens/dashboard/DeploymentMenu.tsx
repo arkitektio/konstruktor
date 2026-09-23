@@ -16,6 +16,7 @@ import {
   ScrollText,
   ShieldCheck,
   Trash2,
+  Undo2,
 } from "lucide-react";
 
 import {
@@ -34,7 +35,7 @@ import {
 } from "../../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 import * as api from "../../api";
-import type { DeletionPlan, DeploymentRecord, HubStatus } from "../../api";
+import type { DeletionPlan, DeploymentRecord, HubStatus, RollbackPlan } from "../../api";
 import { useRegistry } from "../../registry/registry-context";
 import { BackupDialog } from "./BackupDialog";
 import { RestoreDialog } from "./RestoreDialog";
@@ -50,7 +51,7 @@ import { RestoreDialog } from "./RestoreDialog";
  */
 
 /** Which confirmation is open, if any. Each one names a different amount of loss. */
-type Confirm = "down" | "purge" | "forget" | "delete" | "backup" | "restore";
+type Confirm = "down" | "purge" | "forget" | "delete" | "backup" | "restore" | "rollback";
 
 /**
  * The two confirmations that are a line of copy and a button.
@@ -59,7 +60,7 @@ type Confirm = "down" | "purge" | "forget" | "delete" | "backup" | "restore";
  * be typed, and both need a description richer than a string.
  */
 const CONFIRM_COPY: Record<
-  Exclude<Confirm, "delete" | "purge" | "backup" | "restore">,
+  Exclude<Confirm, "delete" | "purge" | "backup" | "restore" | "rollback">,
   { title: string; description: string; action: string }
 > = {
   down: {
@@ -99,6 +100,22 @@ export const DeploymentMenu = ({
    * of a menu nobody has opened.
    */
   const [plan, setPlan] = useState<DeletionPlan | undefined>();
+  /** What a rollback would put back — or why there is nothing to. */
+  const [rollback, setRollback] = useState<
+    { plan: RollbackPlan } | { error: string } | undefined
+  >();
+
+  useEffect(() => {
+    if (confirm !== "rollback") return;
+    let cancelled = false;
+    api
+      .rollbackPlan(deployment.path)
+      .then((next) => !cancelled && setRollback({ plan: next }))
+      .catch((error) => !cancelled && setRollback({ error: String(error) }));
+    return () => {
+      cancelled = true;
+    };
+  }, [confirm, deployment.path]);
 
   useEffect(() => {
     if (confirm !== "delete" && confirm !== "purge") return;
@@ -241,6 +258,12 @@ export const DeploymentMenu = ({
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Danger zone</DropdownMenuLabel>
           {deployment.kind === "hub" && (
+            <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("rollback")}>
+              <Undo2 />
+              Roll back the last update…
+            </DropdownMenuItem>
+          )}
+          {deployment.kind === "hub" && (
             <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("restore")}>
               <HardDriveUpload />
               Restore from backup…
@@ -284,6 +307,56 @@ export const DeploymentMenu = ({
           deployment={deployment}
           onOpenChange={(next) => !next && setConfirm(null)}
           onDone={onRefresh}
+        />
+      )}
+
+      {confirm === "rollback" && (
+        <ConfirmByNameDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) {
+              setConfirm(null);
+              setRollback(undefined);
+            }
+          }}
+          title="Roll back the last update?"
+          expected={deployment.name}
+          confirmTitle="Roll back"
+          runningTitle="Rolling back…"
+          description={
+            <>
+              {rollback === undefined && <span>Reading what this hub ran before…</span>}
+              {rollback && "error" in rollback && <span>{rollback.error}</span>}
+              {rollback && "plan" in rollback && (
+                <>
+                  <span>
+                    Back to the images this hub was running before ({rollback.plan.reason}):
+                  </span>
+                  <span className="font-mono text-xs break-all whitespace-pre-line">
+                    {rollback.plan.changes
+                      .map((change) => `${change.service}  →  ${change.to}`)
+                      .join("\n")}
+                  </span>
+                  {rollback.plan.warnings.map((warning) => (
+                    <span key={warning}>{warning}</span>
+                  ))}
+                </>
+              )}
+              <span>
+                <strong>This puts the code back, not the data.</strong> Services migrate
+                their database forward when they start, so the older images meet the newer
+                schema. If the update migrated anything, restore the backup taken before it
+                instead.
+              </span>
+            </>
+          }
+          onConfirm={async () => {
+            if (!rollback || !("plan" in rollback)) {
+              throw new Error("There is nothing to roll back to.");
+            }
+            await api.rollbackApply(deployment.path, () => undefined);
+            onRefresh();
+          }}
         />
       )}
 

@@ -304,19 +304,11 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         // address the host happens to have. The published ports move with it: docker binds
         // them on the namespace's owner, and `network_mode: service:` forbids declaring
         // `ports` or `networks` on the member.
-        let mut environment = vec![
-            ("TS_AUTHKEY", s(&mesh.auth_key)),
-            ("TS_HOSTNAME", s(&mesh.hostname)),
-            ("TS_STATE_DIR", s(MESH_STATE_DIR)),
-            // The kernel networking path; userspace mode would not carry the gateway's
-            // traffic for it.
-            ("TS_USERSPACE", s("false")),
-        ];
-        let extra_args;
-        if let Some(coord) = &mesh.coord_url {
-            extra_args = format!("--login-server={coord}");
-            environment.push(("TS_EXTRA_ARGS", s(&extra_args)));
-        }
+        let mut environment: Vec<(&str, Value)> = mesh
+            .sidecar_environment()
+            .into_iter()
+            .map(|(key, value)| (key, s(&value)))
+            .collect();
         if share_socket {
             environment.push(("TS_SOCKET", s(TAILSCALE_SOCKET)));
         }

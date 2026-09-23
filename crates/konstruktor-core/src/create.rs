@@ -27,9 +27,10 @@ use crate::{compose, docker, git, registry};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeshMode {
-    #[default]
     None,
-    /// Ask the coordination server to mint one while it accepts the hub.
+    /// Ask the coordination server to mint one while it accepts the hub. The default —
+    /// see `crate::defaults::MESH_MODE`.
+    #[default]
     Coordination,
     /// Use a key the user already holds.
     Manual,
@@ -108,13 +109,13 @@ fn admin() -> String {
     "admin".into()
 }
 fn http_port() -> u16 {
-    7080
+    crate::defaults::HTTP_PORT
 }
 fn https_port() -> u16 {
-    7443
+    crate::defaults::HTTPS_PORT
 }
 fn yes() -> bool {
-    true
+    crate::defaults::START
 }
 
 /// What the caller learns while a hub is being created.
@@ -164,6 +165,21 @@ pub enum CreateError {
     /// The answers contradict each other, caught before anything is authorized.
     #[error("{0}")]
     Answers(String),
+    /// A mesh-only hub was accepted without a mesh key, and has no other way in. Nothing
+    /// was written.
+    #[error(
+        "The hub was accepted, but no mesh key was granted with it — and a mesh-only hub \
+         has no other way in. Ask whoever accepts hubs to grant a mesh key, or create it \
+         with addresses on this network."
+    )]
+    NoMeshKey,
+    #[error(
+        "The engine was accepted, but no mesh key was granted with it, so its plugins could \
+         not reach hubs over the mesh. Nothing was written. Ask whoever accepted it to leave \
+         mesh access allowed, check that the organization has a mesh — or create the engine \
+         without one."
+    )]
+    EngineNoMeshKey,
     #[error(transparent)]
     Authorization(#[from] HubAuthorizationError),
     /// The app flow, which is how a plugin engine is claimed — separate from the hub's
@@ -202,11 +218,20 @@ pub async fn create_hub(
     cancel: &CancellationToken,
     on: &(dyn Fn(CreateEvent) + Sync),
 ) -> Result<CreatedHub, CreateError> {
+    validate_identifier(&answers.identifier)?;
+    validate_service_options(&answers.service_options)?;
     if answers.mesh_only && answers.mesh_mode == MeshMode::None {
         return Err(CreateError::Answers(
             "A mesh-only hub needs a mesh — choose a way to join one, or advertise \
              addresses on this network instead."
                 .into(),
+        ));
+    }
+    if answers.mesh_mode == MeshMode::Manual
+        && answers.mesh_auth_key.as_deref().map(str::trim).unwrap_or("").is_empty()
+    {
+        return Err(CreateError::Answers(
+            "Joining a mesh with a key of your own needs the key.".into(),
         ));
     }
 
@@ -237,6 +262,8 @@ pub async fn create_hub(
             hostname: mesh_hostname(&answers.identifier),
             auth_key: key.to_string(),
             coord_url: answers.mesh_coord_url.clone(),
+            // A tailnet of the user's own: no login of the coordination server's to key by.
+            login: None,
         });
 
     // Mesh-only publishes nothing on the host: the sidecar carries every request, so
@@ -291,9 +318,9 @@ pub async fn create_hub(
             // Declared up front even for a key that is only about to be minted: the
             // server resolves it against whichever node registers with that key.
             mesh_alias: answers.mesh_mode != MeshMode::None,
-            internal_host: answers
-                .mesh_only
-                .then(|| config.gateway.host.clone()),
+            // Every hub: plugins an attached engine starts sit on the hub's network and
+            // reach it only as `gateway`. Scope local, so clients elsewhere skip it.
+            internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
         },
     );
@@ -313,7 +340,7 @@ pub async fn create_hub(
     })
     .await?;
 
-    let issued_key = envelope.auth.ionscale_auth_key.clone();
+    let issued_key = envelope.mesh_grant().ionscale_auth_key.clone();
     let mesh_granted = issued_key.is_some();
     on(CreateEvent::Granted {
         mesh_key: mesh_granted,
@@ -326,7 +353,8 @@ pub async fn create_hub(
             config.mesh = Some(build_mesh_block(&MeshOptions {
                 hostname: mesh_hostname(&answers.identifier),
                 auth_key: key,
-                coord_url: envelope.auth.ionscale_coord_url.clone(),
+                coord_url: envelope.mesh_grant().ionscale_coord_url.clone(),
+                login: envelope.login(),
             }));
         }
     }
@@ -337,14 +365,7 @@ pub async fn create_hub(
             // Accepted, but without a key: written as it stands, this hub would publish
             // no port and join no tailnet — reachable by nothing. Better to stop here,
             // with nothing on disk, than to write that.
-            None => {
-                return Err(CreateError::Answers(
-                    "The hub was accepted, but no mesh key was granted with it — and a \
-                     mesh-only hub has no other way in. Ask whoever accepts hubs to \
-                     grant a mesh key, or create it with addresses on this network."
-                        .into(),
-                ))
-            }
+            None => return Err(CreateError::NoMeshKey),
         }
     }
 
@@ -444,17 +465,13 @@ pub async fn create_hub(
     // --- start --------------------------------------------------------------
     if answers.start {
         on(CreateEvent::Starting);
-        let output = crate::docker::command()
-            .args(compose::up())
-            .current_dir(&dir)
-            .output()?;
-
-        for line in String::from_utf8_lossy(&output.stderr).lines() {
+        // The same start every front end runs — including the reporter fallback, so a
+        // reporter image that cannot be pulled does not fail a hub that was just written.
+        let log = |line: crate::compose::ComposeLine| on(CreateEvent::Log { line: line.line });
+        if let Err(error) = crate::start::start(&dir, &log).await {
             on(CreateEvent::Log {
-                line: line.to_string(),
+                line: error.to_string(),
             });
-        }
-        if !output.status.success() {
             return Err(CreateError::StartFailed);
         }
     }
@@ -471,10 +488,6 @@ pub async fn create_hub(
     })
 }
 
-/// The three remedies, worded once.
-///
-/// The verdict and what to do about it, as text. Worded once, in `remedy`, for both
-/// front ends — the desktop app shows the same remedies as buttons.
 /// The files a hub with these answers would be written to, without writing any of them.
 ///
 /// Built from a throwaway config with a placeholder identity: the *names* do not depend on
@@ -500,6 +513,8 @@ pub fn preview_files(answers: &HubAnswers) -> Vec<String> {
         .collect()
 }
 
+/// The verdict on the container engine and what to do about it, as text. Worded once, in
+/// `remedy`, for both front ends — the desktop app shows the same remedies as buttons.
 pub fn describe_docker(probe: &docker::DockerProbe) -> String {
     crate::remedy::describe(probe)
 }
@@ -653,6 +668,69 @@ mod tests {
     }
 
     #[test]
+    fn identifiers_follow_the_wizard_rule() {
+        for ok in ["lab-hub", "ab", "Lab.Hub_2", "9lives"] {
+            assert!(validate_identifier(ok).is_ok(), "{ok}");
+        }
+        for bad in ["a", "-lab", "lab hub", "lab/hub", "", &"a".repeat(61)] {
+            assert!(validate_identifier(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn service_answers_are_held_to_the_wizard_rules() {
+        use crate::config::hub::OllamaChoice;
+        let one = |options: ServiceOptions| BTreeMap::from([(ServiceId::Mikro, options)]);
+
+        assert!(validate_service_options(&one(ServiceOptions {
+            from_source: true,
+            branch: Some("feature/new-thing".into()),
+            ..Default::default()
+        }))
+        .is_ok());
+        assert!(validate_service_options(&one(ServiceOptions {
+            from_source: true,
+            branch: Some("has space".into()),
+            ..Default::default()
+        }))
+        .is_err());
+        // A remote Ollama with no address would leave Alpaka with nothing to talk to.
+        assert!(validate_service_options(&BTreeMap::from([(
+            ServiceId::Alpaka,
+            ServiceOptions {
+                ollama: Some(OllamaChoice {
+                    run_locally: false,
+                    url: Some("  ".into()),
+                }),
+                ..Default::default()
+            }
+        )]))
+        .is_err());
+    }
+
+    #[test]
+    fn a_mesh_key_is_asked_for_only_when_it_is_needed() {
+        use crate::config::hub::{build_hub_config, HubConfigOptions};
+        let off_mesh = build_hub_config(&HubConfigOptions::default());
+        let mut on_mesh = off_mesh.clone();
+        on_mesh.mesh = Some(build_mesh_block(&MeshOptions {
+            hostname: "lab".into(),
+            auth_key: "k".into(),
+            coord_url: None,
+            login: None,
+        }));
+        let mut keyed = on_mesh.clone();
+        keyed.mesh.as_mut().unwrap().login = Some("2-3-50".into());
+
+        assert!(MeshKeyRequest::Auto.asks(&off_mesh));
+        assert!(!MeshKeyRequest::Auto.asks(&on_mesh));
+        // Keyed by login: which login the next grant is only shows once it is accepted.
+        assert!(MeshKeyRequest::Auto.asks(&keyed));
+        assert!(MeshKeyRequest::Fresh.asks(&on_mesh));
+        assert!(!MeshKeyRequest::Never.asks(&off_mesh));
+    }
+
+    #[test]
     fn converts_a_known_day_correctly() {
         // 2000-03-01 is the epoch the civil-from-days algorithm is centred on.
         assert_eq!(civil_from_days(11017), (2000, 3, 1));
@@ -660,12 +738,97 @@ mod tests {
     }
 }
 
+/// A hub identifier the coordination server will take: 2 to 60 characters, starting with
+/// a letter or digit, then letters, digits, dots, dashes and underscores. The wizard
+/// holds the same rule; this is the one both front ends are held to.
+pub fn validate_identifier(identifier: &str) -> Result<(), CreateError> {
+    let id = identifier.trim();
+    let len = id.chars().count();
+    let starts_well = id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+    let only_allowed = id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !(2..=60).contains(&len) {
+        return Err(CreateError::Answers(format!(
+            "The hub identifier must be 2 to 60 characters; `{id}` is {len}."
+        )));
+    }
+    if !starts_well || !only_allowed {
+        return Err(CreateError::Answers(format!(
+            "The hub identifier `{id}` may only use letters, digits, dots, dashes and \
+             underscores, and must start with a letter or digit."
+        )));
+    }
+    Ok(())
+}
+
+/// What can be refused about one service's answers before anything is created — the rules
+/// the wizard holds on its services step. A branch name is git's to validate; only shapes
+/// git can never accept are refused, so a typo is caught before the clone is attempted.
+pub fn validate_service_options(
+    options: &BTreeMap<ServiceId, ServiceOptions>,
+) -> Result<(), CreateError> {
+    for (id, asked) in options {
+        if let Some(branch) = asked.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+            if branch.chars().any(|c| c.is_whitespace() || "~^:?*[\\".contains(c)) {
+                return Err(CreateError::Answers(format!(
+                    "`{branch}` is not a branch name git would accept (for {})",
+                    id.as_str()
+                )));
+            }
+        }
+        if let Some(ollama) = &asked.ollama {
+            let url = ollama.url.as_deref().map(str::trim).unwrap_or("");
+            if !ollama.run_locally && url.is_empty() {
+                return Err(CreateError::Answers(format!(
+                    "{} was told to use an Ollama that already exists, but not where it is",
+                    id.as_str()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether re-authorizing asks the coordination server for a mesh key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeshKeyRequest {
+    /// Ask when the hub is not on a mesh yet, or is on one through a key keyed by login.
+    ///
+    /// Which login a grant is only shows once it is accepted, and a key can only come
+    /// with that same response — so a keyed hub always asks. Accepted as the same login,
+    /// the sidecar finds its node state and ignores the spare key; as another (another
+    /// user, organization or hub, whose earlier login may be revoked along with its node),
+    /// it starts a fresh node with it. A hand-supplied key, or one from before servers
+    /// said whose login it was, is left alone: a second key would only replace it.
+    #[default]
+    Auto,
+    /// Ask regardless. The way back for a hub whose key expired before it ever joined —
+    /// keys are single-use and live fifteen minutes.
+    Fresh,
+    /// Never ask.
+    Never,
+}
+
+impl MeshKeyRequest {
+    pub fn asks(self, config: &HubConfig) -> bool {
+        match self {
+            Self::Auto => match config.mesh.as_ref().filter(|m| m.enabled) {
+                None => true,
+                Some(mesh) => mesh.login.is_some(),
+            },
+            Self::Fresh => true,
+            Self::Never => false,
+        }
+    }
+}
+
 /// Re-authorizing a hub that already exists on disk.
 ///
-/// This is how a hub gains services, moves to a different network, or is finally told
-/// about the tailnet address it only got once it had joined the mesh. The profile is
-/// reused verbatim — its secrets and provenance key are what the running services already
-/// trust — and only the manifest is sent again.
+/// This is how a hub gains services, moves to a different network, or joins the mesh it
+/// was created without. The profile is reused verbatim — its secrets and provenance key
+/// are what the running services already trust — and only the manifest is sent again.
 ///
 /// The service configs are then regenerated, because the JWKS URL the coordination server
 /// returns is what they verify inbound tokens against, and it may have moved.
@@ -674,44 +837,70 @@ pub struct ReauthorizeAnswers {
     pub coord_server: String,
     pub identifier: String,
     pub description: Option<String>,
+    /// Ignored for a mesh-only hub, which advertises nothing on this machine's networks.
     pub hosts: Vec<AdvertisedHost>,
     /// Of `hosts`, the ones an external probe reached.
     pub reachable_hosts: Vec<String>,
-    pub request_auth_key: bool,
+    pub mesh_key: MeshKeyRequest,
+}
+
+/// What re-authorizing did, beyond the credentials it wrote.
+#[derive(Debug, Clone)]
+pub struct Reauthorized {
+    pub credentials: HubCredentials,
+    /// A mesh key was asked for.
+    pub mesh_requested: bool,
+    /// And one came back. It expires fifteen minutes after it was issued.
+    pub mesh_granted: bool,
+    /// The hub now reports its own health (the grant carried a refresh token).
+    pub reporter_enabled: bool,
 }
 
 pub async fn reauthorize(
     answers: &ReauthorizeAnswers,
     cancel: &CancellationToken,
     on: &(dyn Fn(CreateEvent) + Sync),
-) -> Result<HubCredentials, CreateError> {
+) -> Result<Reauthorized, CreateError> {
     let profile = crate::profile::read_profile(&answers.dir)
         .map_err(|e| CreateError::Folder(e.to_string()))?;
     let mut config = profile.config;
+    validate_identifier(&answers.identifier)?;
 
     let store = registry::load();
 
+    let request_auth_key = answers.mesh_key.asks(&config);
     // A hub about to get a key, or already on the mesh, keeps declaring its mesh alias —
     // re-authorizing would otherwise drop it.
-    let on_mesh = answers.request_auth_key
-        || config.mesh.as_ref().is_some_and(|m| m.enabled);
+    let on_mesh = request_auth_key || config.mesh.as_ref().is_some_and(|m| m.enabled);
     let mesh_only = config
         .mesh
         .as_ref()
         .is_some_and(|m| m.enabled && m.mesh_only);
+    // Mesh-only publishes no port, so an address on this machine's networks would be
+    // advertised to clients with nothing listening behind it — whoever asked for it.
+    let hosts = if mesh_only {
+        Vec::new()
+    } else {
+        answers.hosts.clone()
+    };
 
     on(CreateEvent::Building);
     let request = build_hub_request(
         &config,
         &HubManifestOptions {
             identifier: answers.identifier.trim().to_string(),
-            description: answers.description.clone(),
+            description: answers
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(str::to_string),
             node_id: Some(store.device_id.clone()),
-            hosts: answers.hosts.clone(),
+            hosts: hosts.clone(),
             reachable_hosts: answers.reachable_hosts.clone(),
-            request_auth_key: answers.request_auth_key,
+            request_auth_key,
             mesh_alias: on_mesh,
-            internal_host: mesh_only.then(|| config.gateway.host.clone()),
+            internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
         },
     );
@@ -731,17 +920,18 @@ pub async fn reauthorize(
     })
     .await?;
 
-    let mesh_granted = envelope.auth.ionscale_auth_key.is_some();
+    let mesh_granted = envelope.mesh_grant().ionscale_auth_key.is_some();
     on(CreateEvent::Granted {
         mesh_key: mesh_granted,
     });
 
-    if answers.request_auth_key {
-        if let Some(key) = envelope.auth.ionscale_auth_key.clone() {
+    if request_auth_key {
+        if let Some(key) = envelope.mesh_grant().ionscale_auth_key.clone() {
             let mut block = build_mesh_block(&MeshOptions {
                 hostname: mesh_hostname(&answers.identifier),
                 auth_key: key,
-                coord_url: envelope.auth.ionscale_coord_url.clone(),
+                coord_url: envelope.mesh_grant().ionscale_coord_url.clone(),
+                login: envelope.login(),
             });
             // A fresh key is not a change of mind about how the hub is reached.
             block.mesh_only = mesh_only;
@@ -750,6 +940,7 @@ pub async fn reauthorize(
     }
 
     enable_reporter(&mut config, &envelope);
+    let reporter_enabled = config.reporter.as_ref().is_some_and(|r| r.enabled);
 
     let credentials = HubCredentials {
         version: 1,
@@ -758,7 +949,7 @@ pub async fn reauthorize(
         authorized_at: now_rfc3339(),
         issuer: grant.issuer.clone(),
         envelope,
-        advertised_hosts: answers.hosts.clone(),
+        advertised_hosts: hosts,
     };
 
     // Generation first: a profile this app did not write could fail here, and a
@@ -794,5 +985,10 @@ pub async fn reauthorize(
     on(CreateEvent::Done {
         path: answers.dir.to_string_lossy().to_string(),
     });
-    Ok(credentials)
+    Ok(Reauthorized {
+        credentials,
+        mesh_requested: request_auth_key,
+        mesh_granted: request_auth_key && mesh_granted,
+        reporter_enabled,
+    })
 }

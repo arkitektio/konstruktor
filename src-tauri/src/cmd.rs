@@ -1,3 +1,10 @@
+//! The Tauri command layer, and nothing else.
+//!
+//! Every command here is a thin wrapper: the work lives in `konstruktor-core`, which the
+//! CLI links against too. Anything that starts growing logic in this file belongs in the
+//! core instead, or the two front ends will drift — which is the whole reason the core
+//! exists.
+
 use std::collections::HashSet;
 use konstruktor_core::paths::canonical as canonicalize;
 use std::sync::Mutex;
@@ -10,13 +17,6 @@ use konstruktor_core::hosts;
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use tauri_plugin_fs::FsExt;
-
-/// The Tauri command layer, and nothing else.
-///
-/// Every command here is a thin wrapper: the work lives in `konstruktor-core`, which the
-/// CLI links against too. Anything that starts growing logic in this file belongs in the
-/// core instead, or the two front ends will drift — which is the whole reason the core
-/// exists.
 
 /// The deployment folders this run of the app has started, so quitting can stop them
 /// again.
@@ -113,24 +113,42 @@ pub async fn restart_container(container_id: String) -> Result<(), String> {
 /// this command's predecessor returned. It sits next to the enumeration now, so the CLI
 /// gets the same answer without reimplementing the rules — and the presets ship with it
 /// for the same reason, so the wizard and `--reach` cannot drift apart.
+///
+/// Every tailnet address found here is somebody else's: the hub's own node lives in the
+/// mesh sidecar's namespace, which no scan of this machine reaches. Its address is
+/// declared as a mesh alias and filled in by the coordination server.
 #[command]
-pub async fn host_candidates(
-    mesh_domain: Option<String>,
-    mesh_hostname: Option<String>,
-) -> Result<hosts::HostDiscovery, String> {
-    // Whatever the caller could find out about this hub's tailnet. Without it every
-    // tailnet address on the machine is somebody else's — which, before the hub has
-    // joined anything, is exactly true.
-    let mesh = hosts::KnownMesh {
-        domain: mesh_domain.filter(|d| !d.trim().is_empty()),
-        hostname: mesh_hostname.filter(|h| !h.trim().is_empty()),
-    };
-    let candidates = hosts::host_candidates(&hosts::bindings().await?, &mesh);
+pub async fn host_candidates() -> Result<hosts::HostDiscovery, String> {
+    let candidates =
+        hosts::host_candidates(&hosts::bindings().await?, &hosts::KnownMesh::default());
     let presets = hosts::reach_presets(&candidates);
     Ok(hosts::HostDiscovery {
         candidates,
         presets,
     })
+}
+
+/// The name a hub with this identifier takes on the tailnet — the core's fold, so the
+/// wizard shows exactly the name the sidecar will ask for.
+#[command]
+pub fn mesh_hostname(identifier: String) -> String {
+    konstruktor_core::config::mesh::mesh_hostname(&identifier)
+}
+
+/// What a new hub is when nobody says otherwise — the same answers the CLI starts from.
+#[command]
+pub fn defaults() -> konstruktor_core::defaults::Defaults {
+    konstruktor_core::defaults::all()
+}
+
+/// Every service, asked through every alias the hub advertises — from this machine.
+#[command]
+pub async fn gateway_check(
+    path: String,
+) -> Result<Vec<konstruktor_core::gateway_check::AliasProbe>, String> {
+    let dir = PathBuf::from(&path);
+    let profile = profile::read_profile(&dir).map_err(|e| e.to_string())?;
+    Ok(konstruktor_core::gateway_check::check(&dir, &profile.config).await)
 }
 
 /// What address the internet sees this machine as.
@@ -342,6 +360,59 @@ pub async fn create_engine(
     Ok(path)
 }
 
+/// Which hub's network an engine joins, if any.
+#[derive(Serialize)]
+pub struct EngineAttachment {
+    /// The network in the engine's compose file.
+    pub network: String,
+    /// The registered hub that owns it — absent when none does any more.
+    pub hub_name: Option<String>,
+    pub hub_path: Option<String>,
+}
+
+#[command]
+pub fn engine_attachment(path: String) -> Option<EngineAttachment> {
+    let dir = std::path::Path::new(&path);
+    let network = konstruktor_core::engine::attached_network(dir)?;
+    let hub = konstruktor_core::engine::attached_hub(dir);
+    Some(EngineAttachment {
+        network,
+        hub_name: hub.as_ref().map(|h| h.name.clone()),
+        hub_path: hub.map(|h| h.path),
+    })
+}
+
+/// An engine's place on the mesh: the name it joins as, and what its sidecar says now.
+#[derive(Serialize)]
+pub struct EngineMesh {
+    pub hostname: String,
+    /// `None` while the sidecar is not running.
+    pub live: Option<konstruktor_core::hubhealth::MeshReport>,
+}
+
+#[command]
+pub async fn engine_mesh(path: String) -> Option<EngineMesh> {
+    let dir = std::path::Path::new(&path);
+    let mesh = konstruktor_core::engine::engine_mesh(dir)?;
+    let live = konstruktor_core::hubhealth::from_sidecar_service(dir, &mesh.host).await;
+    Some(EngineMesh {
+        hostname: mesh.hostname,
+        live,
+    })
+}
+
+/// Attaches the engine to a hub's network, or detaches it with `hub_path: null`. Only the
+/// compose file changes; the caller restarts the engine to apply it.
+#[command]
+pub async fn attach_engine(path: String, hub_path: Option<String>) -> Result<(), String> {
+    konstruktor_core::engine::attach(
+        std::path::Path::new(&path),
+        hub_path.as_deref().map(std::path::Path::new),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// The files a set of answers would produce, for the summary step's "no surprises" list.
 ///
 /// Generated from a throwaway config: this is a preview, and the profile that actually
@@ -356,19 +427,6 @@ pub async fn discover_server(server: String) -> Result<WellKnownFakts, String> {
     wellknown::discover(&server)
         .await
         .map_err(|e| e.to_string())
-}
-
-/// The tailnet a coordination server runs, if it declares one.
-///
-/// Needed to tell an address on *this hub's* mesh from one on whatever other tailnet the
-/// machine is already on. Absent — which is every server today — the address step says
-/// "other tailscale" rather than guessing, so this failing is not an error.
-#[command]
-pub async fn mesh_domain(server: String) -> Result<Option<String>, String> {
-    Ok(wellknown::discover(&server)
-        .await
-        .ok()
-        .and_then(|fakts| fakts.mesh_domain()))
 }
 
 #[command]
@@ -412,9 +470,7 @@ pub fn list_deployments() -> Vec<DeploymentRecord> {
 
 #[command]
 pub fn forget_deployment(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let mut store = registry::load();
-    store.deployments.retain(|d| d.id != id);
-    registry::save(&store).map_err(|e| e.to_string())?;
+    registry::forget(&id).map_err(|e| e.to_string())?;
     crate::tray::poke(&app);
     Ok(())
 }
@@ -566,44 +622,20 @@ pub async fn create_superuser(
     password: String,
     email: Option<String>,
 ) -> Result<String, String> {
-    let args = compose::create_superuser(
+    compose::run_superuser(
+        std::path::Path::new(&path),
         &service,
         &username,
         &password,
-        email.as_deref().map(str::trim).filter(|e| !e.is_empty()),
-    );
-
-    let output = konstruktor_core::docker::command()
-        .args(&args)
-        .current_dir(&path)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if output.status.success() {
-        Ok(stdout)
-    } else {
-        // Django says why on stderr — "that username is already taken", most often, which
-        // is a thing the user needs to read rather than a generic failure.
-        Err(format!(
-            "{}{}",
-            stdout,
-            String::from_utf8_lossy(&output.stderr)
-        ))
-    }
+        email.as_deref(),
+    )
+    .await
 }
 
-/// One line of a compose command's output, as it is written.
-///
-/// Compose narrates on stderr — `Container hub-db-1  Starting`, then `Started` — and that
-/// narration is what a button can turn into progress. Sent with the ANSI stripped, and
-/// with `--ansi never` asked for too, since one of the two is not always enough.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComposeLine {
-    pub line: String,
-    pub stderr: bool,
-}
+/// One line of a compose command's output, as it is written. Compose narrates on stderr —
+/// `Container hub-db-1  Starting`, then `Started` — and that narration is what a button
+/// can turn into progress.
+pub use konstruktor_core::compose::ComposeLine;
 
 /// `compose_command`, streaming its output over `on_line` while it runs.
 ///
@@ -611,6 +643,9 @@ pub struct ComposeLine {
 /// success, and a failure carries compose's own explanation. Callers that want to *show*
 /// what is happening use this; the buffered one stays for `ps` and `logs`, whose whole
 /// output is the answer.
+///
+/// `up` is not a compose action here but the core's start — the database guard, the mesh
+/// sidecar's networks and the reporter fallback — which `konstruktor up` runs as well.
 #[command]
 pub async fn compose_command_streamed(
     app: tauri::AppHandle,
@@ -619,11 +654,17 @@ pub async fn compose_command_streamed(
     action: String,
     on_line: Channel<ComposeLine>,
 ) -> Result<String, String> {
-    let args = compose_args(&action, None, None)?;
-    if action == "up" {
-        refuse_a_database_it_cannot_open(&path).await?;
-    }
-    let stdout = run_streamed(args, &path, &on_line).await?;
+    let stdout = if action == "up" {
+        let send = |line: ComposeLine| {
+            let _ = on_line.send(line);
+        };
+        konstruktor_core::start::start(std::path::Path::new(&path), &send)
+            .await
+            .map_err(|e| e.to_string())?
+            .output
+    } else {
+        run_streamed(compose_args(&action, None, None)?, &path, &on_line).await?
+    };
 
     match action.as_str() {
         "up" => started.started(&path),
@@ -634,67 +675,122 @@ pub async fn compose_command_streamed(
     Ok(stdout)
 }
 
-/// Bring one service up to date: fetch its image if asked, then recreate that container
-/// and nothing else.
+/// The one log stream being followed, if any. Following never ends on its own, so it is
+/// stopped from here: a new follow replaces the old one, and leaving the log screen stops
+/// it.
+#[derive(Default)]
+pub struct FollowState(Mutex<Option<CancellationToken>>);
+
+/// Follow a deployment's logs — `compose logs --follow`, what `konstruktor logs -f` runs —
+/// streaming each line over `on_line` until [`stop_following_logs`] is called.
 ///
-/// `pull` is a decision, not a formality. An image that has already been fetched is on
-/// this machine and applying it must work with the registry unreachable — so the button
-/// that only recreates says so by passing `false`, rather than being made to go to the
-/// network for an answer it does not need.
+/// Returns when stopped. The child is dropped with the future, and `kill_on_drop` takes
+/// the `compose logs` process with it.
 #[command]
-pub async fn update_service(
+pub async fn follow_logs(
+    following: tauri::State<'_, FollowState>,
+    path: String,
+    service: Option<String>,
+    tail: Option<u32>,
+    on_line: Channel<ComposeLine>,
+) -> Result<(), String> {
+    let token = CancellationToken::new();
+    if let Ok(mut slot) = following.0.lock() {
+        if let Some(previous) = slot.replace(token.clone()) {
+            previous.cancel();
+        }
+    }
+    let argv = compose::logs_following(service.as_deref(), tail.unwrap_or(200), true);
+    // The token stays in the slot afterwards: a finished follow's token is harmless, since
+    // the next follow replaces it and cancelling it again does nothing.
+    tokio::select! {
+        result = run_streamed(argv, &path, &on_line) => result.map(|_| ()),
+        _ = token.cancelled() => Ok(()),
+    }
+}
+
+#[command]
+pub fn stop_following_logs(following: tauri::State<'_, FollowState>) {
+    if let Ok(slot) = following.0.lock() {
+        if let Some(token) = slot.as_ref() {
+            token.cancel();
+        }
+    }
+}
+
+/// What the infrastructure could move to — held back from the per-service buttons, and
+/// applied only when asked, with a backup first. `konstruktor update --infra` asks the
+/// same question.
+#[command]
+pub async fn infrastructure_updates(
+    path: String,
+) -> Result<konstruktor_core::updates::InfrastructureUpdates, String> {
+    konstruktor_core::updates::infrastructure(std::path::Path::new(&path)).await
+}
+
+/// Where a backup taken before an update goes, unless somebody says otherwise.
+#[command]
+pub fn default_backup_folder(path: String) -> Option<String> {
+    konstruktor_core::updates::default_backup_folder(std::path::Path::new(&path))
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// What a rollback would put back, before anything is written: the images the hub ran
+/// before its last update. See `konstruktor_core::rollback`.
+#[command]
+pub fn rollback_plan(path: String) -> Result<konstruktor_core::rollback::RollbackPlan, String> {
+    konstruktor_core::rollback::plan(std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Roll back — the same sequence `konstruktor rollback` runs. The plan is worked out again
+/// here rather than taken from the caller, so what is applied is what is on disk now.
+#[command]
+pub async fn rollback_apply(
     app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     path: String,
-    service: String,
-    pull: bool,
     on_line: Channel<ComposeLine>,
-) -> Result<String, String> {
-    let mut output = String::new();
-    let dir = PathBuf::from(&path);
-
-    // What this hub is on, written down before anything moves it, so `konstruktor
-    // rollback` has a state to return to — the dashboard's update button and the CLI's
-    // both have to leave that record, or which one performed the update would decide
-    // whether the hub can be put back.
-    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
-        use konstruktor_core::lock;
-        let _ = lock::record(&dir, &profile.config, "before update", lock::now()).await;
-    }
-
-    if pull {
-        output.push_str(&run_streamed(compose::pull_service(&service), &path, &on_line).await?);
-    }
-
-    // The database is the one service that cannot simply be recreated on whatever image is
-    // now on disk: Postgres will not open a cluster written by another major. Asked here,
-    // after any pull and before the recreate, because before the pull the local image is
-    // still the one running and the check would always agree with itself. The same guard
-    // the CLI applies — see `updates::guard`.
-    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
-        match konstruktor_core::updates::guard(&dir, &profile.config, &service).await {
-            konstruktor_core::updates::Guard::Refuse(reason) => return Err(reason),
-            konstruktor_core::updates::Guard::Warn(detail) => {
-                let _ = on_line.send(ComposeLine {
-                    line: detail,
-                    stderr: true,
-                });
-            }
-            konstruktor_core::updates::Guard::Clear => {}
-        }
-    }
-
-    output.push_str(&run_streamed(compose::up_service(&service), &path, &on_line).await?);
-
-    if let Ok(profile) = konstruktor_core::profile::read_profile(&dir) {
-        use konstruktor_core::lock;
-        let _ = lock::record(&dir, &profile.config, "updated", lock::now()).await;
-    }
-
-    // This brought a container up, so the same bookkeeping a whole-stack `up` does.
+) -> Result<konstruktor_core::rollback::RollbackPlan, String> {
+    let dir = std::path::Path::new(&path);
+    let plan = konstruktor_core::rollback::plan(dir).map_err(|e| e.to_string())?;
+    let send = |line: ComposeLine| {
+        let _ = on_line.send(line);
+    };
+    konstruktor_core::rollback::run(dir, &plan, &send)
+        .await
+        .map_err(|e| e.to_string())?;
     started.started(&path);
     crate::tray::poke(&app);
-    Ok(output)
+    Ok(plan)
+}
+
+/// Apply an update — the same sequence `konstruktor update` runs: an optional backup, the
+/// lock record `rollback` reads, pin moves, then pull, guard and recreate each service,
+/// and an optional health check. See `updates::apply`.
+///
+/// The per-service button asks for one service, with `pull` only when the image is not on
+/// disk yet — applying an image already fetched must work with the registry unreachable.
+#[command]
+pub async fn apply_update(
+    app: tauri::AppHandle,
+    started: tauri::State<'_, StartedStacks>,
+    path: String,
+    request: konstruktor_core::updates::UpdateRequest,
+    on_event: Channel<konstruktor_core::updates::UpdateEvent>,
+) -> Result<konstruktor_core::updates::UpdateReport, String> {
+    let send = |event| {
+        let _ = on_event.send(event);
+    };
+    let report = konstruktor_core::updates::apply(std::path::Path::new(&path), &request, &send)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !report.updated.is_empty() {
+        // This brought containers up, so the same bookkeeping a whole-stack `up` does.
+        started.started(&path);
+        crate::tray::poke(&app);
+    }
+    Ok(report)
 }
 
 /// Runs one compose invocation, streaming both its streams over `on_line` as they are
@@ -703,101 +799,14 @@ pub async fn update_service(
 /// Takes the channel by reference so a command made of two invocations — pull, then up —
 /// can narrate both through the one channel.
 async fn run_streamed(
-    mut args: Vec<String>,
+    args: Vec<String>,
     path: &str,
     on_line: &Channel<ComposeLine>,
 ) -> Result<String, String> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    // Plain, line-by-line narration. Without a TTY compose already avoids the redrawing
-    // progress UI; `--ansi never` also keeps colour codes out of the lines. `--progress
-    // plain` adds each layer's download and extract steps, which is what a pull of several
-    // gigabytes is otherwise silent about for minutes — the panel folds those per layer.
-    args.splice(
-        1..1,
-        ["--ansi", "never", "--progress", "plain"].map(String::from),
-    );
-
-    let engine = konstruktor_core::engine_probe::engine();
-    let mut child = engine
-        .async_command()
-        .args(&args)
-        .current_dir(&path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-
-    let out_channel = on_line.clone();
-    let err_channel = on_line.clone();
-    let out_task = tauri::async_runtime::spawn(async move {
-        let mut collected = String::new();
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(raw)) = lines.next_line().await {
-            let line = clean(&raw);
-            collected.push_str(&line);
-            collected.push('\n');
-            let _ = out_channel.send(ComposeLine { line, stderr: false });
-        }
-        collected
-    });
-    let err_task = tauri::async_runtime::spawn(async move {
-        let mut collected = String::new();
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(raw)) = lines.next_line().await {
-            let line = clean(&raw);
-            if line.trim().is_empty() {
-                continue;
-            }
-            collected.push_str(&line);
-            collected.push('\n');
-            let _ = err_channel.send(ComposeLine { line, stderr: true });
-        }
-        collected
-    });
-
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    let stdout = out_task.await.unwrap_or_default();
-    let stderr = err_task.await.unwrap_or_default();
-
-    if status.success() {
-        Ok(stdout)
-    } else {
-        Err(format!("{stdout}{stderr}"))
-    }
-}
-
-/// The database guard, asked before anything that could recreate the database container.
-///
-/// `compose up` applies whatever the image reference resolves to *now*, so an image pulled
-/// earlier — by a `pull`, or by an update that then refused to apply it — is applied here,
-/// with nothing else in the way. Postgres will not open a cluster written by another
-/// major, so that is a crash loop rather than a start. `konstruktor up` refuses the same
-/// thing for the same reason; the two front ends must not disagree about it.
-async fn refuse_a_database_it_cannot_open(path: &str) -> Result<(), String> {
-    let dir = PathBuf::from(path);
-    let Ok(profile) = konstruktor_core::profile::read_profile(&dir) else {
-        return Ok(());
+    let send = |line: ComposeLine| {
+        let _ = on_line.send(line);
     };
-    match konstruktor_core::updates::guard(
-        &dir,
-        &profile.config,
-        konstruktor_core::config::hub::DB_COMPOSE_SERVICE,
-    )
-    .await
-    {
-        konstruktor_core::updates::Guard::Refuse(reason) => Err(reason),
-        _ => Ok(()),
-    }
-}
-
-fn clean(raw: &str) -> String {
-    String::from_utf8_lossy(&strip_ansi_escapes::strip(raw)).into_owned()
+    compose::run_streamed(std::path::Path::new(path), args, &send).await
 }
 
 fn compose_args(
@@ -826,11 +835,23 @@ pub async fn compose_command(
     service: Option<String>,
     tail: Option<u32>,
 ) -> Result<String, String> {
-    let args = compose_args(&action, service.as_deref(), tail)?;
+    // `up` is the core's start, as in `compose_command_streamed`; its warnings lead the
+    // output, since nothing else would show them.
     if action == "up" {
-        refuse_a_database_it_cannot_open(&path).await?;
+        let report = konstruktor_core::start::start(std::path::Path::new(&path), &|_| {})
+            .await
+            .map_err(|e| e.to_string())?;
+        started.started(&path);
+        crate::tray::poke(&app);
+        let mut output = report.warnings.join("\n");
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&report.output);
+        return Ok(output);
     }
 
+    let args = compose_args(&action, service.as_deref(), tail)?;
     let output = konstruktor_core::docker::command()
         .args(&args)
         .current_dir(&path)
@@ -868,9 +889,9 @@ pub async fn reauthorize_hub(
     description: Option<String>,
     hosts: Vec<konstruktor_core::connect::manifest::AdvertisedHost>,
     reachable_hosts: Vec<String>,
-    request_auth_key: bool,
+    mesh_key: create::MeshKeyRequest,
     on_event: Channel<CreateEvent>,
-) -> Result<(), String> {
+) -> Result<ReauthorizeOutcome, String> {
     let cancel = authorizing.begin();
 
     let done = create::reauthorize(
@@ -881,7 +902,7 @@ pub async fn reauthorize_hub(
             description,
             hosts,
             reachable_hosts,
-            request_auth_key,
+            mesh_key,
         },
         &cancel,
         &move |event| {
@@ -890,7 +911,20 @@ pub async fn reauthorize_hub(
     )
     .await;
     authorizing.end();
-    done.map(|_| ()).map_err(|e| e.to_string())
+    done.map(|d| ReauthorizeOutcome {
+        mesh_requested: d.mesh_requested,
+        mesh_granted: d.mesh_granted,
+        reporter_enabled: d.reporter_enabled,
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// What the connect screen shows after re-authorizing, besides "done".
+#[derive(Serialize)]
+pub struct ReauthorizeOutcome {
+    mesh_requested: bool,
+    mesh_granted: bool,
+    reporter_enabled: bool,
 }
 
 
@@ -1148,7 +1182,7 @@ mod wire_shape {
         "channel",
         "storage",
     ];
-    const SERVICE_VIEW: &[&str] = &["id", "name", "host", "url", "image", "tag"];
+    const SERVICE_VIEW: &[&str] = &["id", "name", "host", "url", "health_url", "image", "tag"];
     const CHANNEL_VIEW: &[&str] = &["tag", "tags"];
 
     fn keys(value: &serde_json::Value) -> Vec<String> {
@@ -1186,6 +1220,7 @@ mod wire_shape {
                 name: "Rekuest".into(),
                 host: "rekuest".into(),
                 url: "http://localhost:7080/rekuest".into(),
+                health_url: Some("http://localhost:7080/rekuest/ht?format=json".into()),
                 image: Some("jhnnsrs/rekuest:next".into()),
                 tag: Some("next".into()),
             }],

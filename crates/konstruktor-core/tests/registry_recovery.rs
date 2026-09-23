@@ -128,6 +128,21 @@ fn a_registry_of_the_wrong_shape_still_yields_its_device_id() {
     std::fs::remove_file(&quarantined).ok();
 }
 
+/// Forgetting takes the record and nothing else — and works for a deployment whose folder
+/// is already gone, which is the one most worth forgetting.
+#[test]
+fn forgetting_drops_one_record_whatever_is_on_disk() {
+    let _guard = exclusive();
+    let _ = write_registry(GOOD);
+
+    assert!(registry::forget("a1").expect("saved"), "the record was there");
+    assert!(registry::load().deployments.is_empty());
+    // Nothing left to forget is an answer, not an error.
+    assert!(!registry::forget("a1").expect("nothing to save"));
+    // The machine keeps its identity through it.
+    assert_eq!(registry::load().device_id, "device-that-must-survive");
+}
+
 /// No file at all is an ordinary first run, not a loss: nothing to quarantine, and a
 /// fresh id is correct.
 #[test]

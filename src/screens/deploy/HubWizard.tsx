@@ -41,6 +41,7 @@ import * as api from "../../api";
 import type {
   AdvertisedHost,
   CreateEvent,
+  Defaults,
   HubAnswers,
   ServiceId,
 } from "../../api";
@@ -52,6 +53,7 @@ import {
   baseUrl,
   coordinationServerSchema,
   serviceAnswer,
+  withKnownServer,
 } from "./hub-form";
 
 /**
@@ -264,9 +266,10 @@ const toAnswers = (values: HubForm): HubAnswers => ({
   mesh_auth_key: values.meshAuthKey || null,
   mesh_coord_url: values.meshCoordUrl || null,
   mesh_only: values.meshMode !== "none" && !!values.meshOnly,
-  // The wizard writes the deployment and stops there. Starting it is the dashboard's
-  // job, so the first `up` happens where its output and the container list already are.
-  start: false,
+  // Started as soon as it is written, as `konstruktor hub create` does: a mesh key expires
+  // fifteen minutes after it was issued, and a hub that waits to be started may never
+  // join. The start is the core's, with the same guard and reporter fallback as `up`.
+  start: true,
   // The wizard never asks for a whole dev hub any more: it asks per service, and the
   // core takes the union of the two.
   dev_hub: false,
@@ -291,6 +294,13 @@ export const HubWizard = () => {
   /** Set when the done screen waits for a click rather than navigating on its own. */
   const [createdId, setCreatedId] = useState<string | null>(null);
 
+  // What a new hub is when nobody says otherwise — asked of the core, so the wizard and
+  // `konstruktor hub create` start from the same answers.
+  const [defaults, setDefaults] = useState<Defaults | undefined>();
+  useEffect(() => {
+    api.defaults().then(setDefaults);
+  }, []);
+
   const initialValues: HubForm = {
     dockerOk: false,
     path: "",
@@ -300,9 +310,10 @@ export const HubWizard = () => {
     identifier: "",
     description: "",
     rekuestServer: "local",
-    services: [],
-    httpPort: 7080,
-    httpsPort: 7443,
+    // Rekuest is decided by the provenance question, not by this list.
+    services: (defaults?.services ?? []).filter((id) => id !== "rekuest"),
+    httpPort: defaults?.http_port ?? 7080,
+    httpsPort: defaults?.https_port ?? 7443,
     ssl: false,
     domain: "",
     globalDescription: "",
@@ -510,21 +521,23 @@ export const HubWizard = () => {
     await api.cancelAuthorization();
   };
 
+  /** The hub this folder now holds, once the core has registered it. */
+  const registered = async (path: string) => {
+    await refresh();
+    return (await api.listDeployments()).find((d) => d.path === path);
+  };
+
   /**
-   * One call builds the profile, authorizes it and writes the folder — it does not start
-   * the stack. Progress, including the device code somebody has to accept, comes back
-   * through a channel and is rendered by {@link InstallPanel}; when it is done we go
-   * to the hub's dashboard, where Start is.
+   * One call builds the profile, authorizes it, writes the folder and starts the stack.
+   * Progress, including the device code somebody has to accept, comes back through a
+   * channel and is rendered by {@link InstallPanel}; when it is done we go to the hub's
+   * dashboard.
    */
   const handleSubmit = async (values: HubForm) => {
     setCreating({ ...emptyCreateState, running: true });
 
-    // Read once the call is over, which the state setter below cannot tell us.
-    let meshKey = false;
-    const onEvent = (event: CreateEvent) => {
-      if (event.event === "granted") meshKey = event.mesh_key;
+    const onEvent = (event: CreateEvent) =>
       setCreating((previous) => reduceCreate(previous, event));
-    };
 
     try {
       await api.createHub(toAnswers(values), onEvent);
@@ -534,6 +547,10 @@ export const HubWizard = () => {
         running: false,
         error: typeof error === "string" ? error : String(error),
       }));
+      // A start that failed leaves a written, registered hub behind — creating it again
+      // would find the folder taken. The way on is its dashboard, not back to the review.
+      const written = await registered(values.path);
+      if (written) setCreatedId(written.id);
       return;
     }
 
@@ -546,24 +563,16 @@ export const HubWizard = () => {
     await setSettings({
       ...settings,
       coordinationServer: server,
-      knownCoordinationServers: known.some(
-        (entry) => baseUrl(entry).toLowerCase() === baseUrl(server).toLowerCase()
-      )
-        ? known
-        : [...known, server],
+      knownCoordinationServers: withKnownServer(known, server),
     });
 
     // The core registered it; re-read so the new hub is there to navigate to.
-    await refresh();
-    const created = (await api.listDeployments()).find(
-      (d) => d.path === values.path
-    );
-    if (!created) return;
-    // A mesh key expires 15 minutes after it was issued. The done screen says so, and
-    // navigating straight away would take that warning off screen before anyone read it.
-    if (meshKey) setCreatedId(created.id);
-    else navigate(`/dashboard/${created.id}`);
+    const created = await registered(values.path);
+    if (created) navigate(`/dashboard/${created.id}`);
   };
+
+  // The form takes its first state once, so it waits for the defaults.
+  if (!defaults) return null;
 
   return (
     <Wizard<HubForm>
@@ -624,16 +633,16 @@ export const HubWizard = () => {
                     {creating.cancelled ? "Stopping…" : "Cancel"}
                   </Button>
                 )
-              ) : creating.done ? (
-                createdId && (
-                  <Button onClick={() => navigate(`/dashboard/${createdId}`)}>
-                    Open the dashboard
-                    <ArrowRight className="size-3.5" />
-                  </Button>
-                )
+              ) : creating.done ? null : createdId ? (
+                // Written and registered, but the start failed: the hub exists, and its
+                // dashboard is where it is started again.
+                <Button onClick={() => navigate(`/dashboard/${createdId}`)}>
+                  Open the dashboard
+                  <ArrowRight className="size-3.5" />
+                </Button>
               ) : (
-                // Stopped or failed. The answers are all still in the form, so the way
-                // out is back to Review rather than out of the wizard.
+                // Stopped or failed before anything was written. The answers are all
+                // still in the form, so the way out is back to Review.
                 <Button onClick={() => setCreating(emptyCreateState)}>
                   Back to the review
                 </Button>

@@ -1,4 +1,12 @@
-import { ArrowLeft, ArrowRight, Container, FolderOpen, Rocket, Server } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Container,
+  FolderOpen,
+  Network,
+  Rocket,
+  Server,
+} from "lucide-react";
 import { useState } from "react";
 import { useWatch } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
@@ -21,18 +29,20 @@ import {
   reduceCreate,
 } from "./InstallProgress";
 import { StepFrame } from "../wizard/StepFrame";
-import { coordinationServerSchema } from "./hub-form";
+import { coordinationServerSchema, withKnownServer } from "./hub-form";
 import { CoordinationStep } from "./steps/CoordinationStep";
 import { DockerStep } from "./steps/DockerStep";
+import { EngineHubStep } from "./steps/EngineHubStep";
 import { FolderStep } from "./steps/FolderStep";
 import { SummaryStep } from "./steps/SummaryStep";
 
 /**
  * Creating a plugin engine.
  *
- * Four questions against a hub's nine, and that is the point of it being its own path:
+ * Five questions against a hub's nine, and that is the point of it being its own path:
  * an engine is one container with the Docker socket, so there are no services to pick,
- * no ports to bind, no addresses to advertise and no mesh to join. The steps it does
+ * no ports to bind and no addresses to advertise — only how its plugins reach a hub:
+ * over the mesh, through a local hub's network, or both. The steps it does
  * share — Docker, the folder, the coordination server — are the same components the hub
  * wizard uses, so the two cannot drift.
  */
@@ -46,6 +56,10 @@ export type EngineForm = {
   coordServer: string;
   identifier: string;
   description: string;
+  /** The folder of the hub whose network the engine joins, if any. */
+  hub: string | null;
+  /** Join the mesh: plugins run in a Tailscale sidecar's network. */
+  mesh: boolean;
 };
 
 const toAnswers = (values: EngineForm): EngineAnswers => ({
@@ -54,9 +68,10 @@ const toAnswers = (values: EngineForm): EngineAnswers => ({
   coord_server: values.coordServer.trim(),
   identifier: values.identifier.trim(),
   description: values.description?.trim() || null,
-  // Written first, started from the dashboard — the same rule the hub wizard follows, so
-  // the first `up` happens where its output and the container list already are.
-  start: false,
+  // Started once written, as the hub wizard does.
+  start: true,
+  hub: values.hub,
+  mesh: values.mesh,
 });
 
 const EngineSummary = () => {
@@ -71,6 +86,8 @@ const EngineSummary = () => {
         { label: "Name", value: values.name ?? "" },
         { label: "Coordination server", value: values.coordServer ?? "" },
         { label: "Engine identifier", value: values.identifier ?? "" },
+        { label: "Mesh", value: values.mesh ? "joins; plugins run in its network" : "no" },
+        { label: "Attached to", value: values.hub ?? "no hub" },
         { label: "Runs", value: "jhnnsrs/deployer:next, with this machine's Docker socket" },
       ]}
       files={["docker-compose.yaml", "configs/deployer.yaml"]}
@@ -93,6 +110,10 @@ export const EngineWizard = () => {
     coordServer: settings.coordinationServer,
     identifier: "",
     description: "",
+    hub: null,
+    // Off by default, as `--mesh` is on the command line: plugins only land in the
+    // sidecar's network with a deployer that reads `ARKITEKT_NETWORK_MODE`.
+    mesh: false,
   };
 
   const steps: WizardStep[] = [
@@ -135,6 +156,10 @@ export const EngineWizard = () => {
       }),
     },
     {
+      component: EngineHubStep,
+      meta: { label: "Reach", title: "Reach", icon: Network },
+    },
+    {
       component: EngineSummary,
       meta: { label: "Review", title: "Review", icon: Rocket },
     },
@@ -173,7 +198,7 @@ export const EngineWizard = () => {
     await setSettings({
       ...settings,
       coordinationServer: server,
-      knownCoordinationServers: known.includes(server) ? known : [...known, server],
+      knownCoordinationServers: withKnownServer(known, server),
     });
 
     await refresh();

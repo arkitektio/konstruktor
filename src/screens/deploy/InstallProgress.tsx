@@ -127,7 +127,9 @@ export const explanation = (state: CreateState, kind: string): string => {
     return `Nothing was written. The ${kind} was never accepted, so the code you saw is now worthless — go back and create it again when you are ready.`;
   if (state.error) return "Nothing was written unless the step below says otherwise.";
   if (state.done)
-    return "The deployment is in your folder and registered here. Nothing is running yet — start it from the dashboard.";
+    return kind === "hub"
+      ? "The deployment is in your folder, registered here, and starting."
+      : "The deployment is in your folder and registered here. Nothing is running yet — start it from the dashboard.";
   return "Konstruktor is building, authorizing and writing your deployment.";
 };
 
@@ -174,14 +176,19 @@ export const InstallPanel = ({
       {/* A cancelled run is not a failure, so its "Cancelled." is not shown in red. */}
       {state.error && !stopped && <Alert variant="destructive">{state.error}</Alert>}
 
-      {state.done && state.meshKey && (
+      {/*
+        The stack is started as part of creating, so the key is used at once — unless the
+        start is what failed. Then the hub is written, the key is ticking, and this is the
+        moment to say so.
+      */}
+      {state.error && state.meshKey && (
         <Alert>
           <TriangleAlert />
           <div>
-            <strong>Start the stack within 15 minutes.</strong> The mesh key that came with
+            <strong>Start the hub within 15 minutes.</strong> The mesh key that came with
             the authorization is single-use and expires 15 minutes after it was issued. If
             the stack first starts later, the hub cannot join the mesh — authorize it again
-            from the dashboard to get a fresh key.
+            from the dashboard with a fresh mesh key.
           </div>
         </Alert>
       )}

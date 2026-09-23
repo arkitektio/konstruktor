@@ -321,7 +321,7 @@ pub fn build_aliases(
             port,
             path: Some(path.to_string()),
             ssl,
-            challenge: Some("ht".to_string()),
+            challenge: Some(crate::health::HEALTH_PATH.to_string()),
             kind: "absolute".to_string(),
             scope: alias_scope(&h.host, h.kind),
             // Nothing here is guaranteed to be reachable from the coordination server, so
@@ -353,7 +353,7 @@ pub fn mesh_alias(ssl: bool, path: &str) -> StagingAlias {
         port: if ssl { 443 } else { 80 },
         path: Some(path.to_string()),
         ssl,
-        challenge: Some("ht".to_string()),
+        challenge: Some(crate::health::HEALTH_PATH.to_string()),
         kind: MESH_ALIAS_KIND.to_string(),
         scope: AliasScope::Ionscale,
         // The coordination server can health check this itself once it has resolved it;
@@ -374,7 +374,7 @@ pub fn internal_alias(host: &str, ssl: bool, path: &str) -> StagingAlias {
         port: if ssl { 443 } else { 80 },
         path: Some(path.to_string()),
         ssl,
-        challenge: Some("ht".to_string()),
+        challenge: Some(crate::health::HEALTH_PATH.to_string()),
         kind: "absolute".to_string(),
         scope: AliasScope::Local,
         public: false,
@@ -402,11 +402,33 @@ pub struct HubManifestOptions {
     pub expiration_seconds: Option<u64>,
 }
 
+/// The manifest identifier the object store is advertised under, as upstream names it.
+pub const S3_MANIFEST: &str = "live.arkitekt.s3";
+
 pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> HubStartRequest {
     let ssl = config.gateway.ssl;
     let port = advertised_port(config);
 
-    let instances = HUB_SERVICE_ORDER
+    // Every address the hub is reached at, for one path on the gateway: the chosen hosts,
+    // the tailnet node, and the gateway's in-network name.
+    let aliases_at = |path: &str| {
+        let mut aliases = build_aliases(
+            &options.hosts,
+            port,
+            ssl,
+            path,
+            &options.reachable_hosts,
+        );
+        if options.mesh_alias {
+            aliases.push(mesh_alias(ssl, path));
+        }
+        if let Some(host) = options.internal_host.as_deref().filter(|h| !h.is_empty()) {
+            aliases.push(internal_alias(host, ssl, path));
+        }
+        aliases
+    };
+
+    let mut instances: Vec<InstanceRequest> = HUB_SERVICE_ORDER
         .into_iter()
         .filter(|id| {
             let block = config.service(*id);
@@ -415,20 +437,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
         .map(|id| {
             let block = config.service(id);
             let (name, description, repo) = describe(id);
-
-            let mut aliases = build_aliases(
-                &options.hosts,
-                port,
-                ssl,
-                &block.host,
-                &options.reachable_hosts,
-            );
-            if options.mesh_alias {
-                aliases.push(mesh_alias(ssl, &block.host));
-            }
-            if let Some(host) = options.internal_host.as_deref().filter(|h| !h.is_empty()) {
-                aliases.push(internal_alias(host, ssl, &block.host));
-            }
+            let aliases = aliases_at(&block.host);
 
             InstanceRequest {
                 identifier: name.to_string(),
@@ -451,6 +460,42 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             }
         })
         .collect();
+
+    // The object store, as a datalayer of its own — what upstream's generator registers
+    // as `live.arkitekt.s3`. Clients are handed presigned URLs for its buckets and need to
+    // know where the store is; the services' own configs only say where *they* reach it,
+    // on the stack's private network.
+    //
+    // No path: S3 clients address buckets path-style from the store's root, and the
+    // gateway routes every bucket at its own root — `/mikromedia`, `/kabinetmedia`. The
+    // challenge is the store's health check, through the `/rustfs` prefix the gateway
+    // strips.
+    if config.minio.enabled {
+        let aliases = aliases_at("")
+            .into_iter()
+            .map(|alias| StagingAlias {
+                path: None,
+                challenge: Some(crate::generate::caddy::S3_CHALLENGE.to_string()),
+                ..alias
+            })
+            .collect();
+        instances.push(InstanceRequest {
+            identifier: "S3".to_string(),
+            description: Some("Object storage for the hub's services".to_string()),
+            manifest: ServiceManifest {
+                identifier: S3_MANIFEST.to_string(),
+                version: "1.0.0".to_string(),
+                description: Some("Local S3 / RustFS object storage datalayer".to_string()),
+                logo: None,
+                roles: Vec::new(),
+                scopes: Vec::new(),
+                node_id: options.node_id.clone(),
+                instance_id: "default".to_string(),
+                public_sources: Vec::new(),
+            },
+            aliases,
+        });
+    }
 
     HubStartRequest {
         hub: HubManifest {
@@ -691,6 +736,44 @@ mod tests {
         }
     }
 
+    /// The object store is advertised as a datalayer of its own, as upstream does: every
+    /// address the services have, at the gateway's root, challenged on the store's health.
+    #[test]
+    fn advertises_the_object_store_as_an_s3_datalayer() {
+        let config = build_hub_config(&HubConfigOptions::default());
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts: vec![AdvertisedHost {
+                    host: "10.0.0.4".to_string(),
+                    kind: HostCategory::Private,
+                }],
+                mesh_alias: true,
+                ..Default::default()
+            },
+        );
+
+        let s3 = request
+            .hub
+            .instances
+            .iter()
+            .find(|i| i.manifest.identifier == S3_MANIFEST)
+            .expect("an S3 instance");
+        let hosts: Vec<(&str, &str)> = s3
+            .aliases
+            .iter()
+            .map(|a| (a.kind.as_str(), a.host.as_str()))
+            .collect();
+        assert_eq!(hosts, vec![("absolute", "10.0.0.4"), (MESH_ALIAS_KIND, "")]);
+        for alias in &s3.aliases {
+            // Buckets are routed at the gateway's root; a path would put every presigned
+            // URL under a prefix nothing serves.
+            let json = serde_json::to_value(alias).unwrap();
+            assert_eq!(json["path"], serde_json::Value::Null, "{json}");
+            assert_eq!(alias.challenge.as_deref(), Some("rustfs/health"));
+        }
+    }
+
     /// Mesh-only: the tailnet node and the gateway's in-network name, nothing else.
     #[test]
     fn a_mesh_only_hub_advertises_the_mesh_and_the_internal_gateway() {
@@ -719,6 +802,44 @@ mod tests {
                 "{}",
                 instance.identifier
             );
+        }
+    }
+
+    /// Every hub declares its in-network name besides its other addresses, so plugins an
+    /// attached engine starts on the hub's network are told the one address they can reach
+    /// — on every instance, the object store included.
+    #[test]
+    fn every_instance_carries_the_internal_gateway_alongside_the_rest() {
+        let config = build_hub_config(&HubConfigOptions::default());
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts: vec![AdvertisedHost {
+                    host: "10.0.0.4".to_string(),
+                    kind: HostCategory::Private,
+                }],
+                internal_host: Some("gateway".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(request
+            .hub
+            .instances
+            .iter()
+            .any(|i| i.manifest.identifier == S3_MANIFEST));
+        for instance in &request.hub.instances {
+            assert!(
+                instance.aliases.iter().any(|a| a.host == "10.0.0.4"),
+                "{}",
+                instance.identifier
+            );
+            let internal = instance
+                .aliases
+                .iter()
+                .find(|a| a.host == "gateway")
+                .unwrap_or_else(|| panic!("{} has no internal alias", instance.identifier));
+            assert_eq!(internal.scope, AliasScope::Local);
         }
     }
 }

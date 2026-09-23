@@ -134,6 +134,11 @@ pub struct ServiceView {
     pub host: String,
     /// Where a browser reaches it through the gateway.
     pub url: String,
+    /// Where this machine asks whether it is healthy — the same URL the restore's and the
+    /// update's health checks ask, so the dashboard's dot and those checks cannot
+    /// disagree. `None` on a mesh-only hub, which publishes no port on this machine to
+    /// ask through.
+    pub health_url: Option<String>,
     /// The image the profile pins this service to, e.g. `jhnnsrs/rekuest:next`.
     pub image: Option<String>,
     /// That image's tag on its own — the service's release channel.
@@ -164,11 +169,21 @@ pub fn image_tag(image: &str) -> Option<String> {
     last.rsplit_once(':').map(|(_, tag)| tag.to_string())
 }
 
-/// The gateway's own address, as a browser on this machine would type it.
+/// Whether the hub is reached over its mesh alone, with no port published on this machine.
+pub fn is_mesh_only(config: &crate::config::hub::HubConfig) -> bool {
+    config.mesh.as_ref().is_some_and(|m| m.enabled && m.mesh_only)
+}
+
+/// The gateway's own address, as a browser would type it.
 ///
-/// A default port is left off; anything else has to be spelled out.
+/// On this machine, unless the hub is mesh-only: then nothing is published here and the
+/// only way in is the node's name on the tailnet. A default port is left off; anything
+/// else has to be spelled out.
 pub fn gateway_url(config: &crate::config::hub::HubConfig) -> String {
     let scheme = crate::config::hub::scheme_of(config);
+    if let Some(mesh) = config.mesh.as_ref().filter(|_| is_mesh_only(config)) {
+        return format!("{scheme}://{}", mesh.hostname);
+    }
     let port = crate::connect::manifest::advertised_port(config);
     let host = config.domain.clone().unwrap_or_else(|| "localhost".into());
 
@@ -215,8 +230,8 @@ pub struct HubView {
     pub advertised_port: u16,
     /// What this hub last told the coordination server it was reachable at.
     ///
-    /// The authorize screen seeds from this rather than from a fresh scan: it exists to
-    /// *add* the tailnet address, and a scan of this machine will never find one.
+    /// The authorize screen seeds from this rather than from a fresh scan, which could
+    /// silently drop an address this machine does not see from where it stands.
     pub advertised_hosts: Vec<crate::connect::manifest::AdvertisedHost>,
     /// The release channel the enabled services are pinned to.
     pub channel: ChannelView,
@@ -231,6 +246,9 @@ pub fn hub_view(dir: &std::path::Path) -> Result<HubView, crate::profile::Profil
     let config = &profile.config;
 
     let gateway_url = gateway_url(config);
+    let mesh_only = is_mesh_only(config);
+    let scheme = crate::config::hub::scheme_of(config);
+    let port = crate::connect::manifest::advertised_port(config);
     let catalog = crate::catalog::catalog();
     let services: Vec<ServiceView> = config
         .enabled_services()
@@ -245,6 +263,8 @@ pub fn hub_view(dir: &std::path::Path) -> Result<HubView, crate::profile::Profil
                     .unwrap_or_else(|| id.as_str().into()),
                 host: block.host.clone(),
                 url: format!("{gateway_url}/{}", block.host),
+                health_url: (!mesh_only)
+                    .then(|| crate::health::health_url(scheme, port, &block.host)),
                 image: block.image.clone(),
                 tag: block.image.as_deref().and_then(image_tag),
             }
@@ -338,6 +358,7 @@ mod tests {
             name: "Rekuest".into(),
             host: "rekuest".into(),
             url: "http://localhost/rekuest".into(),
+            health_url: None,
             image: None,
             tag: tag.map(str::to_string),
         }

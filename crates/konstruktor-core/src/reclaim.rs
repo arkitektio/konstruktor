@@ -37,6 +37,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::config::hub::HubConfig;
+// Only the unix path asks the engine anything — ownership is a unix problem — but the
+// argument-building tests run everywhere.
+#[cfg(any(unix, test))]
 use crate::docker;
 use crate::profile::HUB_CONFIG_FILENAME;
 

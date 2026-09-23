@@ -268,6 +268,47 @@ pub fn mesh_from_status(status: &serde_json::Value) -> MeshReport {
     }
 }
 
+/// The tailnet node as the sidecar sees it, asked from the host — for `status`, the gateway
+/// check and anything else outside the stack. `None` without a mesh, or when the sidecar
+/// is not running to ask.
+///
+/// Through `compose exec` rather than the socket: the mesh interface and its LocalAPI live
+/// in the sidecar's namespace, and nothing on the host can reach either directly.
+pub async fn from_sidecar(
+    dir: &Path,
+    config: &crate::config::hub::HubConfig,
+) -> Option<MeshReport> {
+    let mesh = config.mesh.as_ref().filter(|m| m.enabled)?;
+    from_sidecar_service(dir, &mesh.host).await
+}
+
+/// The same, for the sidecar under compose service `service` in the project in `dir` —
+/// a hub's or an engine's.
+pub async fn from_sidecar_service(dir: &Path, service: &str) -> Option<MeshReport> {
+    let output = crate::engine_probe::engine()
+        .async_command()
+        .args([
+            "compose",
+            "exec",
+            "-T",
+            service,
+            "sh",
+            "-c",
+            // The socket is where the compose file put it, or containerboot's default.
+            "tailscale --socket \"${TS_SOCKET:-/tmp/tailscaled.sock}\" status --json",
+        ])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(mesh_from_status(&status))
+}
+
 /// Asks the sidecar's LocalAPI over its unix socket. `None` when there is no sidecar —
 /// a hub without a mesh — which the report says as `mesh: null`.
 #[cfg(unix)]

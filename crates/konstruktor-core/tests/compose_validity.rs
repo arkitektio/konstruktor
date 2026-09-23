@@ -70,8 +70,57 @@ fn docker_accepts_a_meshed_project() {
             hostname: "lab-hub".into(),
             auth_key: "tskey-auth-EXAMPLE".into(),
             coord_url: Some("https://mesh.example.org".into()),
+            login: None,
         }),
         "meshed",
+    );
+}
+
+/// An engine on the mesh and attached to a hub: the deployer in the sidecar's namespace,
+/// the sidecar on both networks — the combination `network_mode: service:` makes fussy.
+#[test]
+fn docker_accepts_a_meshed_attached_engine() {
+    use konstruktor_core::config::mesh::build_mesh_block;
+    use konstruktor_core::engine::{build_engine_compose, EngineCompose};
+    use konstruktor_core::engine_probe::EngineKind;
+
+    if !docker_compose_available() {
+        eprintln!("skipping the meshed engine: no docker compose on this machine");
+        return;
+    }
+    let mesh = build_mesh_block(&MeshOptions {
+        hostname: "my-engine".into(),
+        auth_key: "tskey-auth-EXAMPLE".into(),
+        coord_url: Some("https://mesh.example.org".into()),
+        login: Some("2-9-48".into()),
+    });
+    let compose = build_engine_compose(&EngineCompose {
+        engine: EngineKind::Docker,
+        host_socket: None,
+        coord_server: "go.arkitekt.live",
+        project: "meshed-engine",
+        hub_network: Some("young-dream"),
+        mesh: Some(&mesh),
+    });
+
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("meshed-engine");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::write(
+        dir.join("docker-compose.yaml"),
+        serde_norway::to_string(&compose).unwrap(),
+    )
+    .unwrap();
+
+    let output = konstruktor_core::docker::command()
+        .args(["compose", "config", "-q"])
+        .current_dir(&dir)
+        .output()
+        .expect("docker runs");
+    assert!(
+        output.status.success(),
+        "docker compose rejected the meshed engine:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -84,6 +133,7 @@ fn docker_accepts_a_meshed_project_with_a_reporter() {
             hostname: "lab-hub".into(),
             auth_key: "tskey-auth-EXAMPLE".into(),
             coord_url: Some("https://mesh.example.org".into()),
+            login: None,
         }),
         true,
         "meshed-reporter",

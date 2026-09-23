@@ -2,6 +2,13 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
   AdvertisedHost,
+  AliasProbe,
+  Defaults,
+  InfrastructureUpdates,
+  RollbackPlan,
+  UpdateEvent,
+  UpdateReport,
+  UpdateRequest,
   ContainerEngine,
   InstallLine,
   InstallOutcome,
@@ -27,6 +34,8 @@ import type {
   FolderReport,
   HostDiscovery,
   EngineAnswers,
+  EngineAttachment,
+  EngineMesh,
   HubAnswers,
   HubStatus,
   ImageState,
@@ -133,28 +142,10 @@ export const switchCheckoutBranch = (
 
 /**
  * The addresses worth advertising, classified and ordered, with the reach presets
- * already resolved against them.
+ * already resolved against them. The hub's own mesh address is not among them — it is
+ * declared as a mesh alias, and the coordination server fills it in.
  */
-export const hostCandidates = (mesh?: {
-  /** The tailnet this hub is on, when the coordination server declares one. */
-  domain?: string | null;
-  /** The name this hub takes on that tailnet, out of its own mesh config. */
-  hostname?: string | null;
-}) =>
-  invoke<HostDiscovery>("host_candidates", {
-    meshDomain: mesh?.domain ?? null,
-    meshHostname: mesh?.hostname ?? null,
-  });
-
-/**
- * The tailnet a coordination server runs, if it declares one.
- *
- * Without it, a tailnet address on this machine cannot be told apart from one on the
- * personal tailnet most laptops are already on, so the address step calls every such
- * address "another tailscale" rather than offering it as the hub's mesh.
- */
-export const meshDomain = (server: string) =>
-  invoke<string | null>("mesh_domain", { server });
+export const hostCandidates = () => invoke<HostDiscovery>("host_candidates");
 
 /**
  * What address the internet sees this machine as.
@@ -164,6 +155,17 @@ export const meshDomain = (server: string) =>
  */
 export const egressIdentity = (endpoint: string) =>
   invoke<string>("egress_identity", { endpoint });
+
+/** The name a hub with this identifier takes on the tailnet, as the core folds it. */
+export const meshHostname = (identifier: string) =>
+  invoke<string>("mesh_hostname", { identifier });
+
+/** What a new hub is when nobody says otherwise — the same answers the CLI starts from. */
+export const defaults = () => invoke<Defaults>("defaults");
+
+/** Every service, asked through every address the hub advertises — from this machine. */
+export const gatewayCheck = (path: string) =>
+  invoke<AliasProbe[]>("gateway_check", { path });
 
 /**
  * Asks a configured prober to connect back to one advertised address.
@@ -220,20 +222,19 @@ export const previewHubFiles = (answers: HubAnswers) =>
   invoke<string[]>("preview_hub_files", { answers });
 
 /**
- * Build the profile, authorize it, write the folder, start the stack — one call, with
- * progress streamed back as it happens.
- *
- * Because authorization lives inside this call rather than in a wizard step, its result
- * cannot go stale against answers that changed afterwards; the whole "authorize again"
- * mechanism the wizard used to need is gone.
- */
-/**
  * Stop waiting for a device code to be accepted, in whichever of the three flows is
  * waiting. The call that was waiting rejects with "Cancelled." and has written nothing:
  * the folder is only written once the coordination server has accepted the hub.
  */
 export const cancelAuthorization = () => invoke<void>("cancel_authorization");
 
+/**
+ * Build the profile, authorize it, write the folder, start the stack — one call, with
+ * progress streamed back as it happens.
+ *
+ * Because authorization lives inside this call rather than in a wizard step, its result
+ * cannot go stale against answers that changed afterwards.
+ */
 export const createHub = (
   answers: HubAnswers,
   onEvent: (event: CreateEvent) => void
@@ -244,9 +245,9 @@ export const createHub = (
 };
 
 /**
- * Create a plugin engine: one `jhnnsrs/deployer:next` container with the Docker socket,
- * in its own folder. Streams the same events a hub does — minus the device code, which
- * the app authorization flow will add.
+ * Create a plugin engine: one deployer container with the Docker socket, in its own
+ * folder. Streams the same events a hub does, the device code included — an engine is
+ * claimed through the app authorization flow.
  */
 export const createEngine = (
   answers: EngineAnswers,
@@ -256,6 +257,21 @@ export const createEngine = (
   channel.onmessage = onEvent;
   return invoke<string>("create_engine", { answers, onEvent: channel });
 };
+
+/** The hub network an engine joins, or `null` when it runs plugins on its own. */
+export const engineAttachment = (path: string) =>
+  invoke<EngineAttachment | null>("engine_attachment", { path });
+
+/** An engine's mesh membership, or `null` when it is not on the mesh. */
+export const engineMesh = (path: string) =>
+  invoke<EngineMesh | null>("engine_mesh", { path });
+
+/**
+ * Attaches an engine to a hub's network, or detaches it with `null`. Only the compose
+ * file changes: bring the engine up again to apply it.
+ */
+export const attachEngine = (path: string, hubPath: string | null) =>
+  invoke<void>("attach_engine", { path, hubPath });
 
 // --- the registry, shared with the command line -----------------------------
 
@@ -292,12 +308,26 @@ export const purgeDeploymentData = (id: string) =>
 export const hubStatus = (path: string) => invoke<HubStatus>("hub_status", { path });
 
 /**
- * Re-authorize a hub that already exists: add services, move it to another network, or
- * tell the coordination server about the tailnet address it only got once it had joined.
+ * Whether re-authorizing asks for a mesh key: `auto` only when the hub is not on a mesh
+ * yet, `fresh` always — the way back for a key that expired before the hub joined.
+ */
+export type MeshKeyRequest = "auto" | "fresh" | "never";
+
+/** What re-authorizing did besides writing the credentials. */
+export type ReauthorizeOutcome = {
+  mesh_requested: boolean;
+  /** A granted key is single-use and expires fifteen minutes after it was issued. */
+  mesh_granted: boolean;
+  reporter_enabled: boolean;
+};
+
+/**
+ * Re-authorize a hub that already exists: add services, move it to another network, join
+ * a mesh it was created without, or fetch a fresh mesh key.
  *
  * The profile is reused verbatim — its secrets are what the running services already
  * trust — and the service configs are regenerated afterwards, because the JWKS URL they
- * verify tokens against may have moved.
+ * verify tokens against may have moved. A mesh-only hub's hosts are ignored by the core.
  */
 export const reauthorizeHub = (
   options: {
@@ -308,20 +338,20 @@ export const reauthorizeHub = (
     hosts: AdvertisedHost[];
     /** Of `hosts`, the ones a probe reached. Only these may be marked public. */
     reachableHosts: string[];
-    requestAuthKey: boolean;
+    meshKey: MeshKeyRequest;
   },
   onEvent: (event: CreateEvent) => void
 ) => {
   const channel = new Channel<CreateEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>("reauthorize_hub", {
+  return invoke<ReauthorizeOutcome>("reauthorize_hub", {
     path: options.path,
     coordServer: options.coordServer,
     identifier: options.identifier,
     description: options.description ?? null,
     hosts: options.hosts,
     reachableHosts: options.reachableHosts,
-    requestAuthKey: options.requestAuthKey,
+    meshKey: options.meshKey,
     onEvent: channel,
   });
 };
@@ -342,12 +372,6 @@ export const allowDeploymentDir = (path: string) =>
 
 // --- docker compose ---------------------------------------------------------
 
-/**
- * Runs one compose subcommand in a deployment folder and returns its output.
- *
- * Buffered rather than streamed: every one of these runs to completion, and nothing in
- * the UI displays output while a command is still going.
- */
 /** One line of a compose command's narration, as Rust streams it. */
 export type ComposeLine = { line: string; stderr: boolean };
 
@@ -376,13 +400,79 @@ export const updateService = (
   path: string,
   service: string,
   pull: boolean,
+  onEvent: (event: UpdateEvent) => void
+) =>
+  applyUpdate(
+    path,
+    { services: [service], advances: [], pull, backup_into: null, health_check: true },
+    onEvent
+  );
+
+/**
+ * Follow a deployment's logs, line by line, until `stopFollowingLogs` — what
+ * `konstruktor logs --follow` does. Resolves when stopped.
+ */
+export const followLogs = (
+  path: string,
+  options: { service?: string; tail?: number },
   onLine: (line: ComposeLine) => void
 ) => {
   const channel = new Channel<ComposeLine>();
   channel.onmessage = onLine;
-  return invoke<string>("update_service", { path, service, pull, onLine: channel });
+  return invoke<void>("follow_logs", {
+    path,
+    service: options.service ?? null,
+    tail: options.tail ?? null,
+    onLine: channel,
+  });
 };
 
+export const stopFollowingLogs = () => invoke<void>("stop_following_logs");
+
+/** What the infrastructure could move to: moved tags and newer pinned versions. */
+export const infrastructureUpdates = (path: string) =>
+  invoke<InfrastructureUpdates>("infrastructure_updates", { path });
+
+/** Where a backup taken before an update goes, unless somebody says otherwise. */
+export const defaultBackupFolder = (path: string) =>
+  invoke<string | null>("default_backup_folder", { path });
+
+/** What a rollback would put back — rejects when there is no earlier state recorded. */
+export const rollbackPlan = (path: string) =>
+  invoke<RollbackPlan>("rollback_plan", { path });
+
+/**
+ * Roll back to the images the hub ran before its last update — the same sequence
+ * `konstruktor rollback` runs. The code, not the data: services migrate forward on start.
+ */
+export const rollbackApply = (path: string, onLine: (line: ComposeLine) => void) => {
+  const channel = new Channel<ComposeLine>();
+  channel.onmessage = onLine;
+  return invoke<RollbackPlan>("rollback_apply", { path, onLine: channel });
+};
+
+/**
+ * The same update `konstruktor update` applies: optional backup, the rollback record,
+ * pin moves, then pull, guard and recreate each service, and an optional health check.
+ * A refused service is in the report, not an error.
+ */
+export const applyUpdate = (
+  path: string,
+  request: UpdateRequest,
+  onEvent: (event: UpdateEvent) => void
+) => {
+  const channel = new Channel<UpdateEvent>();
+  channel.onmessage = onEvent;
+  return invoke<UpdateReport>("apply_update", { path, request, onEvent: channel });
+};
+
+/**
+ * Runs one compose subcommand in a deployment folder and returns its output — `up` being
+ * the core's start, with the guard and the reporter fallback.
+ *
+ * Buffered rather than streamed: what uses this reads the whole output at the end, as the
+ * log screen's reload does.
+ */
 export const composeCommand = (
   path: string,
   action: ComposeAction,

@@ -244,21 +244,27 @@ these would not.
 
 ### The mesh
 
-A hub advertised only at LAN addresses is only reachable from that LAN. The mesh step joins it to the
-organization's tailnet: a `tailscale/tailscale` sidecar runs alongside the gateway, and the gateway is
-published inside that container's network namespace, so the hub is on the tailnet under a name of its
-own.
+A hub advertised only at LAN addresses is only reachable from that LAN. The mesh — on by default —
+joins it to the organization's tailnet: a `tailscale/tailscale` sidecar runs alongside the gateway,
+and the gateway is published inside that container's network namespace, so the hub is on the tailnet
+under a name of its own.
 
-Joining and *being advertised* are two steps, not one. The manifest sent at authorization time carries
-the addresses picked on the Addresses step, and the tailnet address does not exist until the hub has
-actually joined — so once the stack is up, add that address on the dashboard and authorize again. Only
-then do clients off this network get told where the hub lives.
+Its tailnet address does not exist until the hub has joined, so the manifest declares a placeholder
+mesh alias per service (and for the S3 datalayer) and the coordination server fills in the node's
+name once it has registered. Nothing has to be done afterwards.
 
 The credential is a single-use pre-authorized key, and it can come from either end. "Join the
 organization's mesh" sets `request_auth_key` on the hub manifest, so the coordination server mints one
 while it is accepting the hub and returns it in the grant envelope — no second trip. Whoever approves
-the hub decides whether to grant it, so an approval can come back without a key. Alternatively a key
-from a tailnet you run yourself can be pasted, together with the control server it belongs to.
+the hub decides whether to grant it, so an approval can come back without a key. The key expires
+fifteen minutes after it was issued, which is why a new hub is started as soon as it is written; a hub
+whose key expired unused can fetch a fresh one by authorizing again (`konstruktor authorize --mesh-key
+fresh`, or the checkbox on the Authorize screen). Alternatively a key from a tailnet you run yourself
+can be pasted, together with the control server it belongs to.
+
+*Mesh only* goes one step further: no port is opened on this machine and nothing on its networks is
+advertised — only the mesh node and, for plugin apps beside the stack, the gateway's name inside
+Docker. Every client then has to be on the mesh.
 
 A hub without a mesh generates exactly what it generated before the mesh existed: no `mesh` block in
 `hub_config.yaml`, no sidecar, no extra volume.

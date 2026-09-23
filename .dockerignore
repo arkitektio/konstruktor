@@ -1,0 +1,10 @@
+# Only docker/reporter-source.Dockerfile builds from the repository root; everything it
+# does not need to compile the CLI stays out of the context.
+target
+**/target
+node_modules
+dist
+.git
+src
+public
+*.gif

@@ -5,8 +5,26 @@ import {
   coordinationServerSchema,
   emptyOverride,
   serviceAnswer,
+  withKnownServer,
   type ServiceOverride,
 } from "../hub-form";
+
+describe("remembering a coordination server", () => {
+  it("adds a server it has not seen", () => {
+    expect(withKnownServer(["go.arkitekt.live"], "lab.example.org")).toEqual([
+      "go.arkitekt.live",
+      "lab.example.org",
+    ]);
+  });
+
+  // Both wizards remember servers this way; the engine wizard used to compare the raw
+  // strings, and listed the same server twice.
+  it("treats a bare host and its URL as the same server", () => {
+    const known = ["go.arkitekt.live"];
+    expect(withKnownServer(known, "https://go.arkitekt.live/")).toBe(known);
+    expect(withKnownServer(known, "GO.ARKITEKT.LIVE")).toBe(known);
+  });
+});
 
 /**
  * What is left of the form module after generation moved to Rust: the address rule the

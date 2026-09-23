@@ -7,6 +7,8 @@
 pub enum Error {
     #[error(transparent)]
     Shell(#[from] std::io::Error),
+    // Only the unix path asks a login shell for its environment; Windows has none to ask.
+    #[cfg(not(windows))]
     #[error("failed to run shell echo: {0}")]
     EchoFailed(String),
 }

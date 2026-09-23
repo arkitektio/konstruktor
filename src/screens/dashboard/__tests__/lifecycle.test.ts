@@ -7,8 +7,23 @@ import {
   runSummary,
   serviceUpdates,
   stages,
+  tagOf,
   updateSummary,
 } from "../lifecycle";
+
+// Kept in step with `konstruktor_core::status::image_tag`.
+describe("an image's tag", () => {
+  it("is what follows the last colon of the name", () => {
+    expect(tagOf("jhnnsrs/rekuest:next")).toBe("next");
+    expect(tagOf("registry:5000/jhnnsrs/rekuest:next")).toBe("next");
+    expect(tagOf("jhnnsrs/rekuest")).toBeNull();
+  });
+
+  // Updates and rollbacks write digest-pinned references; the digest's colon is not a tag.
+  it("ignores a digest pin", () => {
+    expect(tagOf("jhnnsrs/daten:16.13-1@sha256:abc123")).toBe("16.13-1");
+  });
+});
 
 const container = (over: Partial<Container>): Container => ({
   id: "c1",

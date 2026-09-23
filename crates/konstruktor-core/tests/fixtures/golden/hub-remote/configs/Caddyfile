@@ -1,4 +1,25 @@
 http:// {
+	header {
+		-Server
+		X-Forwarded-Proto {scheme}
+		X-Forwarded-For {remote}
+		X-Forwarded-Port {server_port}
+		X-Forwarded-Host {host}
+		>Access-Control-Allow-Origin "{header.Origin}"
+		>Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		>Access-Control-Allow-Headers "Origin, Content-Type, Accept, Authorization, X-Requested-With, Range, x-host-override, x-amz-content-sha256, x-amz-date, x-amz-user-agent, x-amz-request-id, x-amz-security-token, x-amz-acl"
+		>Access-Control-Expose-Headers "ETag, Content-Length, Content-Range, Accept-Ranges, x-amz-meta-dir, x-amz-request-id, x-amz-id-2"
+		>Access-Control-Max-Age "86400"
+		Timing-Allow-Origin "*"
+	}
+
+	@options {
+		method OPTIONS
+	}
+	handle @options {
+		respond 204
+	}
+
 	@kabinet path /kabinet*
 	handle @kabinet { 
 		reverse_proxy kabinet:80
@@ -111,6 +132,12 @@ http:// {
 
 	@minio path /minio/*
 	handle @minio {
+		reverse_proxy rustfs:9000
+	}
+
+	@rustfs path /rustfs/*
+	handle @rustfs {
+		uri strip_prefix /rustfs
 		reverse_proxy rustfs:9000
 	}
 

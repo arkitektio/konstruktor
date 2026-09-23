@@ -38,15 +38,11 @@ export const HostsStep = () => {
   const [reach, setReach] = useState<ReachChoice>("custom");
 
   useEffect(() => {
-    // Which tailnet is this hub's? Only the coordination server knows, and only if it
-    // says. Without an answer every tailnet address on this machine — the personal
-    // tailscale most laptops already run — is listed as somebody else's, which before the
-    // hub has joined anything is simply true.
-    const server = (getValues("coordServer") ?? "").trim();
-    const domain = server ? api.meshDomain(server).catch(() => null) : Promise.resolve(null);
-
-    domain
-      .then((domain) => api.hostCandidates({ domain }))
+    // Every tailnet address on this machine — the personal tailscale most laptops already
+    // run — is somebody else's: the hub's own mesh address is declared separately, and
+    // filled in by the coordination server once the hub has joined.
+    api
+      .hostCandidates()
       .then(({ candidates, presets }) => {
         setCandidates(candidates);
         setPresets(presets);
