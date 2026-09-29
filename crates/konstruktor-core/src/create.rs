@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::catalog::ServiceId;
 use crate::config::hub::{
-    build_hub_config, HubConfig, HubConfigOptions, ServiceOptions, StorageMode,
+    build_hub_config, trusted_origins, HubConfig, HubConfigOptions, ServiceOptions, StorageMode,
 };
 use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshOptions};
 use crate::connect::authorize::{self, HubAuthorizationError};
@@ -370,6 +370,9 @@ pub async fn create_hub(
     }
 
     enable_reporter(&mut config, &envelope);
+
+    // Now that the mesh name is known too: every address a browser may POST from.
+    config.csrf_trusted_origins = Some(trusted_origins(&config, &host_names(&hosts)));
 
     // --- write --------------------------------------------------------------
     let credentials = HubCredentials {
@@ -824,6 +827,11 @@ impl MeshKeyRequest {
     }
 }
 
+/// The advertised hosts, by name.
+fn host_names(hosts: &[AdvertisedHost]) -> Vec<String> {
+    hosts.iter().map(|h| h.host.clone()).collect()
+}
+
 /// Re-authorizing a hub that already exists on disk.
 ///
 /// This is how a hub gains services, moves to a different network, or joins the mesh it
@@ -944,6 +952,14 @@ pub async fn reauthorize(
     }
 
     enable_reporter(&mut config, &envelope);
+    // Added to, never narrowed: an origin somebody put into the profile by hand stays.
+    let mut origins = config.csrf_trusted_origins.take().unwrap_or_default();
+    for origin in trusted_origins(&config, &host_names(&hosts)) {
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+    config.csrf_trusted_origins = Some(origins);
     let reporter_enabled = config.reporter.as_ref().is_some_and(|r| r.enabled);
 
     let credentials = HubCredentials {

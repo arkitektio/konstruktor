@@ -112,10 +112,12 @@ fn walk(value: &Value, key: &str, found: &mut BTreeSet<Secret>) {
 
 /// Every credential a deployment folder holds.
 ///
-/// Three sources, because the containers' environment comes from all three: the profile,
-/// the generated service configs, and the compose file — which is hand-editable in this
-/// app, and in the wild carries inline `POSTGRES_PASSWORD`s the profile has never seen.
-/// Anything unreadable is skipped rather than failing the report: a folder missing its
+/// The profile, the generated service configs, and the compose file — which is
+/// hand-editable in this app, and in the wild carries inline `POSTGRES_PASSWORD`s the
+/// profile has never seen. Then the files that are nothing but credentials: the grant
+/// (`hub_credentials.json`), a reporter state kept in the folder (`reporter.json`; the
+/// containerised reporter keeps its own in a volume, out of reach here), the mesh key
+/// (`mesh.env`) and the key files under `secrets/`. Anything unreadable is skipped rather than failing the report: a folder missing its
 /// configs is exactly the broken state somebody is trying to report.
 pub fn secrets_in_deployment(dir: &Path) -> Vec<Secret> {
     let mut found = BTreeSet::new();
@@ -141,7 +143,53 @@ pub fn secrets_in_deployment(dir: &Path) -> Vec<Secret> {
         }
     }
 
+    // The grant (access and refresh tokens, client secrets, the mesh key) and the
+    // reporter's rotated refresh token: JSON, walked like the rest.
+    for name in [
+        crate::credentials::CREDENTIALS_FILENAME,
+        crate::hubhealth::STATE_FILENAME,
+    ] {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Ok(document) = serde_norway::to_value(json) {
+                    walk(&document, "", &mut found);
+                }
+            }
+        }
+    }
+
+    // Files that hold nothing *but* secrets, taken whole whatever they look like: a
+    // `tskey-auth-…` has dashes, so it would not pass for generated, and `TS_AUTHKEY`
+    // names no secret-sounding key.
+    if let Ok(text) = std::fs::read_to_string(dir.join(crate::config::mesh::MESH_ENV_FILE)) {
+        for line in text.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                insert_whole(&mut found, key.trim(), value.trim());
+            }
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(dir.join("secrets")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let name = format!("secrets/{}", entry.file_name().to_string_lossy());
+                insert_whole(&mut found, &name, text.trim());
+            }
+        }
+    }
+
     found.into_iter().collect()
+}
+
+/// A value from a file that holds only secrets: taken as long as it is not empty.
+fn insert_whole(found: &mut BTreeSet<Secret>, key: &str, value: &str) {
+    let value = value.trim_matches(|c| c == '"' || c == '\'');
+    if value.len() >= KEYED_MIN {
+        found.insert(Secret {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    }
 }
 
 /// Replace every known credential, then everything that looks like one a service minted
@@ -424,6 +472,59 @@ mod tests {
                    rekuest-1 | container 3a4b5c6d7e8f90112233445566778899aabbccddeeff00112233445566778899\n";
         let out = redact(log, &[]);
         assert_eq!(out.text, log);
+    }
+
+    /// The grant, the reporter's state, the mesh key and the key files are all secrets a
+    /// hub keeps outside its YAML — and every one of them has turned up in a log.
+    #[test]
+    fn collects_from_the_grant_the_reporter_the_mesh_key_and_the_key_files() {
+        let dir = std::env::temp_dir().join(format!("konstruktor-redact-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("secrets")).unwrap();
+        std::fs::write(
+            dir.join("hub_credentials.json"),
+            r#"{"version":1,"envelope":{"access_token":"at-7f3a9c","refresh_token":"rt-91ab44",
+               "clients":{"mikro":{"client_secret":"cs-55e1d0"}},
+               "mesh":{"ionscale_auth_key":"tskey-auth-kX1-grant"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("reporter.json"),
+            r#"{"refresh_token":"rt-rotated-2"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("mesh.env"),
+            "TS_AUTHKEY=tskey-auth-kQ2mZ7CNTRL-abcDEF123\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("secrets/kuvert.fernet"),
+            "q2L-3n_vX0bYt8Qe7rJmW4sZk1uHc9pA6dFgTiNoV5E=\n",
+        )
+        .unwrap();
+
+        let found = secrets_in_deployment(&dir);
+        let values: Vec<&str> = found.iter().map(|s| s.value.as_str()).collect();
+        for expected in [
+            "at-7f3a9c",
+            "rt-91ab44",
+            "cs-55e1d0",
+            "tskey-auth-kX1-grant",
+            "rt-rotated-2",
+            "tskey-auth-kQ2mZ7CNTRL-abcDEF123",
+            "q2L-3n_vX0bYt8Qe7rJmW4sZk1uHc9pA6dFgTiNoV5E=",
+        ] {
+            assert!(values.contains(&expected), "{expected} not in {values:?}");
+        }
+
+        let out = redact(
+            "tailscale-1 | TS_AUTHKEY=tskey-auth-kQ2mZ7CNTRL-abcDEF123 login\n",
+            &found,
+        );
+        assert!(!out.text.contains("kQ2mZ7CNTRL"), "{}", out.text);
+        assert!(out.text.contains("[redacted: TS_AUTHKEY]"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

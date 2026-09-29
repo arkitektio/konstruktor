@@ -621,6 +621,7 @@ fn copy_deployment_files(dir: &Path, into: &Path) -> Result<Vec<String>, BackupE
         CREDENTIALS_FILENAME,
         crate::compose_file::COMPOSE_FILENAME,
         crate::compose_file::COMPOSE_BACKUP_FILENAME,
+        crate::config::mesh::MESH_ENV_FILE,
     ] {
         let from = dir.join(name);
         if from.is_file() {

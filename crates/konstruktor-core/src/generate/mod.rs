@@ -63,6 +63,14 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
         }
     }
 
+    // --- the mesh sidecar's key, which the compose file only names -------------
+    if let Some(mesh) = config.mesh.as_ref().filter(|m| m.enabled) {
+        files.insert(
+            crate::config::mesh::MESH_ENV_FILE.to_string(),
+            mesh.env_file_contents(),
+        );
+    }
+
     // --- minio's bucket manifest --------------------------------------------
     if let Some(minio_init) = compose::build_minio_init(config, &enabled) {
         files.insert(

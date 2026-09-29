@@ -11,6 +11,8 @@
 //!
 //! `KONSTRUKTOR_E2E_SETTLE_SECS` (default 60) is how long the hub gets after `up` before it
 //! is asked; `health::check` then waits and retries on its own on top of that.
+//! `KONSTRUKTOR_E2E_PROVISION_SECS` (default 180) is how long Rekuest then gets to provision
+//! a HookAgent for every hooked service.
 //!
 //! No coordination server is involved: the hub is generated directly, the way
 //! `create_hub` does after the authorization, with a default issued identity.
@@ -151,4 +153,109 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         }
         panic!("unhealthy services:\n{}", report(&unhealthy));
     }
+
+    // --- rekuest's reaper -------------------------------------------------------------
+    // Nothing routes to it, so `health::check` judges it by its own healthcheck (the
+    // heartbeat `manage.py reaper --check` reads). It has to be there and healthy: without
+    // it no deadline, schedule or trigger ever fires.
+    let reaper = results
+        .iter()
+        .find(|s| s.service == "rekuest-reaper")
+        .expect("the health check looked at rekuest-reaper");
+    assert!(reaper.healthy, "rekuest-reaper: {}", reaper.detail);
+
+    // --- one HookAgent per hooked service ---------------------------------------------
+    // The reaper provisions every `rekuest.service_agents` entry as a WEBHOOK agent and
+    // registers the actions it reads from the service's manifest. That fetch is signed
+    // both ways with instance keys, so an agent *with actions* proves the whole chain —
+    // the reaper runs, the service answers, and each side finds the other's key in the
+    // (inline) trust bundle. Every hooked service declares at least its embeddings sweep.
+    let expected = expected_service_agents(&dir);
+    assert!(!expected.is_empty(), "the hub has hooked services");
+    let deadline = std::time::Instant::now() + provision_timeout();
+    let provisioned = loop {
+        let found =
+            provisioned_agents(&dir, &config.db.postgres_user, &config.rekuest.db_config.db);
+        let missing: Vec<&String> = expected
+            .iter()
+            .filter(|service| found.get(*service).copied().unwrap_or(0) == 0)
+            .collect();
+        if missing.is_empty() || std::time::Instant::now() > deadline {
+            break found;
+        }
+        eprintln!("waiting for rekuest to provision {missing:?} (have {found:?})…");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    };
+
+    eprintln!("rekuest's service agents and their action counts: {provisioned:?}");
+    let missing: Vec<&String> = expected
+        .iter()
+        .filter(|service| provisioned.get(*service).copied().unwrap_or(0) == 0)
+        .collect();
+    if !missing.is_empty() {
+        let logs = compose(
+            &dir,
+            &["logs", "--no-color", "--tail", "120", "rekuest-reaper"],
+        );
+        eprintln!(
+            "----- logs: rekuest-reaper -----\n{}{}",
+            String::from_utf8_lossy(&logs.stdout),
+            String::from_utf8_lossy(&logs.stderr)
+        );
+        panic!(
+            "rekuest did not provision a HookAgent with actions for {missing:?}; \
+             agents and their action counts: {provisioned:?}"
+        );
+    }
+}
+
+/// How long rekuest gets to provision every service agent once the hub is healthy. The
+/// reaper retries an unreachable service every 30 s, so a service that was slow to boot
+/// costs a round or two.
+fn provision_timeout() -> Duration {
+    std::env::var("KONSTRUKTOR_E2E_PROVISION_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(180))
+}
+
+/// The services rekuest was told to provision, as the generated config lists them.
+fn expected_service_agents(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join("configs/rekuest.yaml")).expect("rekuest.yaml");
+    let doc: serde_norway::Value = serde_norway::from_str(&text).expect("rekuest.yaml parses");
+    doc["rekuest"]["service_agents"]
+        .as_sequence()
+        .map(|agents| {
+            agents
+                .iter()
+                .filter_map(|a| a["service"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Rekuest's WEBHOOK agents, by name, with how many actions each implements — read from
+/// its database, since the hub has no coordination server to mint a token for its API.
+fn provisioned_agents(
+    dir: &Path,
+    user: &str,
+    database: &str,
+) -> std::collections::BTreeMap<String, u32> {
+    let query = "select a.name, count(i.id) from facade_agent a \
+                 left join facade_implementation i on i.agent_id = a.id \
+                 where a.kind = 'WEBHOOK' group by a.name";
+    let out = compose(
+        dir,
+        &[
+            "exec", "-T", "db", "psql", "-U", user, "-d", database, "-tAF", "|", "-c", query,
+        ],
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, count) = line.split_once('|')?;
+            Some((name.trim().to_string(), count.trim().parse().ok()?))
+        })
+        .collect()
 }

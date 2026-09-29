@@ -779,6 +779,74 @@ pub fn scheme_of(config: &HubConfig) -> &'static str {
     }
 }
 
+/// The origins Django accepts unsafe requests (form POSTs, the admin) from, beyond the one
+/// a request names in its own `Host`: every address the hub is reached at, as the browser
+/// spells it — `scheme://host[:port]`, the port left off only where it is the scheme's
+/// default, because Django compares the whole thing.
+///
+/// `hosts` are the names and addresses the hub advertises on this machine's networks. To
+/// those come `localhost`, the gateway's name on the hub's own network (plugin apps), and
+/// the tailnet node's short name. The node's full MagicDNS name is the coordination
+/// server's to assign and is not known here.
+///
+/// The gateway serves plain HTTP on its published HTTP port, and HTTPS only when the hub
+/// terminates TLS — so `https://` origins are written only then.
+pub fn trusted_origins(config: &HubConfig, hosts: &[String]) -> Vec<String> {
+    let gateway = &config.gateway;
+    let origin = |scheme: &str, host: &str, port: u16| {
+        let default = if scheme == "https" { 443 } else { 80 };
+        if port == default {
+            format!("{scheme}://{host}")
+        } else {
+            format!("{scheme}://{host}:{port}")
+        }
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |value: String| {
+        if !out.contains(&value) {
+            out.push(value);
+        }
+    };
+
+    // What the generator always wrote, so nothing that worked before stops working.
+    push("http://localhost".into());
+    push("https://localhost".into());
+
+    let published: Vec<&str> = std::iter::once("localhost")
+        .chain(hosts.iter().map(String::as_str).map(str::trim))
+        .filter(|h| !h.is_empty())
+        .collect();
+    for host in &published {
+        if let Some(port) = gateway.exposed_http_port {
+            push(origin("http", host, port));
+        }
+        if gateway.ssl {
+            if let Some(port) = gateway.exposed_https_port {
+                push(origin("https", host, port));
+            }
+        }
+    }
+
+    // Inside the hub's network and on the tailnet nothing is mapped: the gateway's own port.
+    let mut unmapped = vec![gateway.host.as_str()];
+    if let Some(mesh) = config
+        .mesh
+        .as_ref()
+        .filter(|m| m.enabled && !m.hostname.is_empty())
+    {
+        unmapped.push(mesh.hostname.as_str());
+    }
+    for host in unmapped {
+        push(origin("http", host, 80));
+        if gateway.ssl {
+            push(origin("https", host, 443));
+        }
+    }
+
+    out
+}
+
 pub fn storage_mode_of(config: &HubConfig) -> StorageMode {
     let bound = |mount: &Option<String>| mount.as_deref().is_some_and(|m| !m.is_empty());
     if bound(&config.db.mount) || bound(&config.minio.mount) {

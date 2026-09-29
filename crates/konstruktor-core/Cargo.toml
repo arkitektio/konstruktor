@@ -17,6 +17,8 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true
+# RFC 7638 thumbprints of the instance keys; already in the tree through ed25519-dalek.
+sha2 = "0.10"
 strip-ansi-escapes.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "rt", "macros", "process", "fs", "io-util", "net"] }

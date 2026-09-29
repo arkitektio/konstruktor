@@ -186,3 +186,99 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
         );
     }
 }
+
+/// A hub the coordination server handed no `hub_keys_url` (not enrolled yet, or the e2e
+/// hub, which is never authorized) still has to trust its own services: every config
+/// carries the bundle inline, one key per enabled service, under its service.
+#[test]
+fn without_a_hub_keys_url_the_bundle_is_written_inline() {
+    let mut config = legacy_config();
+    // The fixture's provenance pair is a placeholder, not a real key; mint real ones.
+    config.rekuest.provenance_key_pair = None;
+    config.ensure_instance_keys();
+    let files = generate_hub_files(&config, &IssuedIdentity::default());
+
+    let enabled: Vec<ServiceId> = config
+        .enabled_services()
+        .into_iter()
+        .filter(|id| config.service(*id).image.is_some())
+        .collect();
+    assert!(enabled.len() > 1, "the fixture enables several services");
+
+    let rekuest_jwk = konstruktor_core::secrets::public_jwk(
+        config.rekuest.instance_key_pair.as_ref().unwrap(),
+        "live.arkitekt.rekuest",
+    )
+    .unwrap();
+
+    for id in &enabled {
+        let yaml = config_yaml(&files, *id);
+        let trust = &yaml["instance"]["trust"];
+        assert!(trust.get("jwks_uri").is_none(), "{id:?}");
+        let keys = trust["jwks"]["keys"]
+            .as_sequence()
+            .expect("an inline bundle");
+        assert_eq!(
+            keys.len(),
+            enabled.len(),
+            "{id:?}: one key per enabled service"
+        );
+
+        let services: Vec<&str> = keys
+            .iter()
+            .map(|k| k["service"].as_str().unwrap())
+            .collect();
+        for other in &enabled {
+            assert!(services.contains(&format!("live.arkitekt.{}", other.as_str()).as_str()));
+        }
+        for key in keys {
+            assert_eq!(key["kty"].as_str(), Some("OKP"));
+            assert_eq!(key["crv"].as_str(), Some("Ed25519"));
+            assert_eq!(key["alg"].as_str(), Some("Ed25519"));
+            assert_eq!(key["use"].as_str(), Some("sig"));
+            assert_eq!(
+                key["kid"].as_str().map(str::len),
+                Some(43),
+                "a SHA-256 thumbprint"
+            );
+        }
+        // This service's own entry is its own public key.
+        let own = keys
+            .iter()
+            .find(|k| k["service"].as_str() == Some(&format!("live.arkitekt.{}", id.as_str())))
+            .unwrap();
+        let expected = konstruktor_core::secrets::public_jwk(
+            config.service(*id).instance_key_pair.as_ref().unwrap(),
+            "",
+        )
+        .unwrap();
+        assert_eq!(own["x"].as_str(), expected["x"].as_str());
+
+        // Provenance is checked against Rekuest's key alone, inline as well.
+        let provenance = &yaml["authentikate"]["provenance"]["issuers"][0];
+        assert_eq!(provenance["kind"].as_str(), Some("jwks_dict"));
+        assert_eq!(provenance["iss"].as_str(), Some("rekuest"));
+        let provenance_keys = provenance["jwks"]["keys"].as_sequence().unwrap();
+        assert_eq!(provenance_keys.len(), 1);
+        assert_eq!(
+            provenance_keys[0]["kid"].as_str(),
+            rekuest_jwk["kid"].as_str()
+        );
+    }
+}
+
+/// A Rekuest key that cannot be read (the fixture's placeholder) is no reason to write a
+/// provenance issuer with no keys: it falls back to Rekuest's own key set in the network.
+#[test]
+fn an_unreadable_rekuest_key_falls_back_to_its_key_set() {
+    let mut config = legacy_config();
+    config.ensure_instance_keys();
+    let files = generate_hub_files(&config, &IssuedIdentity::default());
+    let yaml = config_yaml(&files, ServiceId::Mikro);
+    let provenance = &yaml["authentikate"]["provenance"]["issuers"][0];
+    assert_eq!(provenance["kind"].as_str(), Some("jwks_uri"));
+    assert_eq!(
+        provenance["jwks_uri"].as_str(),
+        Some("http://rekuest:80/rekuest/.well-known/jwks.json")
+    );
+}

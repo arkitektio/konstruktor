@@ -23,3 +23,20 @@ pub fn write_generated_files(dir: &Path, files: &GeneratedFiles) -> std::io::Res
     }
     Ok(())
 }
+
+/// Writes the mesh sidecar's `mesh.env` from the profile when the hub is on a mesh and the
+/// file is missing. True when it wrote one.
+pub fn ensure_mesh_env(
+    dir: &Path,
+    config: &crate::config::hub::HubConfig,
+) -> std::io::Result<bool> {
+    let Some(mesh) = config.mesh.as_ref().filter(|m| m.enabled) else {
+        return Ok(false);
+    };
+    let target = dir.join(crate::config::mesh::MESH_ENV_FILE);
+    if target.exists() {
+        return Ok(false);
+    }
+    std::fs::write(&target, mesh.env_file_contents())?;
+    Ok(true)
+}

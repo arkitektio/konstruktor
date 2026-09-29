@@ -21,7 +21,8 @@ pub struct MeshBlock {
     pub image: String,
     /// The name the hub takes on the tailnet.
     pub hostname: String,
-    /// Single-use pre-authorized key. A secret, and it lands in docker-compose.yaml.
+    /// Single-use pre-authorized key. A secret: a hub writes it into `mesh.env`, which the
+    /// sidecar reads through `env_file`, rather than into docker-compose.yaml.
     pub auth_key: String,
     /// The control server to log in to. `None` means Tailscale's own coordination
     /// service, which is what a hand-supplied `tskey-…` from a personal tailnet expects.
@@ -50,14 +51,19 @@ impl MeshBlock {
         }
     }
 
-    /// What every sidecar is started with, a hub's or an engine's.
+    /// What every sidecar is started with, a hub's or an engine's — except the key, which
+    /// is [`Self::auth_key_env`] and goes wherever the caller keeps its secrets.
     ///
-    /// The key and the control server, and nothing that advertises tags: the server tags
-    /// a node by the key it was minted for, and an advertised tag would be accepted as
-    /// given — putting the node into groups it was never meant to be in.
+    /// The control server, and nothing that advertises tags: the server tags a node by the
+    /// key it was minted for, and an advertised tag would be accepted as given — putting
+    /// the node into groups it was never meant to be in.
     pub fn sidecar_environment(&self) -> Vec<(&'static str, String)> {
         let mut environment = vec![
-            ("TS_AUTHKEY", self.auth_key.clone()),
+            // Log in with the key only while there is no node state. The key is single-use
+            // and expires fifteen minutes after it was minted; without this the sidecar
+            // presents it again on every restart and the tailnet rejects it, although the
+            // node it already registered is still perfectly good.
+            ("TS_AUTH_ONCE", "true".to_string()),
             ("TS_HOSTNAME", self.hostname.clone()),
             ("TS_STATE_DIR", self.state_dir()),
             // The kernel networking path; userspace mode would not carry the traffic of
@@ -69,7 +75,23 @@ impl MeshBlock {
         }
         environment
     }
+
+    /// The pre-authorized key, as the sidecar reads it from its environment.
+    pub fn auth_key_env(&self) -> (&'static str, String) {
+        ("TS_AUTHKEY", self.auth_key.clone())
+    }
+
+    /// The contents of a hub's [`MESH_ENV_FILE`]: the key, and nothing else.
+    pub fn env_file_contents(&self) -> String {
+        let (name, value) = self.auth_key_env();
+        format!("{name}={value}\n")
+    }
 }
+
+/// Where a hub keeps its sidecar's key, next to docker-compose.yaml, read through the
+/// sidecar's `env_file`. Kept out of the compose file so the file can be shown, diffed and
+/// edited in the app without carrying a credential around with it.
+pub const MESH_ENV_FILE: &str = "mesh.env";
 
 /// Where the sidecar keeps its node identity, so a restart is not a new machine.
 pub const MESH_STATE_DIR: &str = "/var/lib/tailscale";

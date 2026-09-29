@@ -55,3 +55,5 @@ datalayer:
     bucket: mikrofabriks
   konnektion:
     bucket: mikrokonnektion
+rekuest_hook:
+  rekuest_url: http://rekuest:80/rekuest

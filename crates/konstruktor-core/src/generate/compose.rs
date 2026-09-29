@@ -3,7 +3,7 @@ use serde_norway::{Mapping, Value};
 use crate::catalog::ServiceId;
 use crate::config::hub::{HubConfig, ServiceBlock, DB_COMPOSE_SERVICE};
 use crate::config::mesh::{
-    MESH_SOCKET as TAILSCALE_SOCKET, MESH_SOCKET_DIR as TAILSCALE_SOCKET_DIR,
+    MESH_ENV_FILE, MESH_SOCKET as TAILSCALE_SOCKET, MESH_SOCKET_DIR as TAILSCALE_SOCKET_DIR,
     MESH_SOCKET_VOLUME as TAILSCALE_SOCKET_VOLUME, MESH_STATE_DIR,
 };
 use crate::credentials::CREDENTIALS_FILENAME;
@@ -103,6 +103,67 @@ fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
             )]),
         ),
     ])
+}
+
+/// The compose service of Rekuest's reaper, when this hub runs a Rekuest of its own.
+///
+/// Every deadline, schedule, delayed task, trigger and retention sweep of Rekuest fires
+/// from this one loop (`manage.py reaper`) — and it is what provisions the hub's services
+/// as HookAgents. The web container never sweeps, so a hub without it looks healthy while
+/// nothing scheduled ever runs. It serves nothing: no route, no manifest instance.
+pub fn reaper_host(config: &HubConfig) -> Option<String> {
+    let rekuest = &config.rekuest;
+    (rekuest.enabled && rekuest.image.is_some()).then(|| format!("{}-reaper", rekuest.host))
+}
+
+/// The compose services that run `service`'s image besides `service` itself, and so have to
+/// be recreated with it when its image moves: Rekuest's reaper, for Rekuest.
+pub fn companions(config: &HubConfig, service: &str) -> Vec<String> {
+    if service == config.rekuest.host {
+        reaper_host(config).into_iter().collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Rekuest's reaper: Rekuest's own service — same image, config, mounts and restart policy
+/// — running `run-reaper.sh`, with the heartbeat check the image ships as its health.
+fn reaper_service(config: &HubConfig) -> Value {
+    let rekuest = &config.rekuest;
+    let mut service = compose_service(config, rekuest);
+    insert(&mut service, "command", s("bash run-reaper.sh"));
+    // No object storage: the reaper reaches it only through Rekuest's code paths, which
+    // run in the web container. Rekuest owns the schema, so it has to have migrated first.
+    insert(
+        &mut service,
+        "depends_on",
+        list(vec![
+            s(DB_COMPOSE_SERVICE),
+            s(&config.local_redis.host),
+            s(&rekuest.host),
+        ]),
+    );
+    insert(
+        &mut service,
+        "healthcheck",
+        map(vec![
+            (
+                "test",
+                list(vec![
+                    s("CMD"),
+                    s("python"),
+                    s("manage.py"),
+                    s("reaper"),
+                    s("--check"),
+                ]),
+            ),
+            ("interval", s("30s")),
+            ("timeout", s("20s")),
+            ("retries", Value::from(3)),
+            ("start_period", s("60s")),
+        ]),
+    );
+    service
 }
 
 /// The bucket + user manifest the init container (`rustfs_init`) reads. `None` when nothing declares a bucket.
@@ -267,6 +328,9 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         let service = config.service(*id);
         insert(&mut services, &service.host, compose_service(config, service));
     }
+    if let Some(reaper) = reaper_host(config).filter(|_| enabled.contains(&ServiceId::Rekuest)) {
+        insert(&mut services, &reaper, reaper_service(config));
+    }
 
     // --- the model provider, when this hub runs its own -----------------------
     //
@@ -340,6 +404,8 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
             ("image", s(&mesh.image)),
             ("hostname", s(&mesh.hostname)),
             ("environment", map(environment)),
+            // The key, kept out of this file. See `MESH_ENV_FILE`.
+            ("env_file", list(vec![s(MESH_ENV_FILE)])),
         ];
         // A mesh-only hub publishes nothing, and an empty `ports:` is noise.
         if !ports.is_empty() {
@@ -363,7 +429,20 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
             map(vec![
                 ("image", s(&config.gateway.image)),
                 ("network_mode", s(&format!("service:{}", mesh.host))),
-                ("depends_on", list(vec![s(&mesh.host)])),
+                // `restart`: the gateway lives in the sidecar's network namespace, and a
+                // sidecar that is recreated or restarts takes that namespace with it —
+                // leaving Caddy running in a dead one, reachable by nothing, until it too
+                // is restarted.
+                (
+                    "depends_on",
+                    map(vec![(
+                        mesh.host.as_str(),
+                        map(vec![
+                            ("condition", s("service_started")),
+                            ("restart", Value::from(true)),
+                        ]),
+                    )]),
+                ),
                 (
                     "volumes",
                     list(vec![s("./configs/Caddyfile:/etc/caddy/Caddyfile")]),

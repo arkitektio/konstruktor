@@ -97,6 +97,15 @@ pub async fn start(
         }
 
         // --- 2. the mesh sidecar ---------------------------------------------------
+        // The compose file names `mesh.env` but only generation writes it. A compose file
+        // reset on its own (the app's editor, `konstruktor compose reset`) on a hub from
+        // before the key moved there would otherwise refuse to start.
+        if let Err(error) = crate::generate::write::ensure_mesh_env(dir, config) {
+            return Err(StartError::Compose(format!(
+                "could not write {}: {error}",
+                crate::config::mesh::MESH_ENV_FILE
+            )));
+        }
         if let Some(stale) = sidecar_missing_a_network(dir, config).await {
             let line = format!(
                 "The mesh sidecar is missing a network ({stale}); recreating it and the gateway."

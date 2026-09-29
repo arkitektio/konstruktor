@@ -667,6 +667,16 @@ pub async fn apply(
         crate::compose::run_streamed(dir, crate::compose::up_service(service), &line)
             .await
             .map_err(UpdateError::Compose)?;
+        // Rekuest's reaper runs Rekuest's image; `--no-deps` would leave it on the old one.
+        // Same image, so nothing more to pull or guard.
+        for companion in crate::generate::compose::companions(&config, service)
+            .into_iter()
+            .filter(|c| crate::compose_file::declares_service(dir, c))
+        {
+            crate::compose::run_streamed(dir, crate::compose::up_service(&companion), &line)
+                .await
+                .map_err(UpdateError::Compose)?;
+        }
         on_event(UpdateEvent::Updated {
             service: service.clone(),
         });

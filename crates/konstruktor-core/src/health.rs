@@ -213,7 +213,94 @@ pub async fn check(
         });
     }
 
+    // --- 4. rekuest's reaper: nothing to route to, so its own healthcheck -----------
+    // Judged only where the compose file runs one: a hub from before the reaper has none
+    // until its files are regenerated, and "no container" there is not a fault of the hub.
+    if let Some(reaper) = crate::generate::compose::reaper_host(config)
+        .filter(|reaper| crate::compose_file::declares_service(dir, reaper))
+    {
+        let restarts = seen_down.get(&reaper).copied().unwrap_or(false);
+        let (state, verdict) = wait_for_container_health(&path, &reaper).await;
+        let healthy = verdict == Some(ContainerHealth::Healthy) && !restarts;
+        let detail = match (verdict, restarts, state.as_deref()) {
+            (_, _, None) => "no container".to_string(),
+            (Some(ContainerHealth::Healthy), true, _) => {
+                "healthy, but the container was seen going down".to_string()
+            }
+            (Some(ContainerHealth::Healthy), false, _) => "heartbeat is fresh".to_string(),
+            (Some(ContainerHealth::Unhealthy), _, _) => "heartbeat is stale".to_string(),
+            (Some(ContainerHealth::Starting), _, _) => "still starting".to_string(),
+            (None, _, Some(other)) => format!("container is {other}"),
+        };
+        on_event(HealthEvent::Checked {
+            service: reaper.clone(),
+            healthy,
+            detail: detail.clone(),
+        });
+        results.push(ServiceHealth {
+            service: reaper,
+            container_state: state,
+            restarts_seen: restarts,
+            http_status: None,
+            url: None,
+            healthy,
+            detail,
+        });
+    }
+
     Ok(results)
+}
+
+/// What a container's own `healthcheck` last said, read off the status line the engine
+/// writes (`Up 2 minutes (healthy)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContainerHealth {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+fn container_health(status: &str) -> Option<ContainerHealth> {
+    if status.contains("(healthy)") {
+        Some(ContainerHealth::Healthy)
+    } else if status.contains("(unhealthy)") {
+        Some(ContainerHealth::Unhealthy)
+    } else if status.contains("(health: starting)") {
+        Some(ContainerHealth::Starting)
+    } else {
+        None
+    }
+}
+
+/// Polls one compose service until its healthcheck has a verdict or the deadline passes:
+/// its last container state and that verdict.
+async fn wait_for_container_health(
+    path: &str,
+    service: &str,
+) -> (Option<String>, Option<ContainerHealth>) {
+    let started = Instant::now();
+    loop {
+        let found = docker::list_deployment_containers(path)
+            .await
+            .ok()
+            .and_then(|all| {
+                all.into_iter()
+                    .find(|c| c.service.as_deref() == Some(service))
+            });
+        let state = found.as_ref().and_then(|c| c.state.clone());
+        let verdict = found
+            .as_ref()
+            .and_then(|c| c.status.as_deref())
+            .and_then(container_health);
+        let settled = matches!(
+            verdict,
+            Some(ContainerHealth::Healthy | ContainerHealth::Unhealthy)
+        );
+        if settled || found.is_none() || started.elapsed() > HTTP_TIMEOUT {
+            return (state, verdict);
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
 }
 
 /// GETs until a non-5xx answer or the deadline. A 502/503 is the gateway saying the
@@ -248,4 +335,26 @@ async fn pg_isready(dir: &Path, user: &str) -> bool {
         .await
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_healthcheck_off_the_status_line() {
+        assert_eq!(
+            container_health("Up 2 minutes (healthy)"),
+            Some(ContainerHealth::Healthy)
+        );
+        assert_eq!(
+            container_health("Up 5 minutes (unhealthy)"),
+            Some(ContainerHealth::Unhealthy)
+        );
+        assert_eq!(
+            container_health("Up 10 seconds (health: starting)"),
+            Some(ContainerHealth::Starting)
+        );
+        assert_eq!(container_health("Up 2 hours"), None);
+    }
 }

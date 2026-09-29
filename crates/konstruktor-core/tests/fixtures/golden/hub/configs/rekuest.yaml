@@ -45,14 +45,3 @@ datalayer:
   region: us-east-1
   media:
     bucket: rekuestmedia
-provenance:
-  issuer: rekuest
-  kid: rekuest-prov-1
-  private_key: |
-    -----BEGIN PRIVATE KEY-----
-    RklYVFVSRUtFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVlOT1RBUkVBTA==
-    -----END PRIVATE KEY-----
-  public_key: |
-    -----BEGIN PUBLIC KEY-----
-    RklYVFVSRVBVQkxJQ0tFWU5PVEFSRUFMS0VZTk9UQVJFQUxLRVk=
-    -----END PUBLIC KEY-----

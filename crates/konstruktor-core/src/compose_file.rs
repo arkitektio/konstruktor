@@ -114,7 +114,36 @@ pub fn write(dir: &Path, contents: &str) -> Result<(), ComposeFileError> {
         .map_err(|source| ComposeFileError::Unwritable {
             path: path.display().to_string(),
             source,
-        })
+        })?;
+
+    // A regenerated file names the sidecar's `mesh.env`; on a hub from before the key
+    // moved there, nothing else would have written it, and every compose command — `down`
+    // and `logs` included — would fail on the missing env file.
+    if let Ok(profile) = profile::read_profile(dir) {
+        crate::generate::write::ensure_mesh_env(dir, &profile.config).map_err(|source| {
+            ComposeFileError::Unwritable {
+                path: dir
+                    .join(crate::config::mesh::MESH_ENV_FILE)
+                    .display()
+                    .to_string(),
+                source,
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Whether the compose file on disk declares `service`.
+///
+/// The profile says what the generator *would* write; a hub keeps running the file it was
+/// last given until something regenerates it. A service added to the generator since — the
+/// reaper, for hubs from before it — is only there once that has happened, and a compose
+/// command naming it before then fails with "no such service".
+pub fn declares_service(dir: &Path, service: &str) -> bool {
+    std::fs::read_to_string(dir.join(COMPOSE_FILENAME))
+        .ok()
+        .and_then(|text| serde_norway::from_str::<serde_norway::Value>(&text).ok())
+        .is_some_and(|doc| doc.get("services").and_then(|s| s.get(service)).is_some())
 }
 
 /// What the generator would write for this hub's profile today.
@@ -194,6 +223,50 @@ mod tests {
         ));
         assert!(read(&dir).unwrap().contains("postgres"));
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A hub from before the reaper still runs a compose file without it; nothing may
+    /// name it there.
+    #[test]
+    fn says_which_services_the_file_on_disk_declares() {
+        let dir = scratch("declares");
+        std::fs::write(
+            dir.join(COMPOSE_FILENAME),
+            "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n",
+        )
+        .unwrap();
+        assert!(declares_service(&dir, "rekuest"));
+        assert!(!declares_service(&dir, "rekuest-reaper"));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !declares_service(&dir, "rekuest"),
+            "no file, nothing declared"
+        );
+    }
+
+    /// A compose file reset on a hub from before `mesh.env` names a file nothing wrote.
+    #[test]
+    fn writing_the_file_puts_the_mesh_key_where_it_points() {
+        use crate::config::hub::{build_hub_config, HubConfigOptions};
+        use crate::config::mesh::{build_mesh_block, MeshOptions, MESH_ENV_FILE};
+
+        let dir = scratch("mesh-env");
+        let mut config = build_hub_config(&HubConfigOptions::default());
+        config.mesh = Some(build_mesh_block(&MeshOptions {
+            hostname: "lab-hub".into(),
+            auth_key: "tskey-auth-old-hub".into(),
+            coord_url: None,
+            login: None,
+        }));
+        profile::write_profile(&dir, &profile::hub_profile(config.clone())).unwrap();
+        assert!(!dir.join(MESH_ENV_FILE).exists());
+
+        write(&dir, &regenerate_from(&config)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(MESH_ENV_FILE)).unwrap(),
+            "TS_AUTHKEY=tskey-auth-old-hub\n"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

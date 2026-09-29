@@ -290,3 +290,55 @@ pub fn generate_ed25519_key_pair() -> KeyPair {
     rand::rngs::OsRng.fill_bytes(&mut seed);
     build_ed25519_key_pair(&seed)
 }
+
+/// The public half of `pair` as a trust-bundle JWK: what the coordination server publishes
+/// for an instance under `/.well-known/hub-keys/<hub>`, and what a hub that is not enrolled
+/// yet writes inline as `instance.trust.jwks`.
+///
+/// The same shape lok's `fakts.services.instance_keys.public_jwk` and rekuest-service's
+/// `trust.public_jwk` produce: `kid` is the RFC 7638 thumbprint the instance computes for
+/// itself when it signs, `alg` is `Ed25519` (joserfc's name, which the receivers pin), and
+/// `service` is the identifier a receiver requires the signer's `iss` to be. `None` for a
+/// pair [`raw_public_key_b64`] cannot read.
+pub fn public_jwk(pair: &KeyPair, service: &str) -> Option<serde_json::Value> {
+    let raw = BASE64.decode(raw_public_key_b64(pair)?).ok()?;
+    let x = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+    Some(serde_json::json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": x,
+        "kid": okp_thumbprint(&x),
+        "use": "sig",
+        "alg": "Ed25519",
+        "service": service,
+    }))
+}
+
+/// RFC 7638: SHA-256 over the required members in lexicographic order, no whitespace,
+/// base64url without padding.
+fn okp_thumbprint(x: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = format!(r#"{{"crv":"Ed25519","kty":"OKP","x":"{x}"}}"#);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(canonical.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pinned against joserfc — `OKPKey.import_key(pem).thumbprint()` over the same seed —
+    /// because a `kid` that differs from the one the instance signs with is a trust bundle
+    /// that vouches for nobody.
+    #[test]
+    fn the_jwk_matches_what_joserfc_computes() {
+        let pair = build_ed25519_key_pair(&[7u8; 32]);
+        let jwk = public_jwk(&pair, "live.arkitekt.mikro").expect("an Ed25519 pair");
+        assert_eq!(jwk["x"], "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw");
+        assert_eq!(jwk["kid"], "--6IM5l0OosLj9yWskISYhUA3n_3CURQkmrYMSha_ck");
+        assert_eq!(jwk["kty"], "OKP");
+        assert_eq!(jwk["crv"], "Ed25519");
+        assert_eq!(jwk["alg"], "Ed25519");
+        assert_eq!(jwk["use"], "sig");
+        assert_eq!(jwk["service"], "live.arkitekt.mikro");
+    }
+}

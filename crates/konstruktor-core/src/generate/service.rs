@@ -3,6 +3,7 @@ use serde_norway::{Mapping, Value};
 use crate::catalog::ServiceId;
 use crate::config::hub::{HubConfig, ServiceBlock};
 use crate::generate::IssuedIdentity;
+use crate::secrets::public_jwk;
 
 /// Small helpers for building YAML documents by hand. The generated shapes are
 /// heterogeneous enough that modelling every one as a struct would cost more than it
@@ -25,6 +26,43 @@ pub(crate) fn list(values: Vec<Value>) -> Value {
 
 /// The `aud` authentikate will accept: anything. See [`build_authentikate`].
 const ANY_AUDIENCE: &str = "*";
+
+/// An issuer whose keys are written into the config itself — authentikate's `jwks_dict`.
+fn inline_issuer(iss: &str, jwks: Value) -> Value {
+    map(vec![
+        ("iss", s(iss)),
+        ("jwks", jwks),
+        ("kind", s("jwks_dict")),
+    ])
+}
+
+/// The fakts identifier a service instance is listed under in the hub's trust bundle.
+fn service_identifier(id: ServiceId) -> String {
+    format!("live.arkitekt.{}", id.as_str())
+}
+
+/// `{"keys": [...]}`, as YAML.
+fn jwks_of(keys: Vec<serde_json::Value>) -> Value {
+    serde_norway::to_value(serde_json::json!({ "keys": keys })).expect("a JWKS is plain data")
+}
+
+/// The hub's trust bundle, inline: every enabled service instance's public key, under its
+/// service. What the coordination server serves as the hub's `hub_keys_url`, for a hub that
+/// was not handed one (not enrolled yet) — without it, every signed request between the
+/// hub's services fails with "No key … in the hub's trust bundle". Same shape as
+/// `scripts/instance_keys.py` in the reference deployment writes.
+fn inline_trust_bundle(config: &HubConfig) -> Option<Value> {
+    let keys: Vec<serde_json::Value> = config
+        .enabled_services()
+        .into_iter()
+        .filter(|id| config.service(*id).image.is_some())
+        .filter_map(|id| {
+            let pair = config.service(id).instance_key_pair.as_ref()?;
+            public_jwk(pair, &service_identifier(id))
+        })
+        .collect();
+    (!keys.is_empty()).then(|| jwks_of(keys))
+}
 
 fn jwks_issuer(iss: &str, jwks_uri: &str) -> Value {
     map(vec![
@@ -122,27 +160,34 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
     let remote = config.rekuest_server.trim();
 
     let provenance = if rekuest.enabled {
-        Some(jwks_issuer(
-            rekuest.provenance_issuer.as_deref().unwrap_or_default(),
-            // Rekuest signs provenance with its instance key. The coordination server's
-            // trust bundle, narrowed to Rekuest, is the vouched-for source; without one,
-            // Rekuest's own key set inside the network, behind its script name.
-            &issued
-                .hub_keys_url
-                .as_deref()
-                .map(|url| {
-                    format!(
-                        "{url}?service=live.arkitekt.{}",
-                        ServiceId::Rekuest.as_str()
-                    )
-                })
-                .unwrap_or_else(|| {
-                    format!(
-                        "http://{}:{}/{}/{JWKS_PATH}",
-                        rekuest.host, rekuest.internal_port, rekuest.host
-                    )
-                }),
-        ))
+        let iss = rekuest.provenance_issuer.as_deref().unwrap_or_default();
+        // Rekuest signs provenance with its instance key. The coordination server's trust
+        // bundle, narrowed to Rekuest, is the vouched-for source. Without one (a hub not
+        // enrolled yet), the key itself, inline — Konstruktor minted it, so it needs no
+        // fetch. Only a key that cannot be read falls back to Rekuest's own key set inside
+        // the network, behind its script name.
+        match issued.hub_keys_url.as_deref() {
+            Some(url) => Some(jwks_issuer(
+                iss,
+                &format!("{url}?service={}", service_identifier(ServiceId::Rekuest)),
+            )),
+            None => Some(
+                rekuest
+                    .instance_key_pair
+                    .as_ref()
+                    .and_then(|pair| public_jwk(pair, &service_identifier(ServiceId::Rekuest)))
+                    .map(|jwk| inline_issuer(iss, jwks_of(vec![jwk])))
+                    .unwrap_or_else(|| {
+                        jwks_issuer(
+                            iss,
+                            &format!(
+                                "http://{}:{}/{}/{JWKS_PATH}",
+                                rekuest.host, rekuest.internal_port, rekuest.host
+                            ),
+                        )
+                    }),
+            ),
+        }
     } else if !matches!(remote, "local" | "none" | "") {
         Some(jwks_issuer(
             remote,
@@ -267,8 +312,13 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
     // keys live it trusts (the coordination server's bundle of this hub's instance keys).
     if let Some(pair) = &service.instance_key_pair {
         let mut instance = vec![("private_key", s(&pair.private_key))];
-        if let Some(url) = issued.hub_keys_url.as_deref() {
-            instance.push(("trust", map(vec![("jwks_uri", s(url))])));
+        match issued.hub_keys_url.as_deref() {
+            Some(url) => instance.push(("trust", map(vec![("jwks_uri", s(url))]))),
+            None => {
+                if let Some(bundle) = inline_trust_bundle(config) {
+                    instance.push(("trust", map(vec![("jwks", bundle)])));
+                }
+            }
         }
         pairs.push(("instance", map(instance)));
     }

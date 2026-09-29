@@ -158,11 +158,25 @@ pub async fn run(
     on_line: &(dyn Fn(crate::compose::ComposeLine) + Send + Sync),
 ) -> Result<(), RollbackError> {
     apply(dir, plan)?;
+    let config = crate::profile::read_profile(dir).ok().map(|p| p.config);
     for change in &plan.changes {
-        for argv in [
+        // Rekuest's reaper runs Rekuest's image, so it moves back with it.
+        let companions = config
+            .as_ref()
+            .map(|c| crate::generate::compose::companions(c, &change.service))
+            .unwrap_or_default();
+        let argvs = [
             crate::compose::pull_service(&change.service),
             crate::compose::up_service(&change.service),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            companions
+                .iter()
+                .filter(|c| crate::compose_file::declares_service(dir, c))
+                .map(|c| crate::compose::up_service(c)),
+        );
+        for argv in argvs {
             crate::compose::run_streamed(dir, argv, on_line)
                 .await
                 .map_err(RollbackError::Compose)?;

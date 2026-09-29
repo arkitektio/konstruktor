@@ -74,15 +74,15 @@ fn golden_of(name: &str) -> GeneratedFiles {
     out
 }
 
-/// The keys where we deliberately part from the Python generator: instance keys and what
-/// hangs off them (the trust block, Rekuest's provenance, its service agents and the
-/// services' `rekuest_hook`). They are tested on their own in `tests/instance_keys.rs`;
-/// everything else must still match the CLI's output.
+/// The key where we deliberately part from the Python generator and that the goldens
+/// cannot pin: `instance`, whose keys are minted fresh for every profile that has none (the
+/// fixtures predate instance keys). It is tested on its own in `tests/instance_keys.rs`.
+/// What hangs off it and *is* deterministic — the services' `rekuest_hook` — is in the
+/// goldens; Rekuest's `provenance` and `rekuest.service_agents` are only written with an
+/// instance key, so the fixtures produce neither.
 fn without_instance_trust(mut value: Value) -> Value {
     if let Value::Mapping(map) = &mut value {
-        for key in ["instance", "rekuest_hook", "provenance", "rekuest"] {
-            map.remove(key);
-        }
+        map.remove("instance");
     }
     value
 }
@@ -93,9 +93,35 @@ struct Case {
 }
 
 fn case(fixture: &str, golden: &str) -> Case {
+    let generated = generate_hub_files(&config_of(fixture), &IssuedIdentity::default());
+    if std::env::var(BLESS).as_deref() == Ok("1") {
+        bless(golden, &generated);
+    }
     Case {
-        generated: generate_hub_files(&config_of(fixture), &IssuedIdentity::default()),
+        generated,
         expected: golden_of(golden),
+    }
+}
+
+/// Set to overwrite `fixtures/golden/<name>` with what the generator writes today, instead
+/// of comparing against it. For a deliberate change to the output — then review the diff:
+/// everything in it has to be a change you meant.
+///
+/// ```sh
+/// KONSTRUKTOR_BLESS_GOLDEN=1 cargo test -p konstruktor-core --test generate
+/// ```
+///
+/// The files are written as `serde_norway` renders them, which drops the quotes the goldens
+/// keep around `user: '0:0'` (a sexagesimal number to a YAML 1.1 reader). Put them back by
+/// hand; the comparison itself parses both sides and does not care.
+const BLESS: &str = "KONSTRUKTOR_BLESS_GOLDEN";
+
+fn bless(golden: &str, generated: &GeneratedFiles) {
+    let root = fixtures().join("golden").join(golden);
+    for (name, contents) in generated {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().expect("inside the golden dir")).unwrap();
+        std::fs::write(&path, contents).unwrap();
     }
 }
 
@@ -266,10 +292,20 @@ mod mesh {
 
     #[test]
     fn joins_with_the_key_and_control_server_it_was_given() {
-        let compose = compose(&meshed());
+        let files = generate_hub_files(&meshed(), &IssuedIdentity::default());
+        let compose: Value = serde_norway::from_str(&files["docker-compose.yaml"]).unwrap();
         let env = &compose["services"]["tailscale"]["environment"];
 
-        assert_eq!(env["TS_AUTHKEY"].as_str(), Some("tskey-auth-secret"));
+        // The key is in `mesh.env`, which the sidecar reads — never in the compose file.
+        assert!(env.get("TS_AUTHKEY").is_none());
+        assert!(!files["docker-compose.yaml"].contains("tskey-auth-secret"));
+        assert_eq!(files["mesh.env"], "TS_AUTHKEY=tskey-auth-secret\n");
+        assert_eq!(
+            compose["services"]["tailscale"]["env_file"],
+            serde_norway::from_str::<Value>("[mesh.env]").unwrap()
+        );
+        // The key is single-use: a restart must not present it again.
+        assert_eq!(env["TS_AUTH_ONCE"].as_str(), Some("true"));
         assert_eq!(env["TS_HOSTNAME"].as_str(), Some("lab-hub"));
         assert_eq!(
             env["TS_EXTRA_ARGS"].as_str(),
@@ -299,6 +335,22 @@ mod mesh {
         );
         assert!(compose["services"]["gateway"].get("ports").is_none());
         assert!(compose["services"]["gateway"].get("networks").is_none());
+    }
+
+    /// The gateway lives in the sidecar's namespace; when the sidecar restarts, the
+    /// gateway has to be restarted with it or Caddy is left in a dead namespace.
+    #[test]
+    fn the_gateway_restarts_with_the_sidecar() {
+        let compose = compose(&meshed());
+        let depends = &compose["services"]["gateway"]["depends_on"]["tailscale"];
+        assert_eq!(depends["condition"].as_str(), Some("service_started"));
+        assert_eq!(depends["restart"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn a_hub_without_a_mesh_writes_no_env_file() {
+        let files = generate_hub_files(&config_of("hub_config.yaml"), &IssuedIdentity::default());
+        assert!(!files.contains_key("mesh.env"));
     }
 
     #[test]
@@ -497,9 +549,21 @@ mod stack_images {
             .map(|(service, _)| service)
             .collect();
 
+        // A companion runs another service's image (Rekuest's reaper runs Rekuest's) and
+        // moves with it — see `generate::compose::companions` — so it is accounted for
+        // through that service rather than reported as an image of its own.
+        let companions: Vec<String> = reported
+            .iter()
+            .flat_map(|service| konstruktor_core::generate::compose::companions(&config, service))
+            .collect();
+        assert!(
+            companions.contains(&"rekuest-reaper".to_string()),
+            "{companions:?}"
+        );
+
         for service in compose_service_names(&config) {
             assert!(
-                reported.contains(&service),
+                reported.contains(&service) || companions.contains(&service),
                 "the compose file writes {service}, but stack_images does not report it"
             );
         }
@@ -1161,5 +1225,82 @@ mod experimental_services {
         let mut config = config_of("hub_config.yaml");
         assert!(!config.ensure_service_secrets());
         assert!(config.kuvert.fernet_key.is_none());
+    }
+}
+
+/// Django compares `scheme://host[:port]` as a whole, so every address the hub is reached
+/// at has to be spelled with the port the browser uses there.
+mod trusted_origins {
+    use super::*;
+    use konstruktor_core::config::hub::trusted_origins;
+    use konstruktor_core::config::mesh::{build_mesh_block, MeshOptions};
+
+    #[test]
+    fn every_address_with_its_published_port_and_the_mesh_name() {
+        let mut config = config_of("hub_config.yaml");
+        config.gateway.exposed_http_port = Some(7080);
+        config.gateway.exposed_https_port = Some(7443);
+        config.gateway.ssl = false;
+        config.mesh = Some(build_mesh_block(&MeshOptions {
+            hostname: "lab-hub".into(),
+            auth_key: "tskey-auth-secret".into(),
+            coord_url: None,
+            login: None,
+        }));
+
+        let origins = trusted_origins(&config, &["192.168.1.20".into(), "lab.local".into()]);
+        for expected in [
+            "http://localhost",
+            "http://localhost:7080",
+            "http://192.168.1.20:7080",
+            "http://lab.local:7080",
+            "http://gateway",
+            "http://lab-hub",
+        ] {
+            assert!(
+                origins.contains(&expected.to_string()),
+                "{expected} in {origins:?}"
+            );
+        }
+        // Plain HTTP gateway: no https origin beyond the one always written.
+        assert!(!origins
+            .iter()
+            .any(|o| o.starts_with("https://") && o != "https://localhost"));
+        // No duplicates.
+        let mut deduped = origins.clone();
+        deduped.dedup();
+        assert_eq!(deduped.len(), origins.len());
+    }
+
+    #[test]
+    fn https_origins_only_when_the_hub_terminates_tls() {
+        let mut config = config_of("hub_config.yaml");
+        config.gateway.ssl = true;
+        config.gateway.exposed_https_port = Some(443);
+        let origins = trusted_origins(&config, &["hub.example.org".into()]);
+        assert!(
+            origins.contains(&"https://hub.example.org".to_string()),
+            "{origins:?}"
+        );
+    }
+
+    /// The origins land in every service's `django` block.
+    #[test]
+    fn reach_every_services_config() {
+        let mut config = config_of("hub_config.yaml");
+        config.csrf_trusted_origins = Some(trusted_origins(&config, &["10.0.0.5".into()]));
+        let files = generate_hub_files(&config, &IssuedIdentity::default());
+        for (name, text) in files.iter().filter(|(n, _)| {
+            n.starts_with("configs/") && n.ends_with(".yaml") && !n.contains("rustfs_init")
+        }) {
+            let doc: Value = serde_norway::from_str(text).unwrap();
+            let origins = doc["django"]["csrf_trusted_origins"].as_sequence().unwrap();
+            assert!(
+                origins
+                    .iter()
+                    .any(|o| o.as_str().is_some_and(|o| o.starts_with("http://10.0.0.5"))),
+                "{name}"
+            );
+        }
     }
 }

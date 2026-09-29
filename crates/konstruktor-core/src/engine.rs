@@ -212,9 +212,10 @@ pub fn build_engine_compose(compose: &EngineCompose<'_>) -> Value {
 /// container in the namespace. Names outside the tailnet are forwarded on, Docker's own
 /// included.
 fn sidecar_service(mesh: &MeshBlock, networks: Option<(&'static str, Value)>) -> Value {
-    let mut environment: Vec<(&str, Value)> = mesh
-        .sidecar_environment()
-        .into_iter()
+    // The key stays inline here: an engine keeps its whole mesh block, key included, in
+    // `configs/mesh.yaml` anyway, so a separate env file would hide nothing.
+    let mut environment: Vec<(&str, Value)> = std::iter::once(mesh.auth_key_env())
+        .chain(mesh.sidecar_environment())
         .map(|(key, value)| (key, s(&value)))
         .collect();
     environment.push(("TS_ACCEPT_DNS", s("true")));
@@ -632,6 +633,7 @@ mod tests {
         let sidecar = &compose["services"]["tailscale"];
         let env = &sidecar["environment"];
         assert_eq!(env["TS_AUTHKEY"].as_str(), Some("tskey-engine"));
+        assert_eq!(env["TS_AUTH_ONCE"].as_str(), Some("true"));
         assert_eq!(env["TS_STATE_DIR"].as_str(), Some("/var/lib/tailscale/2-9-48"));
         assert_eq!(env["TS_ACCEPT_DNS"].as_str(), Some("true"));
         assert_eq!(
