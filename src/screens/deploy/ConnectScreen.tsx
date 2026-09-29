@@ -24,8 +24,9 @@ import {
 import { StepField } from "../wizard/StepFrame";
 
 /**
- * Authorizing an existing hub again — after moving it to a different network, adding
- * services, or pointing it at another coordination server.
+ * Authorizing an existing hub again — after moving it to a different network, or to claim
+ * a mesh key. Services change through the dashboard's "Manage services" dialog, which runs
+ * this same flow with the new set.
  *
  * It is the same device-code flow the wizard runs, over the profile already on disk. On
  * success the service configs are regenerated, because the JWKS URL the coordination

@@ -193,6 +193,13 @@ pub enum CreateError {
              retry with `konstruktor up`."
     )]
     StartFailed,
+    /// The services were changed and the files rewritten, but bringing the stack to them
+    /// failed.
+    #[error(
+        "The hub's services were changed and its files rewritten, but applying them failed: \
+         {0}. Retry with `konstruktor hub services apply`."
+    )]
+    ApplyFailed(String),
     #[error(
         "The deployment is written and registered, but the source checkout failed: \
              {0}. Fix the checkout under `mounts/` and start it as usual."
@@ -420,49 +427,17 @@ pub async fn create_hub(
             .as_deref()
             .map(str::trim)
             .filter(|b| !b.is_empty());
-
-        // Driven by the profile, not by the answers: `mount_github` is where both
-        // `--dev` and a single service's "run from source" end up, and it is the field
-        // the compose file's bind mounts were written from. Cloning anything else — or
-        // less — is how a container gets handed an empty workspace.
-        for id in config
-            .enabled_services()
-            .into_iter()
-            .filter(|id| config.service(*id).mount_github)
-        {
-            let service = config.service(id);
-            let branch = answers
+        let branch_of = |id: ServiceId| {
+            answers
                 .service_options
                 .get(&id)
                 .and_then(|asked| asked.branch.as_deref())
                 .map(str::trim)
                 .filter(|b| !b.is_empty())
-                .or(fallback);
-            let into = git::checkout_dir(&dir, &service.host);
-            std::fs::create_dir_all(&into)?;
-
-            on(CreateEvent::Cloning {
-                service: service.host.clone(),
-                repo: service.github_repo.clone(),
-                branch: branch.map(str::to_string),
-            });
-
-            let cloned = git::clone_service(&service.host, &service.github_repo, branch, &into)?;
-
-            // The config is bind-mounted at `/workspace/config.yaml`, which is *inside*
-            // the checkout. Docker creates a missing mount point itself, as root — so
-            // the file is created here instead, owned by whoever owns the checkout.
-            let placeholder = into.join("config.yaml");
-            if !placeholder.exists() {
-                std::fs::write(&placeholder, "")?;
-            }
-
-            if !cloned {
-                on(CreateEvent::Log {
-                    line: format!("{} already has a checkout — left as it is", service.host),
-                });
-            }
-        }
+                .or(fallback)
+                .map(str::to_string)
+        };
+        check_sources_out(&dir, &config, &config.enabled_services(), &branch_of, on)?;
     }
 
     // --- start --------------------------------------------------------------
@@ -489,6 +464,60 @@ pub async fn create_hub(
         credentials,
         mesh_granted,
     })
+}
+
+/// Clones the source of each of `services` that runs from a checkout into
+/// `mounts/<service>`, and puts the empty `config.yaml` placeholder in it.
+///
+/// Driven by the profile, not by the answers: `mount_github` is where both `--dev` and a
+/// single service's "run from source" end up, and it is the field the compose file's bind
+/// mounts were written from. Cloning anything else — or less — is how a container gets
+/// handed an empty workspace. A service that already has a checkout keeps it.
+pub(crate) fn check_sources_out(
+    dir: &Path,
+    config: &HubConfig,
+    services: &[ServiceId],
+    branch_of: &dyn Fn(ServiceId) -> Option<String>,
+    on: &(dyn Fn(CreateEvent) + Sync),
+) -> Result<(), CreateError> {
+    for id in services
+        .iter()
+        .copied()
+        .filter(|id| config.service(*id).mount_github)
+    {
+        let service = config.service(id);
+        let branch = branch_of(id);
+        let into = git::checkout_dir(dir, &service.host);
+        std::fs::create_dir_all(&into)?;
+
+        on(CreateEvent::Cloning {
+            service: service.host.clone(),
+            repo: service.github_repo.clone(),
+            branch: branch.clone(),
+        });
+
+        let cloned = git::clone_service(
+            &service.host,
+            &service.github_repo,
+            branch.as_deref(),
+            &into,
+        )?;
+
+        // The config is bind-mounted at `/workspace/config.yaml`, which is *inside* the
+        // checkout. Docker creates a missing mount point itself, as root — so the file is
+        // created here instead, owned by whoever owns the checkout.
+        let placeholder = into.join("config.yaml");
+        if !placeholder.exists() {
+            std::fs::write(&placeholder, "")?;
+        }
+
+        if !cloned {
+            on(CreateEvent::Log {
+                line: format!("{} already has a checkout — left as it is", service.host),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The files a hub with these answers would be written to, without writing any of them.
@@ -834,12 +863,14 @@ fn host_names(hosts: &[AdvertisedHost]) -> Vec<String> {
 
 /// Re-authorizing a hub that already exists on disk.
 ///
-/// This is how a hub gains services, moves to a different network, or joins the mesh it
-/// was created without. The profile is reused verbatim — its secrets and provenance key
-/// are what the running services already trust — and only the manifest is sent again.
+/// This is how a hub moves to a different network, joins the mesh it was created without,
+/// or — with [`ReauthorizeAnswers::services`] — gains or loses services. The profile is
+/// reused verbatim — its secrets and provenance key are what the running services already
+/// trust — and only the manifest is sent again.
 ///
 /// The service configs are then regenerated, because the JWKS URL the coordination server
 /// returns is what they verify inbound tokens against, and it may have moved.
+#[derive(Debug, Clone)]
 pub struct ReauthorizeAnswers {
     pub dir: PathBuf,
     pub coord_server: String,
@@ -850,6 +881,9 @@ pub struct ReauthorizeAnswers {
     /// Of `hosts`, the ones an external probe reached.
     pub reachable_hosts: Vec<String>,
     pub mesh_key: MeshKeyRequest,
+    /// Services to add or take out with this authorization — see [`crate::services`].
+    /// Checked before anything is sent, and folded into the profile only once accepted.
+    pub services: Option<crate::services::ServiceChange>,
 }
 
 /// What re-authorizing did, beyond the credentials it wrote.
@@ -862,6 +896,8 @@ pub struct Reauthorized {
     pub mesh_granted: bool,
     /// The hub now reports its own health (the grant carried a refresh token).
     pub reporter_enabled: bool,
+    /// What the service change did, when one was asked for.
+    pub services: Option<crate::services::ServicePlan>,
 }
 
 pub async fn reauthorize(
@@ -872,6 +908,16 @@ pub async fn reauthorize(
     let profile = crate::profile::read_profile(&answers.dir)
         .map_err(|e| CreateError::Folder(e.to_string()))?;
     let mut config = profile.config;
+    // A service change is refused here, before anybody is sent to a browser, and applied
+    // to this copy only: the profile on disk changes once the grant is accepted.
+    let services = match &answers.services {
+        Some(change) => {
+            let plan = crate::services::plan(&config, change)?;
+            crate::services::apply_plan(&mut config, &plan);
+            Some(plan)
+        }
+        None => None,
+    };
     // A profile from before instance keys gets them now; the profile is rewritten below, so
     // they are minted once and sent to the coordination server with this very request.
     config.ensure_instance_keys();
@@ -1010,5 +1056,6 @@ pub async fn reauthorize(
         mesh_requested: request_auth_key,
         mesh_granted: request_auth_key && mesh_granted,
         reporter_enabled,
+        services,
     })
 }

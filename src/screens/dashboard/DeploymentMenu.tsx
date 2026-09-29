@@ -3,6 +3,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  Boxes,
   Download,
   EyeOff,
   FileCode2,
@@ -39,6 +40,7 @@ import type { DeletionPlan, DeploymentRecord, HubStatus, RollbackPlan } from "..
 import { useRegistry } from "../../registry/registry-context";
 import { BackupDialog } from "./BackupDialog";
 import { RestoreDialog } from "./RestoreDialog";
+import { ServicesDialog } from "./ServicesDialog";
 
 /**
  * Everything you can do to a deployment that is not "start it" or "stop it".
@@ -51,7 +53,15 @@ import { RestoreDialog } from "./RestoreDialog";
  */
 
 /** Which confirmation is open, if any. Each one names a different amount of loss. */
-type Confirm = "down" | "purge" | "forget" | "delete" | "backup" | "restore" | "rollback";
+type Confirm =
+  | "down"
+  | "purge"
+  | "forget"
+  | "delete"
+  | "backup"
+  | "restore"
+  | "rollback"
+  | "services";
 
 /**
  * The two confirmations that are a line of copy and a button.
@@ -60,7 +70,7 @@ type Confirm = "down" | "purge" | "forget" | "delete" | "backup" | "restore" | "
  * be typed, and both need a description richer than a string.
  */
 const CONFIRM_COPY: Record<
-  Exclude<Confirm, "delete" | "purge" | "backup" | "restore" | "rollback">,
+  Exclude<Confirm, "delete" | "purge" | "backup" | "restore" | "rollback" | "services">,
   { title: string; description: string; action: string }
 > = {
   down: {
@@ -232,6 +242,18 @@ export const DeploymentMenu = ({
                 <HardDriveDownload />
                 Back up data…
               </DropdownMenuItem>
+              <DropdownMenuItem
+                // The services running now come from the profile the dashboard read, and a
+                // change is a re-authorization — which a hub never authorized cannot do.
+                disabled={!status?.authorized}
+                title={
+                  status && !status.authorized ? "Authorize this hub first" : undefined
+                }
+                onSelect={() => setConfirm("services")}
+              >
+                <Boxes />
+                Manage services…
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => navigate(`/connect/${deployment.id}`)}>
                 <ShieldCheck />
                 Authorize
@@ -298,6 +320,20 @@ export const DeploymentMenu = ({
           deployment={deployment}
           storage={status?.storage}
           onOpenChange={(next) => !next && setConfirm(null)}
+        />
+      )}
+
+      {confirm === "services" && status && (
+        <ServicesDialog
+          open
+          deployment={deployment}
+          status={status}
+          onOpenChange={(next) => !next && setConfirm(null)}
+          onDone={() => {
+            // The dashboard's services, and the registry's record of the regeneration.
+            onRefresh();
+            void refresh();
+          }}
         />
       )}
 

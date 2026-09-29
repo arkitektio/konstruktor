@@ -143,6 +143,8 @@ pub async fn run(args: AuthorizeArgs) -> Result<()> {
         // something outside this machine can make.
         reachable_hosts: Vec::new(),
         mesh_key,
+        // `konstruktor hub services` changes them, through this same call.
+        services: None,
     };
 
     let cancel = CancellationToken::new();

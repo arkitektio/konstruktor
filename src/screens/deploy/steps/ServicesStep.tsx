@@ -1,14 +1,9 @@
-import { Boxes, ChevronDown, GitBranch, Plus, Settings2 } from "lucide-react";
+import { Boxes, ChevronDown, Plus, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useController, useFormContext, useWatch } from "react-hook-form";
 import { useCommunication } from "../../../communication/communication-context";
 import { Button } from "../../../components/ui/button";
 import { Card } from "../../../components/ui/card";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "../../../components/ui/collapsible";
 import { Input } from "../../../components/ui/input";
 import { ErrorDisplay } from "../../../components/Error";
 import { cn } from "../../../utils";
@@ -16,6 +11,7 @@ import * as api from "../../../api";
 import type { ServiceId, ServiceMeta } from "../../../api";
 import { emptyOverride, type ServiceOverride } from "../hub-form";
 import { AdvancedFields, StepFrame } from "../../wizard/StepFrame";
+import { ExperimentalBadge, ServiceRow, ServiceSections } from "../ServiceRows";
 
 /**
  * Which services this hub runs, and — since the provenance step folded into it — where
@@ -182,35 +178,12 @@ export const ServicesStep = () => {
       className="max-w-5xl"
     >
       <div className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] gap-4 items-start">
-        <div className="flex flex-col gap-1.5">
-          {stable.map(row)}
-
-          {experimental.length > 0 && (
-            <Collapsible
-              open={experimentalOpen}
-              onOpenChange={setExperimental}
-              className="mt-2"
-            >
-              <CollapsibleTrigger asChild>
-                <button
-                  type="button"
-                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <ChevronDown
-                    className={cn(
-                      "size-3.5 transition-transform",
-                      experimentalOpen && "rotate-180"
-                    )}
-                  />
-                  Experimental ({experimental.length})
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="pt-1.5 flex flex-col gap-1.5">
-                {experimental.map(row)}
-              </CollapsibleContent>
-            </Collapsible>
-          )}
-        </div>
+        <ServiceSections
+          services={services}
+          row={row}
+          experimentalOpen={experimentalOpen}
+          onExperimentalOpenChange={setExperimental}
+        />
 
         <div className="@3xl:sticky @3xl:top-4">
           {shown && (
@@ -246,82 +219,6 @@ export const ServicesStep = () => {
     </StepFrame>
   );
 };
-
-/**
- * One service in the list. Being in the hub is said by the highlight alone — a checkbox
- * next to a card that already changes colour was two controls for one bit, and the tick
- * drew the eye to the wrong thing.
- */
-const ServiceRow = ({
-  service,
-  on,
-  active,
-  fromSource,
-  onClick,
-  onGear,
-}: {
-  service: ServiceMeta;
-  on: boolean;
-  active: boolean;
-  /** Running from a checkout, which is worth seeing without opening the gear. */
-  fromSource: boolean;
-  onClick: () => void;
-  onGear: () => void;
-}) => (
-  <Card
-    onClick={onClick}
-    className={cn(
-      "gap-0 py-2.5 px-3 border cursor-pointer transition-colors",
-      // In the hub, or not: the highlight is the whole statement.
-      on
-        ? "border-primary bg-primary/5 font-medium"
-        : "border-border text-muted-foreground",
-      // Being read about is a different thing from being in, and has to be legible on
-      // top of either — hence a ring rather than another shade of the same colour.
-      active && "ring-1 ring-foreground/20"
-    )}
-  >
-    <div className="flex items-center gap-2">
-      <span className="truncate">{service.name}</span>
-      {fromSource && (
-        <GitBranch className="size-3.5 shrink-0 text-primary" aria-label="from source" />
-      )}
-      {!service.emitted && (
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-          soon
-        </span>
-      )}
-      {service.experimental && <ExperimentalBadge />}
-      {service.emitted && (
-        <button
-          type="button"
-          aria-label={`${service.name} settings`}
-          // Not the card's click: the gear is for the settings of a service, which is a
-          // different question from whether the hub runs it at all.
-          onClick={(event) => {
-            event.stopPropagation();
-            onGear();
-          }}
-          className="ml-auto -mr-1 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-        >
-          <Settings2 className="size-3.5" />
-        </button>
-      )}
-    </div>
-    {/* Listed apart and unfamiliar, so the one-liner comes along with the name. */}
-    {service.experimental && (
-      <div className="text-xs text-muted-foreground font-normal mt-0.5">
-        {service.description}
-      </div>
-    )}
-  </Card>
-);
-
-const ExperimentalBadge = () => (
-  <span className="text-[10px] uppercase tracking-wide text-muted-foreground border border-border rounded px-1 py-px">
-    experimental
-  </span>
-);
 
 /** The right-hand column: what this one is for, and the single control that adds it. */
 type Gear = {

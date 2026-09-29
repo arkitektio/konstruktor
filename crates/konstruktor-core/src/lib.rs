@@ -30,6 +30,7 @@ pub mod restore;
 pub mod rollback;
 pub mod remedy;
 pub mod secrets;
+pub mod services;
 pub mod shutdown;
 pub mod start;
 pub mod status;

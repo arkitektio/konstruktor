@@ -49,6 +49,23 @@ pub async fn start(
     dir: &Path,
     on_line: &(dyn Fn(ComposeLine) + Send + Sync),
 ) -> Result<StartReport, StartError> {
+    start_with(dir, false, on_line).await
+}
+
+/// [`start`], with `--remove-orphans`: what applies a changed set of services, stopping and
+/// removing the containers of the ones taken out. Their volumes are never touched.
+pub async fn start_removing_orphans(
+    dir: &Path,
+    on_line: &(dyn Fn(ComposeLine) + Send + Sync),
+) -> Result<StartReport, StartError> {
+    start_with(dir, true, on_line).await
+}
+
+async fn start_with(
+    dir: &Path,
+    remove_orphans: bool,
+    on_line: &(dyn Fn(ComposeLine) + Send + Sync),
+) -> Result<StartReport, StartError> {
     let mut report = StartReport::default();
     let say = |line: &str| {
         on_line(ComposeLine {
@@ -129,7 +146,14 @@ pub async fn start(
     }
 
     // --- 3. up -------------------------------------------------------------------
-    let (args, left_out) = compose::up_in(dir).await;
+    let (mut args, left_out) = compose::up_in(dir).await;
+    if remove_orphans {
+        let at = args
+            .iter()
+            .position(|a| a == "-d")
+            .map_or(args.len(), |i| i + 1);
+        args.insert(at, "--remove-orphans".to_string());
+    }
     if let Some(reason) = left_out {
         say(&reason);
         report.warnings.push(reason);

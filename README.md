@@ -89,6 +89,7 @@ konstruktor open [target]       # the hub in a browser
 konstruktor update [target]     # only what has actually moved upstream
 konstruktor rollback [target]   # back onto the images it ran before that
 konstruktor authorize [target]  # re-authorize: new addresses, or a mesh key
+konstruktor hub services add|remove <ids…> [--in <hub>]  # change a hub's services
 konstruktor report <service>    # a bug report, with the log's secrets removed
 konstruktor doctor [--fix]      # is Docker ready — and make it so
 konstruktor destroy|purge|forget <target>
@@ -290,8 +291,25 @@ What lands in the folder is an ordinary Docker Compose project — `hub_config.y
 and inspect from the app, or drive with `docker compose` yourself. Nothing about a deployment is
 locked to Konstruktor.
 
-A hub can be authorized again later from its dashboard, which is how you add services, move it to a
-different network, or point it at another coordination server.
+A hub can be authorized again later — from its dashboard, or with `konstruktor authorize` — to
+advertise different addresses or to claim a mesh key.
+
+Its services can change after creation too: **Manage services…** in the dashboard's menu, or
+
+```
+konstruktor hub services list [hub]
+konstruktor hub services add bank kuvert [--in <hub>] [--no-apply]
+konstruktor hub services remove kraph [--in <hub>]
+konstruktor hub services apply [hub]   # what --no-apply leaves for later
+```
+
+A change is a re-authorization: the new set of services goes to the coordination server (a new
+service needs its grant, and its key vouched for), somebody accepts the device code, and only then
+are the profile and files rewritten. The stack is then brought to the new set — missing databases
+are created, new containers started, and removed ones taken away with `--remove-orphans`. **A
+removed service keeps its data**: its database and buckets stay provisioned, its keys stay in the
+profile, and adding it back picks everything up again. Rekuest cannot be removed while a service
+that hooks into it (mikro, fluss, kabinet, elektro, alpaka, bank, kuvert) still runs.
 
 ### How it works
 

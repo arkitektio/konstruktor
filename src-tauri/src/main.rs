@@ -90,6 +90,8 @@ fn main() {
             cmd::attach_engine,
             cmd::engine_mesh,
             cmd::reauthorize_hub,
+            cmd::plan_service_change,
+            cmd::change_services,
             cmd::compose_command,
             cmd::compose_command_streamed,
             cmd::read_compose_file,

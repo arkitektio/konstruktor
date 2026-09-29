@@ -4,6 +4,7 @@ mod coord;
 mod create;
 mod engine;
 mod manage;
+mod services;
 mod ui;
 
 use anyhow::Result;
@@ -29,7 +30,7 @@ struct Cli {
     /// Emit the answer as JSON on stdout, with no narration mixed into it.
     ///
     /// Global, but only the reporting commands have a document to emit — `status`,
-    /// `list`, `ps`, `doctor`, `update --check` and `rollback`.
+    /// `list`, `ps`, `doctor`, `update --check`, `rollback` and `hub services list`.
     #[arg(long, global = true)]
     json: bool,
 }
@@ -50,6 +51,7 @@ Everything else takes any of the three. `[target]` is a path or a registered nam
 left out, it is the deployment you are standing in.
 
   konstruktor hub create ~/MyHub
+  konstruktor hub services add bank --in ~/MyHub
   konstruktor up ~/MyHub
   konstruktor status --json | jq .
 ";
@@ -158,6 +160,9 @@ async fn hub_report(args: HubReportArgs) -> anyhow::Result<()> {
 enum HubCommand {
     /// Create a hub.
     Create(Box<create::CreateArgs>),
+    /// List a hub's services, add some, or take some out.
+    #[command(subcommand)]
+    Services(services::ServicesCommand),
 }
 
 #[derive(Subcommand)]
@@ -254,6 +259,7 @@ async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
+        Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
         Command::Engine(EngineCommand::Attach(args)) => {
             engine::attach(args.engine, Some(args.hub)).await

@@ -112,6 +112,16 @@ pub struct ServiceBlock {
     /// would make every linked mailbox unreadable. See [`HubConfig::ensure_service_secrets`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fernet_key: Option<String>,
+    /// Taken out of the hub after it ran (`konstruktor hub services remove`). Its database
+    /// and buckets stay provisioned — in the database init list and the bucket manifest —
+    /// so its data is neither lost nor silently orphaned, and adding it back picks the
+    /// same data, keys and secrets up again. Cleared when it is added back.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retained: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ServiceBlock {
@@ -120,7 +130,7 @@ impl ServiceBlock {
     /// model forbids the key. A disabled Kuvert that already has its Fernet key is kept:
     /// dropping the key would make its mailboxes unreadable once it is switched back on.
     pub fn is_disposable(&self) -> bool {
-        !self.enabled && self.fernet_key.is_none()
+        !self.enabled && self.fernet_key.is_none() && !self.retained
     }
 
     /// The bucket declared for a purpose, if this service declares one.
@@ -417,7 +427,7 @@ impl HubConfig {
     }
 
     /// The mutable half of [`Self::service`], used by [`Self::set_service_image`].
-    fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
+    pub(crate) fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
         match id {
             ServiceId::Rekuest => &mut self.rekuest,
             ServiceId::Mikro => &mut self.mikro,
@@ -430,6 +440,56 @@ impl HubConfig {
             ServiceId::Bank => &mut self.bank,
             ServiceId::Kuvert => &mut self.kuvert,
         }
+    }
+
+    /// The services whose database and buckets the stack provisions: the enabled ones,
+    /// and the ones taken out that keep their data (see [`ServiceBlock::retained`]), in
+    /// generation order.
+    pub fn provisioned_services(&self) -> Vec<ServiceId> {
+        crate::catalog::HUB_SERVICE_ORDER
+            .into_iter()
+            .filter(|id| {
+                let block = self.service(*id);
+                block.enabled || block.retained
+            })
+            .collect()
+    }
+
+    /// The Ollama this stack runs, if it runs one. Only while Alpaka does: it is Alpaka's
+    /// provider, and a hub that took Alpaka out keeps the block (and the models volume)
+    /// for when it comes back, but not the container.
+    pub fn running_ollama(&self) -> Option<&OllamaBlock> {
+        self.local_ollama
+            .as_ref()
+            .filter(|o| o.enabled && self.alpaka.enabled)
+    }
+
+    /// Switch a service on in an existing profile. Its block is reused as it stands — the
+    /// instance key, Django secret and Kuvert's Fernet key it had before are what its data
+    /// was written with — and only an image it never had is seeded. Rekuest is decided by
+    /// `rekuest_server`, so adding it makes this hub run its own, as the wizard does.
+    pub fn add_service(&mut self, id: ServiceId) {
+        if id == ServiceId::Rekuest {
+            self.rekuest_server = "local".into();
+        }
+        let block = self.service_mut(id);
+        block.enabled = true;
+        block.retained = false;
+        if block.image.is_none() {
+            block.image = seed(id).image.map(str::to_string);
+        }
+    }
+
+    /// Switch a service off in an existing profile, keeping its data provisioned — see
+    /// [`ServiceBlock::retained`]. Taking Rekuest out leaves the hub without one
+    /// (`rekuest_server: none`), not trusting some other.
+    pub fn remove_service(&mut self, id: ServiceId) {
+        if id == ServiceId::Rekuest {
+            self.rekuest_server = "none".into();
+        }
+        let block = self.service_mut(id);
+        block.enabled = false;
+        block.retained = true;
     }
 
     /// Enabled services, in the order the generator feeds them.
@@ -477,7 +537,7 @@ impl HubConfig {
         if let Some(mesh) = self.mesh.as_ref().filter(|m| m.enabled) {
             images.push((mesh.host.clone(), mesh.image.clone()));
         }
-        if let Some(ollama) = self.local_ollama.as_ref().filter(|o| o.enabled) {
+        if let Some(ollama) = self.running_ollama() {
             images.push((ollama.host.clone(), ollama.image.clone()));
         }
         if let Some(reporter) = self.reporter.as_ref().filter(|r| r.enabled) {
@@ -659,6 +719,7 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         provenance_key_pair: None,
         instance_key_pair: None,
         fernet_key: None,
+        retained: false,
     };
 
     match id {

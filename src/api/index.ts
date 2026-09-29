@@ -41,6 +41,7 @@ import type {
   ImageState,
   UpstreamCheck,
   ProbeResult,
+  ServiceId,
   ServiceMeta,
   WellKnownFakts,
 } from "./types";
@@ -322,8 +323,8 @@ export type ReauthorizeOutcome = {
 };
 
 /**
- * Re-authorize a hub that already exists: add services, move it to another network, join
- * a mesh it was created without, or fetch a fresh mesh key.
+ * Re-authorize a hub that already exists: move it to another network, join a mesh it was
+ * created without, or fetch a fresh mesh key. Services change through `changeServices`.
  *
  * The profile is reused verbatim — its secrets are what the running services already
  * trust — and the service configs are regenerated afterwards, because the JWKS URL they
@@ -352,6 +353,58 @@ export const reauthorizeHub = (
     hosts: options.hosts,
     reachableHosts: options.reachableHosts,
     meshKey: options.meshKey,
+    onEvent: channel,
+  });
+};
+
+// --- a hub's services, after creation ----------------------------------------
+
+/** What adding and removing services would do to a hub; `services::ServicePlan`. */
+export type ServicePlan = {
+  added: ServiceId[];
+  /** Taken out, their database and buckets kept. */
+  removed: ServiceId[];
+  /** Asked for, but already so. */
+  unchanged: ServiceId[];
+  /** What the hub runs afterwards. */
+  services: ServiceId[];
+  notes: string[];
+};
+
+/** What changing the services did. */
+export type ServicesOutcome = {
+  plan: ServicePlan;
+  /** The stack was brought to the new set of services. */
+  applied: boolean;
+  mesh_requested: boolean;
+  mesh_granted: boolean;
+};
+
+/**
+ * What a change would do, or why it cannot be done (the promise rejects with the reason).
+ * Nothing is sent anywhere.
+ */
+export const planServiceChange = (path: string, add: ServiceId[], remove: ServiceId[]) =>
+  invoke<ServicePlan>("plan_service_change", { path, add, remove });
+
+/**
+ * Add and remove services on a hub that exists: the new set is sent to the coordination
+ * server through the same device-code flow as re-authorizing (the code arrives as a
+ * `staged` event; `cancelAuthorization` stops the wait), the files are rewritten once it
+ * is accepted, and with `apply` the stack is brought to them — compose's output arrives
+ * as `log` events. Removed services keep their database and buckets.
+ */
+export const changeServices = (
+  options: { path: string; add: ServiceId[]; remove: ServiceId[]; apply: boolean },
+  onEvent: (event: CreateEvent) => void
+) => {
+  const channel = new Channel<CreateEvent>();
+  channel.onmessage = onEvent;
+  return invoke<ServicesOutcome>("change_services", {
+    path: options.path,
+    add: options.add,
+    remove: options.remove,
+    apply: options.apply,
     onEvent: channel,
   });
 };

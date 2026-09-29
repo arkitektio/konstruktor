@@ -903,6 +903,7 @@ pub async fn reauthorize_hub(
             hosts,
             reachable_hosts,
             mesh_key,
+            services: None,
         },
         &cancel,
         &move |event| {
@@ -925,6 +926,78 @@ pub struct ReauthorizeOutcome {
     mesh_requested: bool,
     mesh_granted: bool,
     reporter_enabled: bool,
+}
+
+// --- a hub's services, after creation ----------------------------------------
+
+/// What adding `add` and removing `remove` would do to the hub at `path` — or why it
+/// cannot be done. Nothing is sent anywhere; the dialog shows this before it asks.
+#[command]
+pub fn plan_service_change(
+    path: String,
+    add: Vec<konstruktor_core::catalog::ServiceId>,
+    remove: Vec<konstruktor_core::catalog::ServiceId>,
+) -> Result<konstruktor_core::services::ServicePlan, String> {
+    let config = konstruktor_core::profile::read_profile(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())?
+        .config;
+    konstruktor_core::services::plan(
+        &config,
+        &konstruktor_core::services::ServiceChange { add, remove },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Change a hub's services: re-authorize with the new set through the device-code flow
+/// (cancellable with [`cancel_authorization`] while it waits), write the files, and —
+/// when `apply` — bring the stack to them, streaming compose's output as `log` events.
+#[command]
+pub async fn change_services(
+    app: tauri::AppHandle,
+    authorizing: tauri::State<'_, AuthorizeState>,
+    started: tauri::State<'_, StartedStacks>,
+    path: String,
+    add: Vec<konstruktor_core::catalog::ServiceId>,
+    remove: Vec<konstruktor_core::catalog::ServiceId>,
+    apply: bool,
+    on_event: Channel<CreateEvent>,
+) -> Result<ServicesOutcome, String> {
+    use konstruktor_core::services;
+
+    let answers = services::answers_from_disk(
+        std::path::Path::new(&path),
+        services::ServiceChange { add, remove },
+    )
+    .map_err(|e| e.to_string())?;
+
+    let cancel = authorizing.begin();
+    let done = services::change_services(&answers, apply, &cancel, &move |event| {
+        let _ = on_event.send(event);
+    })
+    .await;
+    authorizing.end();
+    let done = done.map_err(|e| e.to_string())?;
+
+    if done.applied {
+        // This brought the stack up, so the same bookkeeping a whole-stack `up` does.
+        started.started(&path);
+        crate::tray::poke(&app);
+    }
+    Ok(ServicesOutcome {
+        plan: done.plan,
+        applied: done.applied,
+        mesh_requested: done.reauthorized.mesh_requested,
+        mesh_granted: done.reauthorized.mesh_granted,
+    })
+}
+
+/// What the services dialog shows once the change went through.
+#[derive(Serialize)]
+pub struct ServicesOutcome {
+    plan: konstruktor_core::services::ServicePlan,
+    applied: bool,
+    mesh_requested: bool,
+    mesh_granted: bool,
 }
 
 

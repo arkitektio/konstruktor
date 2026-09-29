@@ -27,6 +27,18 @@ fn buckets_of(id: ServiceId, service: &ServiceBlock) -> Vec<String> {
     service.bucket_names(id).into_iter().map(|(_, name)| name).collect()
 }
 
+/// `enabled`, then the services taken out that keep their data — whose database and
+/// buckets stay provisioned (see [`ServiceBlock::retained`]).
+fn provisioned(config: &HubConfig, enabled: &[ServiceId]) -> Vec<ServiceId> {
+    let mut out = enabled.to_vec();
+    for id in config.provisioned_services() {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
 /// Where a dev hub's checkouts live, relative to the deployment folder.
 ///
 /// One folder per service, named after the service — `./mounts/rekuest` — so the folder
@@ -168,7 +180,7 @@ fn reaper_service(config: &HubConfig) -> Value {
 
 /// The bucket + user manifest the init container (`rustfs_init`) reads. `None` when nothing declares a bucket.
 pub fn build_minio_init(config: &HubConfig, enabled: &[ServiceId]) -> Option<Value> {
-    let buckets: Vec<String> = enabled
+    let buckets: Vec<String> = provisioned(config, enabled)
         .iter()
         .flat_map(|id| buckets_of(*id, config.service(*id)))
         .collect();
@@ -203,7 +215,8 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     let mut services = Value::Mapping(Mapping::new());
 
     // --- infrastructure -------------------------------------------------------
-    let databases: Vec<String> = enabled
+    let provisioned = provisioned(config, enabled);
+    let databases: Vec<String> = provisioned
         .iter()
         .map(|id| config.service(*id).db_config.db.clone())
         .collect();
@@ -243,7 +256,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         );
     }
 
-    let has_buckets = enabled
+    let has_buckets = provisioned
         .iter()
         .any(|id| !buckets_of(*id, config.service(*id)).is_empty());
 
@@ -338,7 +351,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     // provider and stops there. This is the one place the generated stack deliberately
     // goes beyond what the Python CLI produces, and it only does so when somebody asked
     // for it — a hub that did not is byte-identical to upstream's output.
-    if let Some(ollama) = config.local_ollama.as_ref().filter(|o| o.enabled) {
+    if let Some(ollama) = config.running_ollama() {
         insert(
             &mut services,
             &ollama.host,
@@ -510,7 +523,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         // the tailnet as a new machine — and the pre-auth key is single-use.
         insert(&mut volumes, &mesh.volume_name, empty_map());
     }
-    if let Some(ollama) = config.local_ollama.as_ref().filter(|o| o.enabled) {
+    if let Some(ollama) = config.running_ollama() {
         insert(&mut volumes, &ollama.volume_name, empty_map());
     }
     if let Some(reporter) = reporter {

@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
+use konstruktor_core::catalog::ServiceId;
 use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
 use konstruktor_core::connect::authorize::HubAuthorizationError;
 use konstruktor_core::connect::manifest::AdvertisedHost;
@@ -22,6 +23,7 @@ use konstruktor_core::create::{
 };
 use konstruktor_core::hosts::HostCategory;
 use konstruktor_core::profile::{self, hub_profile, write_profile};
+use konstruktor_core::services::{answers_from_disk, ServiceChange};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
@@ -92,6 +94,7 @@ fn answers(dir: &Path, server: &MockServer) -> ReauthorizeAnswers {
         }],
         reachable_hosts: Vec::new(),
         mesh_key: MeshKeyRequest::Never,
+        services: None,
     }
 }
 
@@ -488,6 +491,312 @@ async fn a_refused_manifest_writes_nothing() {
         "got {error:?}"
     );
     assert_eq!(listing(&dir), before);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- changing services ------------------------------------------------------------------
+
+fn with_change(
+    dir: &Path,
+    server: &MockServer,
+    add: &[ServiceId],
+    remove: &[ServiceId],
+) -> ReauthorizeAnswers {
+    let mut wanted = answers(dir, server);
+    wanted.services = Some(ServiceChange {
+        add: add.to_vec(),
+        remove: remove.to_vec(),
+    });
+    wanted
+}
+
+fn compose(dir: &Path) -> serde_norway::Value {
+    serde_norway::from_str(&std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap())
+        .expect("the compose file parses")
+}
+
+fn compose_services(dir: &Path) -> Vec<String> {
+    compose(dir)["services"]
+        .as_mapping()
+        .expect("services")
+        .keys()
+        .filter_map(|k| k.as_str().map(str::to_string))
+        .collect()
+}
+
+fn init_databases(dir: &Path) -> Vec<String> {
+    compose(dir)["services"]["db"]["environment"]["POSTGRES_MULTIPLE_DATABASES"]
+        .as_str()
+        .expect("the init list")
+        .split(',')
+        .map(str::to_string)
+        .collect()
+}
+
+fn bucket_manifest(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("configs/rustfs_init.yaml")).expect("the bucket manifest")
+}
+
+/// Every secret a running hub's data was written with — none of which a service change
+/// may touch. Of the services in `kept`: a disabled experimental block that holds nothing
+/// is not written to the profile at all, so it is minted afresh on every read.
+fn secrets_of(
+    config: &konstruktor_core::config::hub::HubConfig,
+    kept: &[ServiceId],
+) -> Vec<String> {
+    let mut out = vec![
+        config.db.postgres_user.clone(),
+        config.db.postgres_password.clone(),
+        config.minio.access_key.clone(),
+        config.minio.secret_key.clone(),
+        config.minio.root_user.clone(),
+        config.minio.root_password.clone(),
+        config.global_admin_password.clone(),
+    ];
+    for id in kept.iter().copied() {
+        let block = config.service(id);
+        out.push(format!("{id:?} secret {}", block.secret_key));
+        out.push(format!(
+            "{id:?} key {:?}",
+            block
+                .instance_key_pair
+                .as_ref()
+                .map(|k| k.private_key.clone())
+        ));
+    }
+    out
+}
+
+/// Adding Bank to a hub: its container, config and bucket appear, and every key and
+/// secret the running services hold is exactly what it was.
+#[tokio::test]
+async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
+    let dir = a_hub();
+    let before = profile::read_profile(&dir).unwrap().config;
+    assert!(!before.bank.enabled);
+
+    let server = coordination_server(accepted(json!({}))).await;
+    let done = reauthorize(
+        &with_change(&dir, &server, &[ServiceId::Bank], &[]),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("the change is accepted");
+    let plan = done.services.expect("a plan");
+    assert_eq!(plan.added, [ServiceId::Bank]);
+    assert!(plan.removed.is_empty());
+
+    let after = profile::read_profile(&dir).unwrap().config;
+    assert!(after.bank.enabled);
+    assert!(
+        after.bank.instance_key_pair.is_some(),
+        "bank got no instance key"
+    );
+
+    // Nothing that already existed moved; Bank's own block is the one seeded at creation.
+    let kept: Vec<ServiceId> = konstruktor_core::catalog::SERVICE_IDS
+        .into_iter()
+        .filter(|id| !before.service(*id).is_disposable())
+        .collect();
+    assert!(kept.contains(&ServiceId::Mikro) && !kept.contains(&ServiceId::Bank));
+    assert_eq!(secrets_of(&before, &kept), secrets_of(&after, &kept));
+
+    assert!(compose_services(&dir).contains(&"bank".to_string()));
+    assert!(dir.join("configs/bank.yaml").is_file());
+    // Rekuest provisions a HookAgent for it and the gateway routes it — both from files
+    // the running containers have bind-mounted, which is why applying restarts them.
+    let rekuest = std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap();
+    assert!(
+        rekuest.contains("/bank/_rekuest/hook"),
+        "no hook agent for bank"
+    );
+    let caddyfile = std::fs::read_to_string(dir.join("configs/Caddyfile")).unwrap();
+    assert!(caddyfile.contains("/bank"), "bank is not routed");
+    assert!(init_databases(&dir).contains(&"bank".to_string()));
+    assert!(bucket_manifest(&dir).contains("bankbigfile"));
+
+    // The manifest carried the new instance, with its key, to the coordination server.
+    let sent = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.url.path() == "/o/hub-authorization/")
+        .expect("the manifest was sent");
+    let body = String::from_utf8_lossy(&sent.body).to_string();
+    assert!(
+        body.contains("live.arkitekt.bank"),
+        "bank is not in the manifest: {body}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Taking Kraph out drops its container and route, but its database stays in the init
+/// list and its buckets in the manifest: the data is kept, not orphaned.
+#[tokio::test]
+async fn removing_a_service_drops_its_container_but_keeps_its_data() {
+    let dir = a_hub();
+    let server = coordination_server(accepted(json!({}))).await;
+    reauthorize(
+        &with_change(&dir, &server, &[], &[ServiceId::Kraph]),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("the change is accepted");
+
+    let services = compose_services(&dir);
+    assert!(!services.contains(&"kraph".to_string()), "{services:?}");
+    assert!(services.contains(&"mikro".to_string()));
+    assert!(init_databases(&dir).contains(&"kraph".to_string()));
+    assert!(bucket_manifest(&dir).contains("kraphzarr"));
+    let caddyfile = std::fs::read_to_string(dir.join("configs/Caddyfile")).unwrap();
+    assert!(!caddyfile.contains("/kraph"), "kraph is still routed");
+
+    let config = profile::read_profile(&dir).unwrap().config;
+    assert!(!config.kraph.enabled);
+    assert!(config.kraph.retained);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Rekuest runs the hooked services' periodic work: it cannot go while one of them runs,
+/// and the refusal comes before any request leaves this machine.
+#[tokio::test]
+async fn rekuest_cannot_be_removed_while_hooked_services_run() {
+    let dir = a_hub();
+    let before = listing(&dir);
+    let profile_before = std::fs::read(profile::profile_path(&dir)).unwrap();
+    let server = coordination_server(accepted(json!({}))).await;
+
+    let error = reauthorize(
+        &with_change(&dir, &server, &[], &[ServiceId::Rekuest]),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(error, CreateError::Answers(ref m) if m.contains("keep Rekuest")),
+        "{error:?}"
+    );
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "a request was sent"
+    );
+    assert_eq!(listing(&dir), before);
+    assert_eq!(
+        std::fs::read(profile::profile_path(&dir)).unwrap(),
+        profile_before
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Kuvert's Fernet key encrypts every linked mailbox's credentials: taking Kuvert out and
+/// adding it back has to find the same key, or those mailboxes are unreadable.
+#[tokio::test]
+async fn re_adding_kuvert_keeps_its_fernet_key() {
+    let dir = a_hub();
+    let server = coordination_server(accepted(json!({}))).await;
+    let run = |add: &'static [ServiceId], remove: &'static [ServiceId]| {
+        let answers = with_change(&dir, &server, add, remove);
+        async move {
+            reauthorize(&answers, &CancellationToken::new(), &|_| {})
+                .await
+                .expect("the change is accepted")
+        }
+    };
+
+    run(&[ServiceId::Kuvert], &[]).await;
+    let first = profile::read_profile(&dir).unwrap().config.kuvert;
+    let key = first.fernet_key.clone().expect("kuvert got a fernet key");
+    assert!(dir.join("secrets/kuvert.fernet").is_file());
+
+    run(&[], &[ServiceId::Kuvert]).await;
+    let removed = profile::read_profile(&dir).unwrap().config.kuvert;
+    assert!(!removed.enabled);
+    assert_eq!(
+        removed.fernet_key.as_deref(),
+        Some(key.as_str()),
+        "the key left the profile"
+    );
+    assert!(!compose_services(&dir).contains(&"kuvert".to_string()));
+
+    run(&[ServiceId::Kuvert], &[]).await;
+    let back = profile::read_profile(&dir).unwrap().config.kuvert;
+    assert!(back.enabled && !back.retained);
+    assert_eq!(
+        back.fernet_key.as_deref(),
+        Some(key.as_str()),
+        "a new key was minted"
+    );
+    assert_eq!(back.instance_key_pair, first.instance_key_pair);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A declined change is a declined authorization: the profile stays byte for byte.
+#[tokio::test]
+async fn a_declined_service_change_writes_nothing() {
+    let dir = a_hub();
+    let before = listing(&dir);
+    let profile_before = std::fs::read(profile::profile_path(&dir)).unwrap();
+    let server = coordination_server(declined()).await;
+
+    reauthorize(
+        &with_change(&dir, &server, &[ServiceId::Bank], &[ServiceId::Kraph]),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect_err("declined");
+    assert_eq!(listing(&dir), before);
+    assert_eq!(
+        std::fs::read(profile::profile_path(&dir)).unwrap(),
+        profile_before
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The CLI and the app build their answers from what is on disk: the hub's identifier,
+/// server and addresses as authorized, and no mesh key for a hub that is not on a mesh.
+#[tokio::test]
+async fn service_change_answers_come_from_the_authorized_hub() {
+    let dir = a_hub();
+    let change = ServiceChange {
+        add: vec![ServiceId::Bank],
+        remove: vec![],
+    };
+    let error = answers_from_disk(&dir, change.clone()).expect_err("never authorized");
+    assert!(error.to_string().contains("authorize it first"), "{error}");
+
+    let server = coordination_server(accepted(json!({}))).await;
+    reauthorize(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+        .await
+        .expect("authorized");
+
+    let from_disk = answers_from_disk(&dir, change.clone()).expect("answers");
+    assert_eq!(from_disk.identifier, "lab-hub");
+    assert_eq!(from_disk.coord_server, server.uri());
+    assert_eq!(from_disk.hosts.len(), 1);
+    assert_eq!(from_disk.mesh_key, MeshKeyRequest::Never);
+    assert_eq!(from_disk.services, Some(change.clone()));
+
+    // A hub authorized before its addresses were recorded would send none, withdrawing
+    // every one the coordination server has: refused, with the way out.
+    let mut credentials = konstruktor_core::credentials::read_credentials(&dir).unwrap();
+    credentials.advertised_hosts.clear();
+    konstruktor_core::credentials::write_credentials(&dir, &credentials).unwrap();
+    let error = answers_from_disk(&dir, change).expect_err("no recorded addresses");
+    assert!(
+        error.to_string().contains("konstruktor authorize"),
+        "{error}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -1,6 +1,6 @@
 use serde_norway::{Mapping, Value};
 
-use crate::catalog::ServiceId;
+use crate::catalog::{ServiceId, HOOKED_SERVICES};
 use crate::config::hub::{HubConfig, ServiceBlock};
 use crate::generate::IssuedIdentity;
 use crate::secrets::public_jwk;
@@ -98,18 +98,6 @@ fn jwks_at_base(url: &str) -> String {
 }
 
 const JWKS_PATH: &str = ".well-known/jwks.json";
-
-/// The services that vendor `rekuest-service`: Rekuest runs their periodic actions and
-/// receives their signals, each call signed with the sender's instance key.
-const HOOKED_SERVICES: [ServiceId; 7] = [
-    ServiceId::Mikro,
-    ServiceId::Elektro,
-    ServiceId::Kabinet,
-    ServiceId::Fluss,
-    ServiceId::Alpaka,
-    ServiceId::Bank,
-    ServiceId::Kuvert,
-];
 
 /// Where a service finds its Fernet key file inside its container. See
 /// [`crate::generate::compose`], which mounts `secrets/<host>.fernet` there.

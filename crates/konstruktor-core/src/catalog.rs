@@ -101,6 +101,19 @@ pub const HUB_SERVICE_ORDER: [ServiceId; 9] = [
     ServiceId::Kuvert,
 ];
 
+/// The services that vendor `rekuest-service`: Rekuest runs their periodic actions and
+/// receives their signals, each call signed with the sender's instance key. A hub cannot
+/// take its Rekuest out while one of these runs.
+pub const HOOKED_SERVICES: [ServiceId; 7] = [
+    ServiceId::Mikro,
+    ServiceId::Elektro,
+    ServiceId::Kabinet,
+    ServiceId::Fluss,
+    ServiceId::Alpaka,
+    ServiceId::Bank,
+    ServiceId::Kuvert,
+];
+
 /// What a picker needs to show for each service. Display copy lives here rather than in
 /// the frontend so the CLI's `--services` help and the wizard's list cannot drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
