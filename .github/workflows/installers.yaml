@@ -34,16 +34,18 @@ jobs:
       matrix:
         shell: [pwsh, powershell] # PowerShell 7 and Windows PowerShell 5.1
     runs-on: windows-latest
+    # A step's `shell` cannot come from the matrix; the job's default can.
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v4
       - name: install the way the README says (piped into iex)
-        shell: ${{ matrix.shell }}
         env:
           KONSTRUKTOR_NO_RUN: "1"
           KONSTRUKTOR_INSTALL_DIR: ${{ runner.temp }}\kbin
         run: Get-Content -Raw install.ps1 | Invoke-Expression
       - name: it runs, and is on the user PATH
-        shell: ${{ matrix.shell }}
         run: |
           & "$env:RUNNER_TEMP\kbin\konstruktor.exe" --version
           if ($LASTEXITCODE -ne 0) { exit 1 }
