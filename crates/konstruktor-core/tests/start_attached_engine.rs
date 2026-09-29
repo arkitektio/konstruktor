@@ -14,9 +14,18 @@ fn docker(args: &[&str]) -> std::process::Output {
         .expect("docker runs")
 }
 
+/// Whether a Docker engine answers. False, not a panic, when there is no `docker` binary
+/// to spawn at all — the macOS and Windows CI runners have none.
+fn docker_available() -> bool {
+    konstruktor_core::docker::command()
+        .arg("version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 #[tokio::test]
 async fn an_attached_engine_waits_for_its_hubs_network() {
-    if !docker(&["version"]).status.success() {
+    if !docker_available() {
         eprintln!("skipping: no docker on this machine");
         return;
     }
