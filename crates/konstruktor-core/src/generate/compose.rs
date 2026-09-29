@@ -7,7 +7,7 @@ use crate::config::mesh::{
     MESH_SOCKET_VOLUME as TAILSCALE_SOCKET_VOLUME, MESH_STATE_DIR,
 };
 use crate::credentials::CREDENTIALS_FILENAME;
-use crate::generate::service::{list, map, s};
+use crate::generate::service::{fernet_key_file, fernet_key_path, list, map, s};
 use crate::profile::HUB_CONFIG_FILENAME as PROFILE_FILENAME;
 
 /// `docker-compose.yaml`, and the bucket manifest the storage init container reads.
@@ -52,6 +52,13 @@ fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
         "./configs/{}.yaml:/workspace/config.yaml",
         service.host
     )));
+    if service.fernet_key.is_some() {
+        volumes.push(s(&format!(
+            "./{}:{}:ro",
+            fernet_key_file(service),
+            fernet_key_path(service)
+        )));
+    }
 
     map(vec![
         (

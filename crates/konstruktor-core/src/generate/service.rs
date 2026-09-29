@@ -63,13 +63,26 @@ const JWKS_PATH: &str = ".well-known/jwks.json";
 
 /// The services that vendor `rekuest-service`: Rekuest runs their periodic actions and
 /// receives their signals, each call signed with the sender's instance key.
-const HOOKED_SERVICES: [ServiceId; 5] = [
+const HOOKED_SERVICES: [ServiceId; 7] = [
     ServiceId::Mikro,
     ServiceId::Elektro,
     ServiceId::Kabinet,
     ServiceId::Fluss,
     ServiceId::Alpaka,
+    ServiceId::Bank,
+    ServiceId::Kuvert,
 ];
+
+/// Where a service finds its Fernet key file inside its container. See
+/// [`crate::generate::compose`], which mounts `secrets/<host>.fernet` there.
+pub fn fernet_key_path(service: &ServiceBlock) -> String {
+    format!("/secrets/{}.fernet", service.host)
+}
+
+/// The file in the deployment folder holding a service's Fernet key.
+pub fn fernet_key_file(service: &ServiceBlock) -> String {
+    format!("secrets/{}.fernet", service.host)
+}
 
 /// Inbound token verification.
 ///
@@ -327,6 +340,14 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
         if let Some(ollama) = &config.local_ollama {
             pairs.push(("ollama_url", s(&ollama.url)));
         }
+    }
+
+    // Kuvert refuses to start without its key file; nothing else declares one.
+    if service.fernet_key.is_some() {
+        pairs.push((
+            "secrets",
+            map(vec![("key_path", s(&fernet_key_path(service)))]),
+        ));
     }
 
     if id == ServiceId::Kabinet {

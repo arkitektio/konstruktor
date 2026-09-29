@@ -129,6 +129,8 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
         ServiceId::Kabinet,
         ServiceId::Fluss,
         ServiceId::Alpaka,
+        ServiceId::Bank,
+        ServiceId::Kuvert,
     ] {
         let block = config.service(id);
         if !(block.enabled && block.image.is_some()) {

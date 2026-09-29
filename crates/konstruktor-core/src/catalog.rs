@@ -13,11 +13,13 @@ pub enum ServiceId {
     Elektro,
     Alpaka,
     Lovekit,
+    Bank,
+    Kuvert,
 }
 
 /// Declaration order, as `SERVICE_IDS` upstream. Not the generation order — see
 /// [`HUB_SERVICE_ORDER`].
-pub const SERVICE_IDS: [ServiceId; 8] = [
+pub const SERVICE_IDS: [ServiceId; 10] = [
     ServiceId::Rekuest,
     ServiceId::Mikro,
     ServiceId::Fluss,
@@ -26,6 +28,8 @@ pub const SERVICE_IDS: [ServiceId; 8] = [
     ServiceId::Elektro,
     ServiceId::Alpaka,
     ServiceId::Lovekit,
+    ServiceId::Bank,
+    ServiceId::Kuvert,
 ];
 
 impl ServiceId {
@@ -39,6 +43,8 @@ impl ServiceId {
             ServiceId::Elektro => "elektro",
             ServiceId::Alpaka => "alpaka",
             ServiceId::Lovekit => "lovekit",
+            ServiceId::Bank => "bank",
+            ServiceId::Kuvert => "kuvert",
         }
     }
 
@@ -56,6 +62,9 @@ impl ServiceId {
             ServiceId::Mikro => &["media", "zarr", "parquet", "bigfile", "fabriks", "konnektion"],
             ServiceId::Elektro => &["media", "zarr", "parquet", "bigfile"],
             ServiceId::Kraph => &["media", "zarr", "bigfile"],
+            // Statement exports (bank), raw messages and attachments (kuvert): their
+            // datalayer declares `bigfile` and nothing else.
+            ServiceId::Bank | ServiceId::Kuvert => &["bigfile"],
             _ => &["media"],
         }
     }
@@ -66,15 +75,21 @@ impl ServiceId {
     pub fn uses_datalayer(self) -> bool {
         matches!(
             self,
-            ServiceId::Mikro | ServiceId::Kraph | ServiceId::Elektro | ServiceId::Rekuest
+            ServiceId::Mikro
+                | ServiceId::Kraph
+                | ServiceId::Elektro
+                | ServiceId::Rekuest
+                | ServiceId::Bank
+                | ServiceId::Kuvert
         )
     }
 }
 
 /// The order `diff.write_hub_files` feeds services to the generator, which is the order
 /// they appear in the Caddyfile. Deliberately not declaration order, and `lovekit` is
-/// absent — it has no published image, so the generator never emits it.
-pub const HUB_SERVICE_ORDER: [ServiceId; 7] = [
+/// absent — it has no published image, so the generator never emits it. The experimental
+/// services come last, so a hub without them keeps its Caddyfile byte for byte.
+pub const HUB_SERVICE_ORDER: [ServiceId; 9] = [
     ServiceId::Rekuest,
     ServiceId::Kabinet,
     ServiceId::Mikro,
@@ -82,6 +97,8 @@ pub const HUB_SERVICE_ORDER: [ServiceId; 7] = [
     ServiceId::Elektro,
     ServiceId::Alpaka,
     ServiceId::Kraph,
+    ServiceId::Bank,
+    ServiceId::Kuvert,
 ];
 
 /// What a picker needs to show for each service. Display copy lives here rather than in
@@ -99,6 +116,9 @@ pub struct ServiceMeta {
     /// Whether the generator actually emits it. Lovekit has no published image, so
     /// ticking it would change nothing.
     pub emitted: bool,
+    /// Offered, but kept apart from the rest: new, personal-use services that a lab hub
+    /// does not need. The wizard lists them under a collapsed "Experimental" section.
+    pub experimental: bool,
 }
 
 pub fn catalog() -> Vec<ServiceMeta> {
@@ -165,6 +185,21 @@ pub fn catalog() -> Vec<ServiceMeta> {
                     "Live video and audio between people using the platform, over \
                      LiveKit. Not published yet.",
                 ),
+                ServiceId::Bank => (
+                    "Bank",
+                    "Bank accounts, transactions and budgets",
+                    "Link bank and broker accounts (Enable Banking, Scalable Capital) or \
+                     import statements, and get categories, budgets and recurring \
+                     payments. Linking banks needs Enable Banking credentials in its \
+                     config. Experimental, meant for personal use.",
+                ),
+                ServiceId::Kuvert => (
+                    "Kuvert",
+                    "Your mailboxes, synced and searchable",
+                    "Link existing IMAP, Gmail or Outlook mailboxes to sync, search, \
+                     organise and send mail. Kuvert hosts no mailboxes itself. \
+                     Experimental.",
+                ),
             };
             ServiceMeta {
                 id,
@@ -186,6 +221,7 @@ pub fn catalog() -> Vec<ServiceMeta> {
                         | ServiceId::Alpaka
                 ),
                 emitted: !matches!(id, ServiceId::Lovekit),
+                experimental: matches!(id, ServiceId::Bank | ServiceId::Kuvert),
             }
         })
         .collect()
@@ -233,5 +269,21 @@ mod tests {
             .expect("elektro is in the catalog");
         assert!(elektro.emitted, "it must be offerable");
         assert!(!elektro.default, "but not chosen for people");
+    }
+
+    /// Bank and Kuvert can be switched on, but never are unless somebody asks, and the
+    /// wizard keeps them apart from the rest.
+    #[test]
+    fn bank_and_kuvert_are_experimental_and_never_pre_ticked() {
+        let experimental: Vec<&str> = catalog()
+            .iter()
+            .filter(|s| s.experimental)
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(experimental, ["bank", "kuvert"]);
+        for service in catalog().into_iter().filter(|s| s.experimental) {
+            assert!(service.emitted, "{:?} must be offerable", service.id);
+            assert!(!service.default, "{:?} must not be pre-ticked", service.id);
+        }
     }
 }

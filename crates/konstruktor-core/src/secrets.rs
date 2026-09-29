@@ -48,6 +48,12 @@ pub fn generate_alpha_numeric_string(length: usize) -> String {
     choose(ALPHA_NUMERIC, length)
 }
 
+/// A Fernet key, as Python's `Fernet.generate_key()` writes one: 32 random bytes,
+/// URL-safe base64 *with* padding (44 characters). `Fernet()` rejects the unpadded form.
+pub fn generate_fernet_key() -> String {
+    base64::engine::general_purpose::URL_SAFE.encode(random_bytes(32))
+}
+
 // The word lists are copied verbatim from `config/utils.py`; names generated here end up
 // in docker network names and MinIO root users, so they must stay in the same shape.
 pub const ADJECTIVES: [&str; 66] = [

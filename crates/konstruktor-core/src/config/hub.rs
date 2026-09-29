@@ -107,9 +107,22 @@ pub struct ServiceBlock {
     /// Rekuest's also signs its provenance tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_key_pair: Option<KeyPair>,
+    /// **Kuvert only.** The Fernet key its mailbox credentials are encrypted with, written
+    /// to `secrets/<host>.fernet` and mounted read-only. Minted once and kept: a new key
+    /// would make every linked mailbox unreadable. See [`HubConfig::ensure_service_secrets`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fernet_key: Option<String>,
 }
 
 impl ServiceBlock {
+    /// For `skip_serializing_if` on the services upstream does not know: one that is disabled
+    /// and holds nothing worth keeping is left out of the profile, since the Python CLI's
+    /// model forbids the key. A disabled Kuvert that already has its Fernet key is kept:
+    /// dropping the key would make its mailboxes unreadable once it is switched back on.
+    pub fn is_disposable(&self) -> bool {
+        !self.enabled && self.fernet_key.is_none()
+    }
+
     /// The bucket declared for a purpose, if this service declares one.
     pub fn bucket(&self, purpose: &str) -> Option<&LocalBucket> {
         match purpose {
@@ -299,6 +312,14 @@ impl Default for ReporterBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubConfig {
     pub alpaka: ServiceBlock,
+    /// Experimental, and unknown upstream: defaulted to a disabled block when a profile has
+    /// none, and written only while enabled — so older profiles load and a hub without it
+    /// stays readable by the Python CLI.
+    #[serde(
+        default = "disabled_bank",
+        skip_serializing_if = "ServiceBlock::is_disposable"
+    )]
+    pub bank: ServiceBlock,
     pub coord_server: String,
     pub csrf_trusted_origins: Option<Vec<String>>,
     pub db: DbBlock,
@@ -315,6 +336,12 @@ pub struct HubConfig {
     pub internal_network: String,
     pub kabinet: ServiceBlock,
     pub kraph: ServiceBlock,
+    /// Experimental, and unknown upstream. See [`Self::bank`].
+    #[serde(
+        default = "disabled_kuvert",
+        skip_serializing_if = "ServiceBlock::is_disposable"
+    )]
+    pub kuvert: ServiceBlock,
     pub local_redis: RedisBlock,
     /// Present only when the hub runs its own Ollama. See [`OllamaBlock`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -344,6 +371,8 @@ impl HubConfig {
             ServiceId::Elektro => &self.elektro,
             ServiceId::Alpaka => &self.alpaka,
             ServiceId::Lovekit => &self.lovekit,
+            ServiceId::Bank => &self.bank,
+            ServiceId::Kuvert => &self.kuvert,
         }
     }
 
@@ -371,6 +400,22 @@ impl HubConfig {
         changed
     }
 
+    /// Give an enabled Kuvert the Fernet key it encrypts mailbox credentials with, if it has
+    /// none yet; true when one was added.
+    ///
+    /// Idempotent like [`Self::ensure_instance_keys`]: once minted the key is kept, because
+    /// a new one cannot decrypt what the old one encrypted. Only an *enabled* Kuvert gets
+    /// one, so a hub without it never writes a `kuvert` block. A Kuvert disabled later keeps
+    /// its block and key in the profile (see [`ServiceBlock::is_disposable`]).
+    pub fn ensure_service_secrets(&mut self) -> bool {
+        let kuvert = &mut self.kuvert;
+        if kuvert.enabled && kuvert.fernet_key.is_none() {
+            kuvert.fernet_key = Some(crate::secrets::generate_fernet_key());
+            return true;
+        }
+        false
+    }
+
     /// The mutable half of [`Self::service`], used by [`Self::set_service_image`].
     fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
         match id {
@@ -382,6 +427,8 @@ impl HubConfig {
             ServiceId::Elektro => &mut self.elektro,
             ServiceId::Alpaka => &mut self.alpaka,
             ServiceId::Lovekit => &mut self.lovekit,
+            ServiceId::Bank => &mut self.bank,
+            ServiceId::Kuvert => &mut self.kuvert,
         }
     }
 
@@ -551,7 +598,30 @@ fn seed(id: ServiceId) -> ServiceSeed {
             db: "lovekit",
             github_repo: "https://github.com/arkitektio/lovekit-server",
         },
+        // Experimental: offered, never switched on unless asked for.
+        ServiceId::Bank => ServiceSeed {
+            enabled: false,
+            image: Some("jhnnsrs/bank:latest"),
+            db: "bank",
+            github_repo: "https://github.com/jhnnsrs/bank",
+        },
+        ServiceId::Kuvert => ServiceSeed {
+            enabled: false,
+            image: Some("jhnnsrs/kuvert:latest"),
+            db: "kuvert",
+            github_repo: "https://github.com/jhnnsrs/kuvert",
+        },
     }
+}
+
+/// What a profile written before Bank existed reads as: the seeded, disabled block.
+fn disabled_bank() -> ServiceBlock {
+    build_service_block(ServiceId::Bank, false)
+}
+
+/// What a profile written before Kuvert existed reads as. See [`disabled_bank`].
+fn disabled_kuvert() -> ServiceBlock {
+    build_service_block(ServiceId::Kuvert, false)
 }
 
 fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
@@ -588,6 +658,7 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         provenance_kid: None,
         provenance_key_pair: None,
         instance_key_pair: None,
+        fernet_key: None,
     };
 
     match id {
@@ -619,6 +690,13 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         }
         ServiceId::Alpaka => {
             block.ollama_config = Some(Kinded::local());
+        }
+        ServiceId::Bank => {
+            block.bigfile_bucket = Some(LocalBucket::new("bankbigfile"));
+        }
+        // The Fernet key is minted by `ensure_service_secrets`, once Kuvert is enabled.
+        ServiceId::Kuvert => {
+            block.bigfile_bucket = Some(LocalBucket::new("kuvertbigfile"));
         }
         _ => {}
     }
@@ -898,6 +976,8 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         elektro: take(&mut blocks, ServiceId::Elektro),
         alpaka: take(&mut blocks, ServiceId::Alpaka),
         lovekit: take(&mut blocks, ServiceId::Lovekit),
+        bank: take(&mut blocks, ServiceId::Bank),
+        kuvert: take(&mut blocks, ServiceId::Kuvert),
 
         coord_server: options.coord_server.clone(),
         csrf_trusted_origins: options.csrf_trusted_origins.clone(),
@@ -992,5 +1072,6 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     // orchestration that folds a mesh key in after the fact.
     let _ = config.service_mut(ServiceId::Rekuest);
     config.ensure_instance_keys();
+    config.ensure_service_secrets();
     config
 }

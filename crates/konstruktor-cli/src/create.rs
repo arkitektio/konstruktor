@@ -522,7 +522,14 @@ async fn wizard(args: &mut CreateArgs) -> Result<()> {
     };
     let labels: Vec<String> = offered
         .iter()
-        .map(|s| format!("{} — {}", s.name, s.description))
+        .map(|s| {
+            let tag = if s.experimental {
+                " (experimental)"
+            } else {
+                ""
+            };
+            format!("{}{tag} — {}", s.name, s.description)
+        })
         .collect();
     let ticked: Vec<usize> = offered
         .iter()

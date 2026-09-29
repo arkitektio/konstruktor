@@ -55,6 +55,14 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
         );
     }
 
+    // --- secret files, mounted read-only into the one service that reads each ---
+    for id in &enabled {
+        let block = config.service(*id);
+        if let Some(key) = &block.fernet_key {
+            files.insert(service::fernet_key_file(block), format!("{key}\n"));
+        }
+    }
+
     // --- minio's bucket manifest --------------------------------------------
     if let Some(minio_init) = compose::build_minio_init(config, &enabled) {
         files.insert(

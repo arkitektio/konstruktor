@@ -867,6 +867,7 @@ pub async fn reauthorize(
     // A profile from before instance keys gets them now; the profile is rewritten below, so
     // they are minted once and sent to the coordination server with this very request.
     config.ensure_instance_keys();
+    config.ensure_service_secrets();
     validate_identifier(&answers.identifier)?;
 
     let store = registry::load();

@@ -898,3 +898,268 @@ fn a_digest_pinned_image_survives_the_profile_and_reaches_the_compose_file() {
         "the pin did not reach the compose file"
     );
 }
+
+/// Bank and Kuvert: offered, never switched on unless asked for, and unknown upstream.
+///
+/// The golden cases above already pin that a hub without them generates what it always
+/// did — their fixture profiles predate both. These pin the other half: what a hub that
+/// asked for them gets, and that asking never touches a profile that did not.
+mod experimental_services {
+    use super::*;
+    use konstruktor_core::catalog::ServiceId;
+    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+    use konstruktor_core::connect::manifest::{build_hub_request, HubManifestOptions};
+    use konstruktor_core::profile::{hub_profile, read_profile, rewrite_images, write_profile};
+
+    fn with_both() -> HubConfig {
+        build_hub_config(&HubConfigOptions {
+            coord_server: "go.arkitekt.live".into(),
+            rekuest_server: "local".into(),
+            services: Some(vec![
+                ServiceId::Rekuest,
+                ServiceId::Mikro,
+                ServiceId::Bank,
+                ServiceId::Kuvert,
+            ]),
+            ..Default::default()
+        })
+    }
+
+    fn yaml(files: &GeneratedFiles, name: &str) -> Value {
+        serde_norway::from_str(&files[name]).unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("konstruktor-{name}-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        dir
+    }
+
+    #[test]
+    fn an_old_profile_loads_and_writes_neither_back() {
+        let config = config_of("hub_config.yaml");
+        assert!(!config.bank.enabled && !config.kuvert.enabled);
+        assert!(config.kuvert.fernet_key.is_none());
+
+        let written = serde_norway::to_value(&config).expect("serializes");
+        assert!(
+            written.get("bank").is_none(),
+            "no bank key upstream would refuse"
+        );
+        assert!(written.get("kuvert").is_none());
+
+        let files = generate_hub_files(&config, &IssuedIdentity::default());
+        assert!(!files
+            .keys()
+            .any(|name| name.contains("bank") || name.contains("kuvert")));
+        assert!(!files.keys().any(|name| name.starts_with("secrets/")));
+    }
+
+    #[test]
+    fn a_kuvert_switched_off_keeps_its_key() {
+        let mut config = with_both();
+        let key = config.kuvert.fernet_key.clone().expect("an enabled Kuvert has a key");
+        config.kuvert.enabled = false;
+
+        let written = serde_norway::to_string(&config).expect("serializes");
+        let read: HubConfig = serde_norway::from_str(&written).expect("reads back");
+        assert!(!read.kuvert.enabled);
+        assert_eq!(
+            read.kuvert.fernet_key.as_deref(),
+            Some(key.as_str()),
+            "switching Kuvert back on must not lose its mailboxes"
+        );
+    }
+
+    #[test]
+    fn a_new_hub_that_did_not_ask_writes_neither() {
+        let config = build_hub_config(&HubConfigOptions {
+            coord_server: "go.arkitekt.live".into(),
+            ..Default::default()
+        });
+        let written = serde_norway::to_value(&config).expect("serializes");
+        assert!(written.get("bank").is_none());
+        assert!(written.get("kuvert").is_none());
+    }
+
+    #[test]
+    fn enabling_them_emits_their_containers_and_kuverts_key_mount() {
+        let config = with_both();
+        let files = generate_hub_files(&config, &IssuedIdentity::default());
+        let compose = yaml(&files, "docker-compose.yaml");
+
+        let bank = &compose["services"]["bank"];
+        assert_eq!(bank["image"].as_str(), Some("jhnnsrs/bank:latest"));
+        assert_eq!(
+            bank["volumes"].as_sequence().unwrap().len(),
+            1,
+            "bank holds no key file"
+        );
+
+        let kuvert = &compose["services"]["kuvert"];
+        assert_eq!(kuvert["image"].as_str(), Some("jhnnsrs/kuvert:latest"));
+        let volumes: Vec<&str> = kuvert["volumes"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(volumes.contains(&"./configs/kuvert.yaml:/workspace/config.yaml"));
+        assert!(volumes.contains(&"./secrets/kuvert.fernet:/secrets/kuvert.fernet:ro"));
+
+        // Each gets its own database.
+        let databases = compose["services"]["db"]["environment"].clone();
+        let databases = serde_norway::to_string(&databases).unwrap();
+        assert!(databases.contains("bank") && databases.contains("kuvert"));
+    }
+
+    #[test]
+    fn their_configs_carry_the_datalayer_the_hook_and_the_instance() {
+        let config = with_both();
+        let files = generate_hub_files(&config, &IssuedIdentity::default());
+
+        for (id, bucket) in [
+            (ServiceId::Bank, "bankbigfile"),
+            (ServiceId::Kuvert, "kuvertbigfile"),
+        ] {
+            let name = format!("configs/{}.yaml", id.as_str());
+            let service = yaml(&files, &name);
+            assert_eq!(
+                service["datalayer"]["bigfile"]["bucket"].as_str(),
+                Some(bucket),
+                "{name}"
+            );
+            assert!(
+                service["datalayer"].get("media").is_none(),
+                "{name}: only the bucket it declares"
+            );
+            assert_eq!(
+                service["rekuest_hook"]["rekuest_url"].as_str(),
+                Some("http://rekuest:80/rekuest")
+            );
+            assert!(service["instance"]["private_key"].as_str().is_some());
+            assert_eq!(service["postgres"]["db_name"].as_str(), Some(id.as_str()));
+            assert_eq!(
+                service["django"]["force_script_name"].as_str(),
+                Some(id.as_str())
+            );
+        }
+
+        let kuvert = yaml(&files, "configs/kuvert.yaml");
+        assert_eq!(
+            kuvert["secrets"]["key_path"].as_str(),
+            Some("/secrets/kuvert.fernet")
+        );
+        assert!(yaml(&files, "configs/bank.yaml").get("secrets").is_none());
+
+        let key = config.kuvert.fernet_key.as_deref().expect("minted");
+        assert_eq!(files["secrets/kuvert.fernet"], format!("{key}\n"));
+        // What `Fernet.generate_key()` writes: 32 bytes, URL-safe base64, padded.
+        {
+            use base64::Engine;
+            assert_eq!(key.len(), 44);
+            let raw = base64::engine::general_purpose::URL_SAFE
+                .decode(key)
+                .expect("url-safe base64");
+            assert_eq!(raw.len(), 32);
+        }
+
+        // Rekuest runs their periodic work.
+        let rekuest = yaml(&files, "configs/rekuest.yaml");
+        let agents: Vec<&str> = rekuest["rekuest"]["service_agents"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|a| a["service"].as_str().unwrap())
+            .collect();
+        assert!(
+            agents.contains(&"bank") && agents.contains(&"kuvert"),
+            "{agents:?}"
+        );
+    }
+
+    #[test]
+    fn the_gateway_the_buckets_and_the_manifest_know_them() {
+        let config = with_both();
+        let files = generate_hub_files(&config, &IssuedIdentity::default());
+
+        let caddy = &files["configs/Caddyfile"];
+        for id in ["bank", "kuvert"] {
+            assert!(caddy.contains(&format!("/{id}*")), "no route for {id}");
+            assert!(caddy.contains(&format!("{id}:80")), "no upstream for {id}");
+        }
+
+        let init = yaml(&files, "configs/rustfs_init.yaml");
+        let buckets: Vec<&str> = init["buckets"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|b| b["name"].as_str().unwrap())
+            .collect();
+        assert!(buckets.contains(&"bankbigfile") && buckets.contains(&"kuvertbigfile"));
+
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                identifier: "lab-hub".into(),
+                ..Default::default()
+            },
+        );
+        for (id, scope) in [("bank", "bank_read"), ("kuvert", "kuvert_write")] {
+            let instance = request
+                .hub
+                .instances
+                .iter()
+                .find(|i| i.manifest.identifier == format!("live.arkitekt.{id}"))
+                .unwrap_or_else(|| panic!("{id} is in the manifest"));
+            assert!(instance.manifest.scopes.iter().any(|s| s.key == scope));
+            assert!(instance.manifest.roles.is_empty());
+            assert!(instance.manifest.challenge_key.is_some());
+        }
+    }
+
+    /// A new key would make every linked mailbox unreadable, so it is minted once and every
+    /// regenerate writes the same one.
+    #[test]
+    fn kuverts_key_survives_the_profile_and_every_regenerate() {
+        let config = with_both();
+        let key = config.kuvert.fernet_key.clone().expect("minted on create");
+
+        let dir = scratch("kuvert-key");
+        write_profile(&dir, &hub_profile(config)).expect("writing the profile");
+        let mut read_back = read_profile(&dir).expect("reading it back").config;
+        assert_eq!(read_back.kuvert.fernet_key.as_deref(), Some(key.as_str()));
+        assert!(!read_back.ensure_service_secrets(), "kept, not re-minted");
+
+        // The regenerate every image change goes through.
+        rewrite_images(&dir, &[]).expect("regenerates");
+        rewrite_images(&dir, &[]).expect("and again");
+        let on_disk = std::fs::read_to_string(dir.join("secrets/kuvert.fernet")).unwrap();
+        assert_eq!(on_disk, format!("{key}\n"));
+        assert_eq!(
+            read_profile(&dir).unwrap().config.kuvert.fernet_key,
+            Some(key)
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("secrets/kuvert.fernet"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "readable by its owner alone");
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Only an enabled Kuvert gets a key — a hub without it must not grow a block.
+    #[test]
+    fn a_hub_without_kuvert_mints_no_key() {
+        let mut config = config_of("hub_config.yaml");
+        assert!(!config.ensure_service_secrets());
+        assert!(config.kuvert.fernet_key.is_none());
+    }
+}

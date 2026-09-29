@@ -68,7 +68,9 @@ fn roles_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
             ("modeler", "Can manage ML models"),
             ("viewer", "Read-only access"),
         ],
-        ServiceId::Lovekit => &[],
+        // Neither declares roles of its own; their upload grants use the datalayer's
+        // default roles.
+        ServiceId::Lovekit | ServiceId::Bank | ServiceId::Kuvert => &[],
     }
 }
 
@@ -123,6 +125,17 @@ fn scopes_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
             ("write", "Generic write access"),
         ],
         ServiceId::Lovekit => &[],
+        ServiceId::Bank => &[
+            ("bank_read", "Read bank accounts, transactions and budgets"),
+            (
+                "bank_write",
+                "Link accounts, import statements and edit budgets",
+            ),
+        ],
+        ServiceId::Kuvert => &[
+            ("kuvert_read", "Read synced mail"),
+            ("kuvert_write", "Link mailboxes, organise and send mail"),
+        ],
     }
 }
 
@@ -168,6 +181,16 @@ fn describe(id: ServiceId) -> (&'static str, &'static str, &'static str) {
             "Lovekit",
             "LiveKit integration for real-time communication",
             "https://github.com/arkitektio/lovekit-server",
+        ),
+        ServiceId::Bank => (
+            "Bank",
+            "Bank accounts, transactions and budgets",
+            "https://github.com/jhnnsrs/bank",
+        ),
+        ServiceId::Kuvert => (
+            "Kuvert",
+            "Your mailboxes, synced and searchable",
+            "https://github.com/jhnnsrs/kuvert",
         ),
     }
 }

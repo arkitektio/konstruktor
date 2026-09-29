@@ -63,9 +63,12 @@ fn produces_the_same_shape_for_every_block() {
         "minio".into(),
         "local_redis".into(),
     ];
+    // Bank and Kuvert are not upstream: the Python CLI has no block for them to compare
+    // against, and a hub without them writes none (see `experimental_services`).
     blocks.extend(
         konstruktor_core::catalog::SERVICE_IDS
             .iter()
+            .filter(|id| !matches!(id, ServiceId::Bank | ServiceId::Kuvert))
             .map(|id| id.as_str().to_string()),
     );
 

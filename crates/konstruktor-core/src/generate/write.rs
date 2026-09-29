@@ -12,7 +12,14 @@ pub fn write_generated_files(dir: &Path, files: &GeneratedFiles) -> std::io::Res
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(target, contents)?;
+        std::fs::write(&target, contents)?;
+        // Key files are readable by their owner alone, where the platform can say so. The
+        // containers run as root, so the read-only mount still reads them.
+        #[cfg(unix)]
+        if relative.starts_with("secrets/") {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
     Ok(())
 }

@@ -15,6 +15,8 @@ export const SERVICE_IDS = [
   "elektro",
   "alpaka",
   "lovekit",
+  "bank",
+  "kuvert",
 ] as const;
 
 export type ServiceId = (typeof SERVICE_IDS)[number];
@@ -29,6 +31,8 @@ export type ServiceMeta = {
   default: boolean;
   /** Lovekit has no published image, so ticking it would change nothing. */
   emitted: boolean;
+  /** Offered, but listed apart under a collapsed "Experimental" section. */
+  experimental: boolean;
 };
 
 /**

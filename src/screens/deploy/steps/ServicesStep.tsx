@@ -4,6 +4,11 @@ import { useController, useFormContext, useWatch } from "react-hook-form";
 import { useCommunication } from "../../../communication/communication-context";
 import { Button } from "../../../components/ui/button";
 import { Card } from "../../../components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "../../../components/ui/collapsible";
 import { Input } from "../../../components/ui/input";
 import { ErrorDisplay } from "../../../components/Error";
 import { cn } from "../../../utils";
@@ -56,6 +61,8 @@ export const ServicesStep = () => {
   const [active, setActive] = useState<ServiceId | null>(null);
   /** Whether the gear's fields are showing, which the gear in the list also opens. */
   const [gearOpen, setGearOpen] = useState(false);
+  /** The experimental services sit under a disclosure that starts closed. */
+  const [experimentalOpen, setExperimentalOpen] = useState(false);
 
   // The catalog — names, descriptions, which are pre-ticked — is published by the core,
   // so the wizard's list and the CLI's `--services` help cannot drift apart.
@@ -137,6 +144,35 @@ export const ServicesStep = () => {
 
   const shown = services.find((service) => service.id === active);
 
+  // Experimental services are listed apart, under a disclosure: offered to whoever looks,
+  // never in the way of whoever does not. `toggle` still orders the field by the full
+  // catalog, so where a service is listed does not change where it lands.
+  const stable = services.filter((service) => !service.experimental);
+  const experimental = services.filter((service) => service.experimental);
+
+  const setExperimental = (open: boolean) => {
+    setExperimentalOpen(open);
+    // A panel about a row that just disappeared would be describing nothing on screen.
+    if (!open && experimental.some((service) => service.id === active)) {
+      setActive(stable[0]?.id ?? null);
+    }
+  };
+
+  const row = (service: ServiceMeta) => (
+    <ServiceRow
+      key={service.id}
+      service={service}
+      on={isOn(service)}
+      active={service.id === active}
+      fromSource={overrides[service.id]?.fromSource ?? false}
+      onClick={() => toggle(service)}
+      onGear={() => {
+        setActive(service.id);
+        setGearOpen(true);
+      }}
+    />
+  );
+
   return (
     <StepFrame
       icon={Boxes}
@@ -147,20 +183,33 @@ export const ServicesStep = () => {
     >
       <div className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] gap-4 items-start">
         <div className="flex flex-col gap-1.5">
-          {services.map((service) => (
-            <ServiceRow
-              key={service.id}
-              service={service}
-              on={isOn(service)}
-              active={service.id === active}
-              fromSource={overrides[service.id]?.fromSource ?? false}
-              onClick={() => toggle(service)}
-              onGear={() => {
-                setActive(service.id);
-                setGearOpen(true);
-              }}
-            />
-          ))}
+          {stable.map(row)}
+
+          {experimental.length > 0 && (
+            <Collapsible
+              open={experimentalOpen}
+              onOpenChange={setExperimental}
+              className="mt-2"
+            >
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ChevronDown
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      experimentalOpen && "rotate-180"
+                    )}
+                  />
+                  Experimental ({experimental.length})
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-1.5 flex flex-col gap-1.5">
+                {experimental.map(row)}
+              </CollapsibleContent>
+            </Collapsible>
+          )}
         </div>
 
         <div className="@3xl:sticky @3xl:top-4">
@@ -242,6 +291,7 @@ const ServiceRow = ({
           soon
         </span>
       )}
+      {service.experimental && <ExperimentalBadge />}
       {service.emitted && (
         <button
           type="button"
@@ -258,7 +308,19 @@ const ServiceRow = ({
         </button>
       )}
     </div>
+    {/* Listed apart and unfamiliar, so the one-liner comes along with the name. */}
+    {service.experimental && (
+      <div className="text-xs text-muted-foreground font-normal mt-0.5">
+        {service.description}
+      </div>
+    )}
   </Card>
+);
+
+const ExperimentalBadge = () => (
+  <span className="text-[10px] uppercase tracking-wide text-muted-foreground border border-border rounded px-1 py-px">
+    experimental
+  </span>
 );
 
 /** The right-hand column: what this one is for, and the single control that adds it. */
@@ -290,7 +352,10 @@ const Panel = ({
   <Card className="gap-0 py-5 px-5 border border-border">
     <div className="flex items-start gap-3">
       <div className="min-w-0 flex-1">
-        <div className="text-lg font-semibold">{service.name}</div>
+        <div className="flex items-center gap-2">
+          <span className="text-lg font-semibold">{service.name}</span>
+          {service.experimental && <ExperimentalBadge />}
+        </div>
         <div className="text-sm text-muted-foreground">{service.description}</div>
       </div>
       {service.emitted && (

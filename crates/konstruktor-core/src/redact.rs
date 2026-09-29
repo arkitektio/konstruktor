@@ -37,9 +37,9 @@ pub struct Redaction {
 }
 
 /// Key names that make a value a credential whatever it looks like.
-const SECRET_KEYS: [&str; 9] = [
+const SECRET_KEYS: [&str; 10] = [
     "password", "secret", "token", "auth_key", "access_key", "private", "credential",
-    "passphrase", "salt",
+    "passphrase", "salt", "fernet",
 ];
 
 /// A value under a secret-sounding key is a credential at almost any length: a hub whose
@@ -378,6 +378,16 @@ mod tests {
         let found = secrets_in(&doc("db:\n  password: omero\n  secret_key: none\n"));
         let values: Vec<&str> = found.iter().map(|s| s.value.as_str()).collect();
         assert_eq!(values, vec!["omero"]);
+    }
+
+    /// Kuvert's Fernet key is URL-safe base64 — `-`, `_` and `=` — so it does not look
+    /// generated; it is caught by its name instead.
+    #[test]
+    fn takes_kuverts_fernet_key() {
+        let key = "q2L-3n_vX0bYt8Qe7rJmW4sZk1uHc9pA6dFgTiNoV5E=";
+        let found = secrets_in(&doc(&format!("kuvert:\n  fernet_key: {key}\n")));
+        let values: Vec<&str> = found.iter().map(|s| s.value.as_str()).collect();
+        assert_eq!(values, vec![key]);
     }
 
     /// The collateral a short password would otherwise cause: `admin` as a password must
