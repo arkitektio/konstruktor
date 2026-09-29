@@ -1,0 +1,78 @@
+name: "CI"
+
+# What every change has to pass before it reaches main, and again once it is there. The
+# release workflow still runs its own `cargo test` gate; this is the earlier, wider net:
+# formatting of the touched lines, clippy, the Rust tests and the frontend build and tests.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The base of the change has to be there to diff against.
+          fetch-depth: 0
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      # Only the lines this change touched: the tree carries formatting debt from before
+      # rustfmt was enforced, and reformatting it wholesale is a change of its own.
+      - name: rustfmt (changed lines)
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$(git merge-base "$PR_BASE" HEAD)"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
+          else
+            # A new branch, or a force push that dropped the old head: the last commit alone.
+            base="HEAD~1"
+          fi
+          echo "Checking the lines changed since $base"
+          python3 scripts/fmt-changed.py "$base"
+
+      # Not `-D warnings` yet: the crates carry clippy warnings from before it was run
+      # here. They are reported on every run until they are paid down.
+      - name: clippy
+        run: cargo clippy -p konstruktor-core -p konstruktor-cli --all-targets
+
+      - name: test
+        run: cargo test -p konstruktor-core -p konstruktor-cli
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: install app dependencies
+        run: pnpm install --frozen-lockfile
+      - name: build
+        run: pnpm build
+      - name: test
+        run: pnpm test
