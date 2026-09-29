@@ -14,19 +14,23 @@ fn docker(args: &[&str]) -> std::process::Output {
         .expect("docker runs")
 }
 
-/// Whether a Docker engine answers. False, not a panic, when there is no `docker` binary
-/// to spawn at all — the macOS and Windows CI runners have none.
-fn docker_available() -> bool {
+/// Whether a Docker engine running Linux containers answers — what hubs run on. False, not
+/// a panic, when there is no `docker` binary to spawn at all (the macOS CI runners) or the
+/// engine runs Windows containers (the Windows runners), where the default bridge network
+/// this test creates does not exist.
+fn linux_docker_available() -> bool {
     konstruktor_core::docker::command()
-        .arg("version")
+        .args(["info", "--format", "{{.OSType}}"])
         .output()
-        .is_ok_and(|output| output.status.success())
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "linux"
+        })
 }
 
 #[tokio::test]
 async fn an_attached_engine_waits_for_its_hubs_network() {
-    if !docker_available() {
-        eprintln!("skipping: no docker on this machine");
+    if !linux_docker_available() {
+        eprintln!("skipping: no Docker engine running Linux containers on this machine");
         return;
     }
     let network = format!("konstruktor-test-hub-net-{}", std::process::id());
