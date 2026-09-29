@@ -61,6 +61,16 @@ fn jwks_at_base(url: &str) -> String {
 
 const JWKS_PATH: &str = ".well-known/jwks.json";
 
+/// The services that vendor `rekuest-service`: Rekuest runs their periodic actions and
+/// receives their signals, each call signed with the sender's instance key.
+const HOOKED_SERVICES: [ServiceId; 5] = [
+    ServiceId::Mikro,
+    ServiceId::Elektro,
+    ServiceId::Kabinet,
+    ServiceId::Fluss,
+    ServiceId::Alpaka,
+];
+
 /// Inbound token verification.
 ///
 /// A hub never runs Lok, so the issuer is always the remote coordination server;
@@ -101,12 +111,24 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
     let provenance = if rekuest.enabled {
         Some(jwks_issuer(
             rekuest.provenance_issuer.as_deref().unwrap_or_default(),
-            // Rekuest's own key set, inside the network, behind its script name — that
-            // prefix is the service's own URL space, not Lok's.
-            &format!(
-                "http://{}:{}/{}/{JWKS_PATH}",
-                rekuest.host, rekuest.internal_port, rekuest.host
-            ),
+            // Rekuest signs provenance with its instance key. The coordination server's
+            // trust bundle, narrowed to Rekuest, is the vouched-for source; without one,
+            // Rekuest's own key set inside the network, behind its script name.
+            &issued
+                .hub_keys_url
+                .as_deref()
+                .map(|url| {
+                    format!(
+                        "{url}?service=live.arkitekt.{}",
+                        ServiceId::Rekuest.as_str()
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        "http://{}:{}/{}/{JWKS_PATH}",
+                        rekuest.host, rekuest.internal_port, rekuest.host
+                    )
+                }),
         ))
     } else if !matches!(remote, "local" | "none" | "") {
         Some(jwks_issuer(
@@ -228,29 +250,64 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
         pairs.push(("datalayer", build_datalayer(config, id, service)));
     }
 
-    if let Some(pair) = &service.provenance_key_pair {
+    // This instance's key — its only secret towards the hub's other services — and where the
+    // keys live it trusts (the coordination server's bundle of this hub's instance keys).
+    if let Some(pair) = &service.instance_key_pair {
+        let mut instance = vec![("private_key", s(&pair.private_key))];
+        if let Some(url) = issued.hub_keys_url.as_deref() {
+            instance.push(("trust", map(vec![("jwks_uri", s(url))])));
+        }
+        pairs.push(("instance", map(instance)));
+    }
+
+    // Rekuest signs provenance with its instance key; only the issuer name is configured.
+    if id == ServiceId::Rekuest && service.instance_key_pair.is_some() {
         pairs.push((
             "provenance",
-            map(vec![
-                (
-                    "issuer",
-                    service
-                        .provenance_issuer
-                        .as_deref()
-                        .map(s)
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "kid",
-                    service
-                        .provenance_kid
-                        .as_deref()
-                        .map(s)
-                        .unwrap_or(Value::Null),
-                ),
-                ("private_key", s(&pair.private_key)),
-                ("public_key", s(&pair.public_key)),
-            ]),
+            map(vec![(
+                "issuer",
+                service
+                    .provenance_issuer
+                    .as_deref()
+                    .map(s)
+                    .unwrap_or(Value::Null),
+            )]),
+        ));
+        let agents: Vec<Value> = HOOKED_SERVICES
+            .iter()
+            .filter(|other| {
+                let block = config.service(**other);
+                block.enabled && block.image.is_some()
+            })
+            .map(|other| {
+                let block = config.service(*other);
+                map(vec![
+                    ("service", s(other.as_str())),
+                    (
+                        "hook_url",
+                        s(&format!(
+                            "http://{}:{}/{}/_rekuest/hook",
+                            block.host, block.internal_port, block.host
+                        )),
+                    ),
+                ])
+            })
+            .collect();
+        pairs.push(("rekuest", map(vec![("service_agents", list(agents))])));
+    }
+
+    // The services whose periodic work and signals go through the hub's Rekuest.
+    if HOOKED_SERVICES.contains(&id) && config.rekuest.enabled {
+        let rekuest = &config.rekuest;
+        pairs.push((
+            "rekuest_hook",
+            map(vec![(
+                "rekuest_url",
+                s(&format!(
+                    "http://{}:{}/{}",
+                    rekuest.host, rekuest.internal_port, rekuest.host
+                )),
+            )]),
         ));
     }
 

@@ -87,7 +87,12 @@ fn produces_the_same_shape_for_every_block() {
                 ours.remove(key);
             }
         }
-        assert_eq!(ours, keys(&theirs[&block]), "block `{block}` has a different shape");
+        // Where we part from the Python CLI on purpose: every service holds an instance key,
+        // and Rekuest's former provenance pair is that key (see `tests/instance_keys.rs`).
+        ours.remove("instance_key_pair");
+        let mut theirs = keys(&theirs[&block]);
+        theirs.remove("provenance_key_pair");
+        assert_eq!(ours, theirs, "block `{block}` has a different shape");
     }
 }
 

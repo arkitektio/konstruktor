@@ -864,6 +864,9 @@ pub async fn reauthorize(
     let profile = crate::profile::read_profile(&answers.dir)
         .map_err(|e| CreateError::Folder(e.to_string()))?;
     let mut config = profile.config;
+    // A profile from before instance keys gets them now; the profile is rewritten below, so
+    // they are minted once and sent to the coordination server with this very request.
+    config.ensure_instance_keys();
     validate_identifier(&answers.identifier)?;
 
     let store = registry::load();

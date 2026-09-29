@@ -264,6 +264,20 @@ pub fn build_ed25519_key_pair(seed: &[u8; 32]) -> KeyPair {
     }
 }
 
+/// The raw 32-byte Ed25519 public key of `pair`, base64 — what a hub manifest sends as an
+/// instance's `challenge_key`, and what the coordination server then vouches for. `None` for a
+/// pair that is not an Ed25519 SPKI PEM (which a pair from this module always is).
+pub fn raw_public_key_b64(pair: &KeyPair) -> Option<String> {
+    let body: String = pair
+        .public_key
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect();
+    let der = BASE64.decode(body.trim()).ok()?;
+    let raw = der.strip_prefix(SPKI_PREFIX.as_slice())?;
+    (raw.len() == 32).then(|| BASE64.encode(raw))
+}
+
 /// A fresh pair, for a hub that is being created rather than reproduced in a test.
 pub fn generate_ed25519_key_pair() -> KeyPair {
     let mut seed = [0u8; 32];

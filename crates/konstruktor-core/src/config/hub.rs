@@ -97,8 +97,16 @@ pub struct ServiceBlock {
     pub provenance_issuer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance_kid: Option<String>,
+    /// Read from profiles written before instance keys; migrated into Rekuest's
+    /// [`Self::instance_key_pair`] by [`HubConfig::ensure_instance_keys`], never written again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance_key_pair: Option<KeyPair>,
+    /// This instance's Ed25519 key: the only secret it holds for talking to the hub's other
+    /// services. The private half goes into its config; the public half into the hub
+    /// manifest (`challenge_key`), and the coordination server vouches for it from there.
+    /// Rekuest's also signs its provenance tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_key_pair: Option<KeyPair>,
 }
 
 impl ServiceBlock {
@@ -339,6 +347,30 @@ impl HubConfig {
         }
     }
 
+    /// Give every service an instance key it does not have yet; true when any was added.
+    ///
+    /// Idempotent: a key, once minted, is kept — rotating it is re-authorizing with a new one
+    /// on purpose, not a side effect of loading a profile. Rekuest's pre-instance-key
+    /// provenance pair becomes its instance key, so its provenance tokens keep verifying.
+    pub fn ensure_instance_keys(&mut self) -> bool {
+        let mut changed = false;
+        for id in crate::catalog::SERVICE_IDS {
+            let block = self.service_mut(id);
+            if block.instance_key_pair.is_none() {
+                block.instance_key_pair = Some(
+                    block
+                        .provenance_key_pair
+                        .take()
+                        .unwrap_or_else(crate::secrets::generate_ed25519_key_pair),
+                );
+                changed = true;
+            } else if block.provenance_key_pair.take().is_some() {
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// The mutable half of [`Self::service`], used by [`Self::set_service_image`].
     fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
         match id {
@@ -555,6 +587,7 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         provenance_issuer: None,
         provenance_kid: None,
         provenance_key_pair: None,
+        instance_key_pair: None,
     };
 
     match id {
@@ -848,7 +881,8 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
 
     let mut rekuest = take(&mut blocks, ServiceId::Rekuest);
     rekuest.enabled = options.rekuest_server.trim() == "local";
-    rekuest.provenance_key_pair = Some(
+    // Rekuest's instance key is also its provenance key; a caller may pin it (tests).
+    rekuest.instance_key_pair = Some(
         options
             .provenance_key_pair
             .clone()
@@ -957,5 +991,6 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     // Every service keeps the host it was seeded with; `service_mut` exists for the
     // orchestration that folds a mesh key in after the fact.
     let _ = config.service_mut(ServiceId::Rekuest);
+    config.ensure_instance_keys();
     config
 }

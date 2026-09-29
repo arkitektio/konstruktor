@@ -357,3 +357,22 @@ async fn a_cancelled_wait_returns_immediately() {
         "got {error:?}"
     );
 }
+
+#[test]
+fn the_hub_keys_url_is_read_from_self() {
+    let envelope: konstruktor_core::connect::authorize::HubEnvelope =
+        serde_json::from_value(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "client_id": "9c1d",
+            "self": {
+                "jwks_url": "https://coord.example.org/.well-known/jwks.json",
+                "hub_keys_url": "https://coord.example.org/lok/.well-known/hub-keys/7"
+            }
+        }))
+        .expect("parses");
+    assert_eq!(
+        envelope.hub_keys_url(),
+        Some("https://coord.example.org/lok/.well-known/hub-keys/7")
+    );
+}

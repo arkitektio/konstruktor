@@ -27,6 +27,8 @@ pub struct IssuedIdentity {
     pub issuer: Option<String>,
     /// Where that issuer's verification keys live, from the grant envelope.
     pub jwks_url: Option<String>,
+    /// The hub's trust bundle (its service instances' public keys), from the grant envelope.
+    pub hub_keys_url: Option<String>,
 }
 
 /// Python's `yaml.dump(..., default_flow_style=False)`: block style, sorted keys.

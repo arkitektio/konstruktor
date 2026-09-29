@@ -64,6 +64,10 @@ pub struct HubSelf {
     /// Where the hub's services fetch the keys that verify inbound tokens. Absolute.
     #[serde(default)]
     pub jwks_url: Option<String>,
+    /// The hub's trust bundle: its service instances' public keys (sent as each manifest's
+    /// `challenge_key`), which the services verify each other's signed requests against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_keys_url: Option<String>,
     /// The user who accepted the grant — the token's `sub`.
     #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
     pub sub: Option<String>,
@@ -146,6 +150,14 @@ impl HubEnvelope {
             .as_ref()
             .and_then(|s| s.jwks_url.as_deref())
             .or(self.auth.as_ref().and_then(|a| a.jwks_url.as_deref()))
+            .filter(|url| !url.is_empty())
+    }
+
+    /// The hub's trust bundle (its instances' public keys), if the server publishes one.
+    pub fn hub_keys_url(&self) -> Option<&str> {
+        self.self_
+            .as_ref()
+            .and_then(|s| s.hub_keys_url.as_deref())
             .filter(|url| !url.is_empty())
     }
 

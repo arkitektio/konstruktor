@@ -74,6 +74,19 @@ fn golden_of(name: &str) -> GeneratedFiles {
     out
 }
 
+/// The keys where we deliberately part from the Python generator: instance keys and what
+/// hangs off them (the trust block, Rekuest's provenance, its service agents and the
+/// services' `rekuest_hook`). They are tested on their own in `tests/instance_keys.rs`;
+/// everything else must still match the CLI's output.
+fn without_instance_trust(mut value: Value) -> Value {
+    if let Value::Mapping(map) = &mut value {
+        for key in ["instance", "rekuest_hook", "provenance", "rekuest"] {
+            map.remove(key);
+        }
+    }
+    value
+}
+
 struct Case {
     generated: GeneratedFiles,
     expected: GeneratedFiles,
@@ -95,9 +108,12 @@ fn check(case: &Case) {
         let generated = &case.generated[name];
 
         if name.ends_with(".yaml") {
-            let ours: Value = serde_norway::from_str(generated)
-                .unwrap_or_else(|e| panic!("our {name} is not valid YAML: {e}"));
-            let theirs: Value = serde_norway::from_str(expected).expect("golden parses");
+            let ours: Value = without_instance_trust(
+                serde_norway::from_str(generated)
+                    .unwrap_or_else(|e| panic!("our {name} is not valid YAML: {e}")),
+            );
+            let theirs: Value =
+                without_instance_trust(serde_norway::from_str(expected).expect("golden parses"));
             assert_eq!(ours, theirs, "{name} differs from the CLI's output");
         } else {
             assert_eq!(generated, expected, "{name} is not byte-identical");
@@ -130,6 +146,7 @@ mod authorized {
         IssuedIdentity {
             issuer: Some(ISSUER.into()),
             jwks_url: Some(GRANTED_JWKS.into()),
+            hub_keys_url: None,
         }
     }
 
@@ -623,7 +640,9 @@ mod beyond_upstream {
             "no ollama service without being asked"
         );
         assert!(compose["volumes"].get("ollama_models").is_none());
-        assert!(yaml(&files, "configs/alpaka.yaml").get("ollama_url").is_none());
+        assert!(yaml(&files, "configs/alpaka.yaml")
+            .get("ollama_url")
+            .is_none());
         assert!(
             yaml(&files, "configs/kabinet.yaml")
                 .get("ensured_repos")

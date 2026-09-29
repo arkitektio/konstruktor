@@ -255,6 +255,10 @@ pub struct ServiceManifest {
     pub node_id: Option<String>,
     pub instance_id: String,
     pub public_sources: Vec<PublicSource>,
+    /// The instance's raw Ed25519 public key, base64. The coordination server stores it and
+    /// publishes it in the hub's trust bundle; the private half never leaves the instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -455,6 +459,10 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                         kind: "github".to_string(),
                         url: repo.to_string(),
                     }],
+                    challenge_key: block
+                        .instance_key_pair
+                        .as_ref()
+                        .and_then(crate::secrets::raw_public_key_b64),
                 },
                 aliases,
             }
@@ -492,6 +500,8 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                 node_id: options.node_id.clone(),
                 instance_id: "default".to_string(),
                 public_sources: Vec::new(),
+                // The store is not a service of the trust bundle: it signs nothing.
+                challenge_key: None,
             },
             aliases,
         });
