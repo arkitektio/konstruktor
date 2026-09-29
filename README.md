@@ -44,6 +44,22 @@ published `SHA256SUMS`, installs it to `~/.local/bin`, and — when there is a t
 attached — asks for a hub identifier and creates that hub in `~/MyHubs/<identifier>`.
 Pass `--hub-dir <path>` to put it somewhere else, or `--no-run` to just install it.
 
+On Windows, in PowerShell:
+
+```
+irm https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.ps1 | iex
+```
+
+The same steps: it verifies the binary against `SHA256SUMS`, installs it to
+`%LOCALAPPDATA%\Programs\konstruktor`, adds that to your user `PATH`, and asks for a hub
+to create in `~\MyHubs\<identifier>`. Piped, it reads its options from the environment
+(`KONSTRUKTOR_NO_RUN=1`, `KONSTRUKTOR_HUB_DIR`, `KONSTRUKTOR_VERSION`,
+`KONSTRUKTOR_INSTALL_DIR`); run as a script it takes `-NoRun`, `-HubDir`, `-Version` and
+`-Dir`.
+
+Both installers take the newest *published* release. A release stays a draft until every
+binary and `SHA256SUMS` are attached, so a release whose build failed is never installed.
+
 `~/MyHubs` is only a default. A hub folder holds the database and the object store, so it
 can live wherever you want it — `hub create` takes a directory, the way `git init` does,
 and defaults to the one you are standing in. Wherever hubs land, konstruktor keeps its own

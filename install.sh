@@ -54,8 +54,8 @@ detect_target() {
         # Static musl builds, so they run whatever the distro's glibc version is.
         Linux)  os_part="unknown-linux-musl" ;;
         Darwin) os_part="apple-darwin" ;;
-        *) die "unsupported operating system: $os. Windows users: download the binary from
-    https://github.com/$REPO/releases" ;;
+        *) die "unsupported operating system: $os. On Windows, in PowerShell:
+    irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" ;;
     esac
 
     case "$arch" in

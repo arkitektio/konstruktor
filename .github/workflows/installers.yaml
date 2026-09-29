@@ -1,0 +1,51 @@
+# The one-liners people paste: install.sh on Linux and macOS, install.ps1 on Windows.
+# Each installs the newest published release (without starting the wizard) and runs it, so
+# a broken installer — or a release whose assets or SHA256SUMS never arrived — shows up
+# here rather than in someone's terminal.
+name: Installers
+
+on:
+  push:
+    branches: [main]
+    paths: [install.sh, install.ps1, .github/workflows/installers.yaml]
+  pull_request:
+    paths: [install.sh, install.ps1, .github/workflows/installers.yaml]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  install-sh:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install with install.sh
+        run: sh install.sh --no-run --dir "$RUNNER_TEMP/bin"
+      - name: it runs
+        run: '"$RUNNER_TEMP/bin/konstruktor" --version'
+
+  install-ps1:
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [pwsh, powershell] # PowerShell 7 and Windows PowerShell 5.1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the way the README says (piped into iex)
+        shell: ${{ matrix.shell }}
+        env:
+          KONSTRUKTOR_NO_RUN: "1"
+          KONSTRUKTOR_INSTALL_DIR: ${{ runner.temp }}\kbin
+        run: Get-Content -Raw install.ps1 | Invoke-Expression
+      - name: it runs, and is on the user PATH
+        shell: ${{ matrix.shell }}
+        run: |
+          & "$env:RUNNER_TEMP\kbin\konstruktor.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not (($userPath -split ';') -contains "$env:RUNNER_TEMP\kbin")) { throw "not on the user PATH: $userPath" }
