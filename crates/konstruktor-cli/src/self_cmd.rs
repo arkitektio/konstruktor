@@ -355,11 +355,13 @@ mod tests {
         }
     }
 
+    /// With `/` whatever the platform: the files are a Unix shell's wherever this runs,
+    /// and Windows joins a path with `\`, which is not what these tests are about.
     fn names(machine: &Machine) -> Vec<String> {
         machine
             .targets()
             .iter()
-            .map(|target| tilde(&target.path, &machine.home))
+            .map(|target| tilde(&target.path, &machine.home).replace('\\', "/"))
             .collect()
     }
 
