@@ -41,7 +41,10 @@ fn strings(value: &Value) -> Vec<String> {
 fn a_hub_with_lovekit_runs_a_media_server() {
     let mut config = hub(vec![ServiceId::Mikro, ServiceId::Lovekit], None);
     config.place_livekit(&["localhost".into(), "192.168.1.20".into()]);
-    let livekit = config.running_livekit().expect("minted with Lovekit").clone();
+    let livekit = config
+        .running_livekit()
+        .expect("minted with Lovekit")
+        .clone();
     let files = generate_hub_files(&config, &IssuedIdentity::default());
 
     // LiveKit's own config: the one key pair, the ports, and the address it announces.
@@ -55,7 +58,10 @@ fn a_hub_with_lovekit_runs_a_media_server() {
         media["keys"][livekit.api_key.as_str()].as_str(),
         Some(livekit.api_secret.as_str())
     );
-    assert!(livekit.api_secret.len() >= 32, "LiveKit refuses a shorter one");
+    assert!(
+        livekit.api_secret.len() >= 32,
+        "LiveKit refuses a shorter one"
+    );
 
     // Lovekit signs its tokens with that pair, and calls the API inside the stack.
     let lovekit = yaml(&files, "configs/lovekit.yaml");
@@ -76,7 +82,10 @@ fn a_hub_with_lovekit_runs_a_media_server() {
     let compose = yaml(&files, "docker-compose.yaml");
     let service = &compose["services"]["livekit"];
     assert_eq!(service["image"].as_str(), Some(livekit.image.as_str()));
-    assert_eq!(strings(&service["command"]), ["--config", "/etc/livekit.yaml"]);
+    assert_eq!(
+        strings(&service["command"]),
+        ["--config", "/etc/livekit.yaml"]
+    );
     assert_eq!(strings(&service["ports"]), ["2757:2757", "2758:2758/udp"]);
     assert_eq!(
         strings(&service["volumes"]),
@@ -152,7 +161,10 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
 
     let lokate = yaml(&files, "configs/lokate.yaml");
     assert_eq!(lokate["postgres"]["db_name"].as_str(), Some("lokate"));
-    assert!(lokate.get("datalayer").is_none(), "Lokate stores no objects");
+    assert!(
+        lokate.get("datalayer").is_none(),
+        "Lokate stores no objects"
+    );
 
     let compose = yaml(&files, "docker-compose.yaml");
     for host in ["dokuments", "lokate"] {
