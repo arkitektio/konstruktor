@@ -110,6 +110,12 @@ export const DeploymentMenu = ({
    * of a menu nobody has opened.
    */
   const [plan, setPlan] = useState<DeletionPlan | undefined>();
+  /**
+   * The coordination server would not remove the hub, so the delete stopped before
+   * touching anything. The dialog then offers the one thing left: deleting it here and
+   * leaving it listed there.
+   */
+  const [serverRefused, setServerRefused] = useState(false);
   /** What a rollback would put back — or why there is nothing to. */
   const [rollback, setRollback] = useState<
     { plan: RollbackPlan } | { error: string } | undefined
@@ -457,11 +463,12 @@ export const DeploymentMenu = ({
             if (!next) {
               setConfirm(null);
               setPlan(undefined);
+              setServerRefused(false);
             }
           }}
           title={`Delete ${deployment.name}?`}
           expected={deployment.name}
-          confirmTitle={`Delete this ${deployment.kind}`}
+          confirmTitle={serverRefused ? "Delete locally anyway" : `Delete this ${deployment.kind}`}
           runningTitle="Deleting…"
           description={
             <>
@@ -487,7 +494,22 @@ export const DeploymentMenu = ({
                   them.
                 </span>
               )}
-              {plan?.was_authorized && (
+              {plan?.will_deregister && !serverRefused && (
+                <span>
+                  It is removed from the coordination server
+                  {plan.coord_server ? ` at ${plan.coord_server}` : ""} first. If the
+                  server cannot be asked, nothing is deleted.
+                </span>
+              )}
+              {plan?.will_deregister && serverRefused && (
+                <span>
+                  The coordination server
+                  {plan.coord_server ? ` at ${plan.coord_server}` : ""} did not remove it.
+                  Deleting it locally anyway leaves it listed there, and afterwards only
+                  an administrator of that server can remove it.
+                </span>
+              )}
+              {plan?.was_authorized && !plan.will_deregister && (
                 <span>
                   The registration on the coordination server is not this app's to
                   withdraw, and stays until it is removed there.
@@ -502,7 +524,12 @@ export const DeploymentMenu = ({
             // Awaited, so a failure reaches the dialog rather than a screen the user has
             // already been sent away from. Only once it succeeds does the dashboard go —
             // and it goes before the registry reloads, for the reason `forget` does.
-            await api.deleteDeployment(deployment.id);
+            try {
+              await api.deleteDeployment(deployment.id, serverRefused);
+            } catch (error) {
+              if (api.serverRefusedDeletion(error)) setServerRefused(true);
+              throw error;
+            }
             navigate("/");
             void refresh();
           }}

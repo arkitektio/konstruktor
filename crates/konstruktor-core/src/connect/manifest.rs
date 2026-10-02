@@ -68,9 +68,13 @@ fn roles_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
             ("modeler", "Can manage ML models"),
             ("viewer", "Read-only access"),
         ],
-        // Neither declares roles of its own; their upload grants use the datalayer's
+        // None declares roles of its own; their upload grants use the datalayer's
         // default roles.
-        ServiceId::Lovekit | ServiceId::Bank | ServiceId::Kuvert => &[],
+        ServiceId::Lovekit
+        | ServiceId::Bank
+        | ServiceId::Kuvert
+        | ServiceId::Dokuments
+        | ServiceId::Lokate => &[],
     }
 }
 
@@ -136,6 +140,20 @@ fn scopes_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
             ("kuvert_read", "Read synced mail"),
             ("kuvert_write", "Link mailboxes, organise and send mail"),
         ],
+        ServiceId::Dokuments => &[
+            (
+                "dokuments_read",
+                "Read documents, their pages and their text",
+            ),
+            (
+                "dokuments_write",
+                "Add documents and write their pages and text",
+            ),
+        ],
+        ServiceId::Lokate => &[
+            ("lokate_read", "Read your backed-up location timeline"),
+            ("lokate_write", "Back up your location timeline"),
+        ],
     }
 }
 
@@ -179,7 +197,7 @@ fn describe(id: ServiceId) -> (&'static str, &'static str, &'static str) {
         ),
         ServiceId::Lovekit => (
             "Lovekit",
-            "LiveKit integration for real-time communication",
+            "Live video and audio streams, over LiveKit",
             "https://github.com/arkitektio/lovekit-server",
         ),
         ServiceId::Bank => (
@@ -191,6 +209,16 @@ fn describe(id: ServiceId) -> (&'static str, &'static str, &'static str) {
             "Kuvert",
             "Your mailboxes, synced and searchable",
             "https://github.com/jhnnsrs/kuvert",
+        ),
+        ServiceId::Dokuments => (
+            "Dokuments",
+            "Documents, their pages and their text",
+            "https://github.com/jhnnsrs/dokuments-server",
+        ),
+        ServiceId::Lokate => (
+            "Lokate",
+            "A backup of your phone's location timeline",
+            "https://github.com/arkitektio/lokate-server",
         ),
     }
 }
@@ -432,6 +460,28 @@ pub struct HubManifestOptions {
 /// The manifest identifier the object store is advertised under, as upstream names it.
 pub const S3_MANIFEST: &str = "live.arkitekt.s3";
 
+/// The manifest identifier Lovekit's media server is advertised under. It is LiveKit's
+/// own, not one of ours: what an app requires beside `live.arkitekt.lovekit` to connect
+/// the rooms Lovekit hands it tokens for.
+pub const LIVEKIT_MANIFEST: &str = "io.livekit.livekit";
+
+/// Where LiveKit's signalling is reached: the gateway's dedicated port for it, at the
+/// root, in plain HTTP — see [`crate::config::hub::LivekitBlock`].
+///
+/// The port is the same on every alias. On this machine's networks it is published as it
+/// is; on the tailnet and inside the stack's network nothing is mapped, and the gateway
+/// listens on that very port. No challenge: there is no health route of ours behind it,
+/// and LiveKit's own answer at the root is not one the coordination server knows to ask.
+fn livekit_alias(alias: StagingAlias, port: u16) -> StagingAlias {
+    StagingAlias {
+        port,
+        path: None,
+        ssl: false,
+        challenge: None,
+        ..alias
+    }
+}
+
 pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> HubStartRequest {
     let ssl = config.gateway.ssl;
     let port = advertised_port(config);
@@ -457,10 +507,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
 
     let mut instances: Vec<InstanceRequest> = HUB_SERVICE_ORDER
         .into_iter()
-        .filter(|id| {
-            let block = config.service(*id);
-            block.enabled && block.image.is_some()
-        })
+        .filter(|id| config.service(*id).runs())
         .map(|id| {
             let block = config.service(id);
             let (name, description, repo) = describe(id);
@@ -524,6 +571,35 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                 instance_id: "default".to_string(),
                 public_sources: Vec::new(),
                 // The store is not a service of the trust bundle: it signs nothing.
+                challenge_key: None,
+            },
+            aliases,
+        });
+    }
+
+    // Lovekit's media server, as an instance of its own: an app connects a room to it
+    // directly, with a token Lovekit hands out, so it has to know where it is. On the mesh
+    // as well as on this machine's networks — the signalling is the gateway's there too,
+    // and a client on the mesh relays its media through the node it reaches it by.
+    if let Some(livekit) = config.running_livekit() {
+        let aliases = aliases_at("")
+            .into_iter()
+            .map(|alias| livekit_alias(alias, livekit.signal_port))
+            .collect();
+        instances.push(InstanceRequest {
+            identifier: "LiveKit".to_string(),
+            description: Some("The media server Lovekit's rooms are hosted on".to_string()),
+            manifest: ServiceManifest {
+                identifier: LIVEKIT_MANIFEST.to_string(),
+                version: "1.0.0".to_string(),
+                description: Some("LiveKit media server for live audio and video".to_string()),
+                logo: None,
+                roles: Vec::new(),
+                scopes: Vec::new(),
+                node_id: options.node_id.clone(),
+                instance_id: "default".to_string(),
+                public_sources: Vec::new(),
+                // Not ours, and not in the trust bundle: it signs nothing.
                 challenge_key: None,
             },
             aliases,
@@ -675,13 +751,16 @@ mod tests {
         assert!(!confirmed[1].public);
     }
 
-    /// Lovekit has no image, so advertising it would register an instance nothing serves.
+    /// A Lovekit block as profiles from before it had an image say it — switched on, with
+    /// nothing to run. Advertising it would register an instance nothing serves.
     #[test]
     fn advertises_only_the_services_that_actually_run() {
-        let config = build_hub_config(&HubConfigOptions {
-            services: Some(vec![ServiceId::Mikro, ServiceId::Lovekit]),
+        let mut config = build_hub_config(&HubConfigOptions {
+            services: Some(vec![ServiceId::Mikro]),
             ..Default::default()
         });
+        config.lovekit.enabled = true;
+        config.lovekit.image = None;
         let request = build_hub_request(&config, &HubManifestOptions::default());
 
         let ids: Vec<&str> = request
@@ -693,6 +772,68 @@ mod tests {
         assert!(ids.contains(&"live.arkitekt.rekuest"));
         assert!(ids.contains(&"live.arkitekt.mikro"));
         assert!(!ids.iter().any(|i| i.contains("lovekit")), "{ids:?}");
+        assert!(!ids.contains(&LIVEKIT_MANIFEST), "{ids:?}");
+    }
+
+    /// An app needs both to hold a room: Lovekit for the token, LiveKit to connect it to.
+    /// The media server is advertised on its own port, at the root, wherever the hub is.
+    #[test]
+    fn a_hub_with_lovekit_advertises_its_media_server() {
+        let config = build_hub_config(&HubConfigOptions {
+            services: Some(vec![ServiceId::Mikro, ServiceId::Lovekit]),
+            ..Default::default()
+        });
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts: vec![AdvertisedHost {
+                    host: "10.0.0.4".to_string(),
+                    kind: HostCategory::Private,
+                }],
+                mesh_alias: true,
+                internal_host: Some("gateway".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let of = |identifier: &str| {
+            request
+                .hub
+                .instances
+                .iter()
+                .find(|i| i.manifest.identifier == identifier)
+        };
+        assert!(of("live.arkitekt.lovekit").is_some());
+        let livekit = of(LIVEKIT_MANIFEST).expect("the media server is advertised");
+        let kinds: Vec<&str> = livekit.aliases.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(kinds, ["10.0.0.4", "mesh", "internal"]);
+        for alias in &livekit.aliases {
+            assert_eq!(alias.port, 2756, "{alias:?}");
+            assert!(!alias.ssl && alias.path.is_none() && alias.challenge.is_none());
+        }
+        assert!(livekit.manifest.challenge_key.is_none());
+
+        // And a hub without Lovekit says nothing about one.
+        let plain = build_hub_config(&HubConfigOptions::default());
+        let request = build_hub_request(&plain, &HubManifestOptions::default());
+        assert!(request
+            .hub
+            .instances
+            .iter()
+            .all(|i| i.manifest.identifier != LIVEKIT_MANIFEST));
+    }
+
+    /// The scopes are the ones the services' own configs declare.
+    #[test]
+    fn the_newer_services_declare_their_scopes() {
+        let keys = |id| -> Vec<&str> { scopes_of(id).iter().map(|(key, _)| *key).collect() };
+        assert_eq!(
+            keys(ServiceId::Dokuments),
+            ["dokuments_read", "dokuments_write"]
+        );
+        assert_eq!(keys(ServiceId::Lokate), ["lokate_read", "lokate_write"]);
+        assert!(roles_of(ServiceId::Dokuments).is_empty());
+        assert!(roles_of(ServiceId::Lokate).is_empty());
     }
 
     #[test]

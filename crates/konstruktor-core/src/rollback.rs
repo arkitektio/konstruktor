@@ -160,7 +160,9 @@ pub async fn run(
     apply(dir, plan)?;
     let config = crate::profile::read_profile(dir).ok().map(|p| p.config);
     for change in &plan.changes {
-        // Rekuest's reaper runs Rekuest's image, so it moves back with it.
+        // takt moves back with Rekuest. Its own image is a change of its own in the plan
+        // when it moved; recreating it here as well keeps the pair on one release even
+        // when only Rekuest's did.
         let companions = config
             .as_ref()
             .map(|c| crate::generate::compose::companions(c, &change.service))
@@ -174,7 +176,12 @@ pub async fn run(
             companions
                 .iter()
                 .filter(|c| crate::compose_file::declares_service(dir, c))
-                .map(|c| crate::compose::up_service(c)),
+                .flat_map(|c| {
+                    [
+                        crate::compose::pull_service(c),
+                        crate::compose::up_service(c),
+                    ]
+                }),
         );
         for argv in argvs {
             crate::compose::run_streamed(dir, argv, on_line)

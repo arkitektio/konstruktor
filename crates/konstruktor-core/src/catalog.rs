@@ -15,11 +15,13 @@ pub enum ServiceId {
     Lovekit,
     Bank,
     Kuvert,
+    Dokuments,
+    Lokate,
 }
 
 /// Declaration order, as `SERVICE_IDS` upstream. Not the generation order — see
 /// [`HUB_SERVICE_ORDER`].
-pub const SERVICE_IDS: [ServiceId; 10] = [
+pub const SERVICE_IDS: [ServiceId; 12] = [
     ServiceId::Rekuest,
     ServiceId::Mikro,
     ServiceId::Fluss,
@@ -30,6 +32,8 @@ pub const SERVICE_IDS: [ServiceId; 10] = [
     ServiceId::Lovekit,
     ServiceId::Bank,
     ServiceId::Kuvert,
+    ServiceId::Dokuments,
+    ServiceId::Lokate,
 ];
 
 impl ServiceId {
@@ -45,6 +49,8 @@ impl ServiceId {
             ServiceId::Lovekit => "lovekit",
             ServiceId::Bank => "bank",
             ServiceId::Kuvert => "kuvert",
+            ServiceId::Dokuments => "dokuments",
+            ServiceId::Lokate => "lokate",
         }
     }
 
@@ -65,6 +71,8 @@ impl ServiceId {
             // Statement exports (bank), raw messages and attachments (kuvert): their
             // datalayer declares `bigfile` and nothing else.
             ServiceId::Bank | ServiceId::Kuvert => &["bigfile"],
+            // Dokuments keeps its files in `media` (its datalayer requires it); Lovekit and
+            // Lokate store no objects, and get the media bucket every service is seeded with.
             _ => &["media"],
         }
     }
@@ -81,15 +89,20 @@ impl ServiceId {
                 | ServiceId::Rekuest
                 | ServiceId::Bank
                 | ServiceId::Kuvert
+                | ServiceId::Dokuments
         )
     }
 }
 
 /// The order `diff.write_hub_files` feeds services to the generator, which is the order
-/// they appear in the Caddyfile. Deliberately not declaration order, and `lovekit` is
-/// absent — it has no published image, so the generator never emits it. The experimental
+/// they appear in the Caddyfile. Deliberately not declaration order. The experimental
 /// services come last, so a hub without them keeps its Caddyfile byte for byte.
-pub const HUB_SERVICE_ORDER: [ServiceId; 9] = [
+///
+/// Lovekit is here since it has an image. Profiles written before that (and upstream's)
+/// still say `lovekit: enabled: true` with no image, which never ran anything — so a
+/// service only counts as running when it is enabled *and* has an image
+/// ([`crate::config::hub::ServiceBlock::runs`]).
+pub const HUB_SERVICE_ORDER: [ServiceId; 12] = [
     ServiceId::Rekuest,
     ServiceId::Kabinet,
     ServiceId::Mikro,
@@ -99,6 +112,9 @@ pub const HUB_SERVICE_ORDER: [ServiceId; 9] = [
     ServiceId::Kraph,
     ServiceId::Bank,
     ServiceId::Kuvert,
+    ServiceId::Lovekit,
+    ServiceId::Dokuments,
+    ServiceId::Lokate,
 ];
 
 /// The services that vendor `rekuest-service`: Rekuest runs their periodic actions and
@@ -126,8 +142,8 @@ pub struct ServiceMeta {
     pub purpose: String,
     /// Pre-ticked when nothing else is said.
     pub default: bool,
-    /// Whether the generator actually emits it. Lovekit has no published image, so
-    /// ticking it would change nothing.
+    /// Whether the generator actually emits it. Every service does now; kept so a
+    /// placeholder can be listed again without the front ends offering a dead switch.
     pub emitted: bool,
     /// Offered, but kept apart from the rest: new, personal-use services that a lab hub
     /// does not need. The wizard lists them under a collapsed "Experimental" section.
@@ -194,9 +210,12 @@ pub fn catalog() -> Vec<ServiceMeta> {
                 ),
                 ServiceId::Lovekit => (
                     "Lovekit",
-                    "LiveKit integration for real-time communication",
-                    "Live video and audio between people using the platform, over \
-                     LiveKit. Not published yet.",
+                    "Live video and audio streams, over LiveKit",
+                    "Broadcasts and live streams — from people and from apps, such as \
+                     a microscope's camera — carried by a LiveKit media server that \
+                     runs alongside it. Media flows directly on ports 2757/tcp and \
+                     2758/udp, so it works on this machine's network, not across the \
+                     internet or the mesh. Experimental.",
                 ),
                 ServiceId::Bank => (
                     "Bank",
@@ -212,6 +231,21 @@ pub fn catalog() -> Vec<ServiceMeta> {
                     "Link existing IMAP, Gmail or Outlook mailboxes to sync, search, \
                      organise and send mail. Kuvert hosts no mailboxes itself. \
                      Experimental.",
+                ),
+                ServiceId::Dokuments => (
+                    "Dokuments",
+                    "Documents, their pages and their text",
+                    "Keep PDFs and other documents in datasets, page by page: each \
+                     page's image, and the text an app recognised on it (OCR), so a \
+                     document can be found by what it says. Experimental.",
+                ),
+                ServiceId::Lokate => (
+                    "Lokate",
+                    "A backup of your phone's location timeline",
+                    "A self-hosted backup of a phone's location timeline: the phone \
+                     records and segments its own points, visits and trips, and Lokate \
+                     keeps a copy it can restore from. Every user sees only their own \
+                     data. Experimental, meant for personal use.",
                 ),
             };
             ServiceMeta {
@@ -233,8 +267,15 @@ pub fn catalog() -> Vec<ServiceMeta> {
                         | ServiceId::Kraph
                         | ServiceId::Alpaka
                 ),
-                emitted: !matches!(id, ServiceId::Lovekit),
-                experimental: matches!(id, ServiceId::Bank | ServiceId::Kuvert),
+                emitted: true,
+                experimental: matches!(
+                    id,
+                    ServiceId::Lovekit
+                        | ServiceId::Bank
+                        | ServiceId::Kuvert
+                        | ServiceId::Dokuments
+                        | ServiceId::Lokate
+                ),
             }
         })
         .collect()
@@ -254,13 +295,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_lovekit_is_unemitted() {
+    fn every_service_is_emitted() {
         let unemitted: Vec<&str> = catalog()
             .iter()
             .filter(|s| !s.emitted)
             .map(|s| s.id.as_str())
             .collect();
-        assert_eq!(unemitted, ["lovekit"]);
+        assert!(unemitted.is_empty(), "{unemitted:?}");
+    }
+
+    /// Every service is generated, so every one has a place in the generation order.
+    #[test]
+    fn every_service_has_a_generation_slot() {
+        for id in SERVICE_IDS {
+            assert!(HUB_SERVICE_ORDER.contains(&id), "{id:?}");
+        }
     }
 
     #[test]
@@ -272,8 +321,8 @@ mod tests {
         );
     }
 
-    /// Elektro is the one emitted service left off on purpose, and Lovekit the one that
-    /// cannot be switched on at all. Pinned so neither changes by accident.
+    /// Elektro is the one stable service left off on purpose. Pinned so it does not change
+    /// by accident.
     #[test]
     fn elektro_is_offered_but_not_pre_ticked() {
         let elektro = catalog()
@@ -284,16 +333,19 @@ mod tests {
         assert!(!elektro.default, "but not chosen for people");
     }
 
-    /// Bank and Kuvert can be switched on, but never are unless somebody asks, and the
-    /// wizard keeps them apart from the rest.
+    /// The experimental services can be switched on, but never are unless somebody asks,
+    /// and the wizard keeps them apart from the rest.
     #[test]
-    fn bank_and_kuvert_are_experimental_and_never_pre_ticked() {
+    fn the_experimental_services_are_never_pre_ticked() {
         let experimental: Vec<&str> = catalog()
             .iter()
             .filter(|s| s.experimental)
             .map(|s| s.id.as_str())
             .collect();
-        assert_eq!(experimental, ["bank", "kuvert"]);
+        assert_eq!(
+            experimental,
+            ["lovekit", "bank", "kuvert", "dokuments", "lokate"]
+        );
         for service in catalog().into_iter().filter(|s| s.experimental) {
             assert!(service.emitted, "{:?} must be offerable", service.id);
             assert!(!service.default, "{:?} must not be pre-ticked", service.id);

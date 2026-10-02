@@ -496,20 +496,29 @@ pub fn plan_deletion(id: String) -> Result<DeletionPlan, String> {
 /// guards live in `konstruktor_core::destroy`; this only hands the result back and stops
 /// the exit hook from trying to take down a folder that is no longer there.
 ///
-/// Off the main thread. A delete is `docker compose down --volumes --remove-orphans`
-/// followed by a recursive removal of the folder — seconds at best, and a great deal
-/// longer for a dev hub with checkouts in it. A synchronous command runs on the thread
-/// that draws the window, so the whole app, including the dialog's own "Deleting…",
-/// froze for the duration and looked like a hang.
+/// An authorized hub is taken off its coordination server first, and the delete stops
+/// there if the server does not agree. `local_only` skips asking, for the dialog's
+/// "delete locally anyway" after exactly that.
+///
+/// Off the main thread, which the core sees to itself. A delete is a round trip to the
+/// server, `docker compose down --volumes --remove-orphans` and a recursive removal of
+/// the folder — seconds at best, and a great deal longer for a dev hub with checkouts in
+/// it. On the thread that draws the window the whole app, including the dialog's own
+/// "Deleting…", froze for the duration and looked like a hang.
 #[command]
 pub async fn delete_deployment(
     app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
     id: String,
+    local_only: bool,
 ) -> Result<Deletion, String> {
-    let deleted = tauri::async_runtime::spawn_blocking(move || destroy::delete(&id))
+    let server = if local_only {
+        destroy::ServerSide::LeaveRegistered
+    } else {
+        destroy::ServerSide::Deregister
+    };
+    let deleted = destroy::delete(&id, server)
         .await
-        .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
     started.stopped(&deleted.path);
     crate::tray::poke(&app);

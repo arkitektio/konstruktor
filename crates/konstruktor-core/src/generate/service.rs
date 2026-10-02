@@ -344,7 +344,22 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
                 ])
             })
             .collect();
-        pairs.push(("rekuest", map(vec![("service_agents", list(agents))])));
+        // The pair finds each other by these two: Rekuest signs its internal requests to
+        // takt, takt asks Rekuest for its upkeep jobs. Both read this one file.
+        let mut block = vec![
+            ("service_agents", list(agents)),
+            (
+                "server_url",
+                s(&format!(
+                    "http://{}:{}/{}",
+                    service.host, service.internal_port, service.host
+                )),
+            ),
+        ];
+        if let Some(takt) = config.takt_url() {
+            block.push(("takt_url", s(&takt)));
+        }
+        pairs.push(("rekuest", map(block)));
     }
 
     // The services whose periodic work and signals go through the hub's Rekuest.
@@ -352,12 +367,17 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
         let rekuest = &config.rekuest;
         pairs.push((
             "rekuest_hook",
+            // takt, not the server: the reports and signals a service sends are the agent
+            // protocol's, which takt serves. A profile whose Rekuest has no image runs
+            // neither, and keeps the address it always had.
             map(vec![(
                 "rekuest_url",
-                s(&format!(
-                    "http://{}:{}/{}",
-                    rekuest.host, rekuest.internal_port, rekuest.host
-                )),
+                s(&config.takt_url().unwrap_or_else(|| {
+                    format!(
+                        "http://{}:{}/{}",
+                        rekuest.host, rekuest.internal_port, rekuest.host
+                    )
+                })),
             )]),
         ));
     }
@@ -377,6 +397,23 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
     if id == ServiceId::Alpaka {
         if let Some(ollama) = &config.local_ollama {
             pairs.push(("ollama_url", s(&ollama.url)));
+        }
+    }
+
+    // Lovekit's way to its media server: the key pair it signs room tokens with, and
+    // where it calls LiveKit's API inside the stack. The key names are the service's own
+    // (`lovekit_server/configuration.py`); without the block it starts and hands out
+    // nothing.
+    if id == ServiceId::Lovekit {
+        if let Some(livekit) = config.running_livekit() {
+            pairs.push((
+                "livekit",
+                map(vec![
+                    ("api_key", s(&livekit.api_key)),
+                    ("api_secret", s(&livekit.api_secret)),
+                    ("api_url", s(&livekit.api_url())),
+                ]),
+            ));
         }
     }
 

@@ -63,6 +63,14 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
         }
     }
 
+    // --- Lovekit's media server ------------------------------------------------
+    if let Some(livekit) = config.running_livekit() {
+        files.insert(
+            format!("configs/{}.yaml", livekit.host),
+            dump(&compose::build_livekit_config(livekit)),
+        );
+    }
+
     // --- the mesh sidecar's key, which the compose file only names -------------
     if let Some(mesh) = config.mesh.as_ref().filter(|m| m.enabled) {
         files.insert(
@@ -90,6 +98,13 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
                 host: &block.host,
                 internal_port: block.internal_port,
                 buckets: block.bucket_names(id).into_iter().map(|(_, name)| name).collect(),
+                agent_upstream: (id == crate::catalog::ServiceId::Rekuest)
+                    .then(|| config.takt_host())
+                    .flatten()
+                    .map(|host| caddy::AgentUpstream {
+                        host,
+                        port: crate::config::hub::TAKT_INTERNAL_PORT,
+                    }),
             }
         })
         .collect();
@@ -100,6 +115,13 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
             &caddy_services,
             &config.minio.host,
             config.minio.internal_port,
+            &caddy::GatewaySites {
+                livekit: config.running_livekit().map(|livekit| caddy::LivekitSite {
+                    listen_port: livekit.signal_port,
+                    upstream_host: &livekit.host,
+                    upstream_port: crate::config::hub::LIVEKIT_INTERNAL_PORT,
+                }),
+            },
         ),
     );
 

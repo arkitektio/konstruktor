@@ -25,6 +25,7 @@ pub struct CreateArgs {
     /// The hub's name inside the organization that accepts it.
     #[arg(long)]
     pub identifier: Option<String>,
+    /// A line about the hub, sent to the coordination server with the request.
     #[arg(long)]
     pub description: Option<String>,
     /// `local` runs Rekuest here; a host points at a remote provenance authority.
@@ -33,29 +34,34 @@ pub struct CreateArgs {
     /// Comma-separated. Defaults to rekuest,mikro,fluss,kabinet,kraph,alpaka.
     #[arg(long, value_delimiter = ',')]
     pub services: Option<Vec<String>>,
-    #[arg(long, default_value_t = 7080)]
+    /// The port the gateway answers plain HTTP on.
+    #[arg(long, default_value_t = konstruktor_core::defaults::HTTP_PORT)]
     pub http_port: u16,
-    #[arg(long, default_value_t = 7443)]
+    /// The port the gateway answers HTTPS on, with `--ssl`.
+    #[arg(long, default_value_t = konstruktor_core::defaults::HTTPS_PORT)]
     pub https_port: u16,
+    /// Turn HTTPS on at the gateway.
     #[arg(long)]
     pub ssl: bool,
+    /// The domain name the hub is reached by. Left out, `localhost`.
     #[arg(long)]
     pub domain: Option<String>,
+    /// The admin account's name.
     #[arg(long, default_value = "admin")]
     pub admin: String,
     /// Left out, a strong one is generated.
     #[arg(long)]
     pub admin_password: Option<String>,
     /// An address to advertise. Repeatable. Overrides --reach.
-    #[arg(long = "host")]
+    #[arg(long = "host", value_name = "HOST")]
     pub hosts: Vec<String>,
     /// How far the hub should reach: local-only · this-network · public.
     ///
     /// Ignored when `--host` is given, which says exactly what to advertise.
     #[arg(long, default_value = "this-network", value_parser = crate::parse_reach)]
     pub reach: hosts::ReachPresetId,
-    /// none · coordination · manual. By default the hub asks the coordination server for
-    /// a key to join the organization's mesh.
+    /// How the hub joins a mesh: none · coordination · manual. By default it asks the
+    /// coordination server for a key to join the organization's mesh.
     #[arg(long, default_value = "coordination", value_parser = crate::parse_mesh_mode)]
     pub mesh: MeshMode,
     /// Reach the hub over the mesh only: no port is opened on this machine and no
@@ -66,6 +72,7 @@ pub struct CreateArgs {
     /// A pre-authorized key, for `--mesh manual`. Prefer KONSTRUKTOR_MESH_KEY.
     #[arg(long)]
     pub mesh_key: Option<String>,
+    /// The mesh's control server, for `--mesh manual`. Left out, Tailscale's own.
     #[arg(long)]
     pub mesh_coord_url: Option<String>,
     /// A dev hub: check every service's source out into `mounts/` and mount it into the
@@ -102,13 +109,14 @@ pub struct CreateArgs {
     /// server is never contacted — so an unattended invocation can be rehearsed safely.
     #[arg(long)]
     pub dry_run: bool,
-    /// Skip `docker compose up -d`.
+    /// Write the files, but do not start the containers.
     #[arg(long)]
     pub no_start: bool,
     /// Do not open a browser for the authorization.
     #[arg(long)]
     pub no_open: bool,
-    /// Never prompt; a missing answer with no default is an error.
+    /// Never prompt: take every answer from flags and defaults. A missing answer with no
+    /// default is an error.
     #[arg(long, short = 'y')]
     pub yes: bool,
     /// Walk through the desktop wizard's questions — services, storage, mesh, ports and

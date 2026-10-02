@@ -19,8 +19,9 @@ const forget = vi.fn(async () => undefined);
 const refresh = vi.fn(async () => undefined);
 const openShell = vi.fn((_path: string) => undefined);
 const composeCommand = vi.fn(async (_path: string, _action: string) => undefined);
-const deleteDeployment = vi.fn(async (_id: string) => ({
+const deleteDeployment = vi.fn(async (_id: string, _localOnly: boolean) => ({
   path: "/home/someone/MyHub",
+  server: "removed" as const,
   stack_removed: true,
   folder_removed: true,
   forgotten: true,
@@ -30,6 +31,8 @@ const planDeletion = vi.fn(async (_id: string) => ({
   name: "MyHub",
   checkouts: ["rekuest", "mikro"],
   was_authorized: true,
+  will_deregister: true,
+  coord_server: "go.arkitekt.live" as string | null,
   data_dirs: ["/home/someone/MyHub/db_data", "/home/someone/MyHub/minio_data"],
   skipped: [] as { mount: string; explanation: string }[],
   on_a_mesh: false,
@@ -51,7 +54,9 @@ vi.mock("../../../api", async (importOriginal) => ({
   composeCommand: (path: string, action: string) => composeCommand(path, action),
   // The menu's actions stream now; the test only cares that the command was issued.
   composeCommandStreamed: (path: string, action: string) => composeCommand(path, action),
-  deleteDeployment: (id: string) => deleteDeployment(id),
+  deleteDeployment: (id: string, localOnly = false) => deleteDeployment(id, localOnly),
+  serverRefusedDeletion: (error: unknown) =>
+    String(error).startsWith("The hub could not be removed from its coordination server"),
   planDeletion: (id: string) => planDeletion(id),
   purgeDeploymentData: (id: string) => purgeDeploymentData(id),
 }));
@@ -255,7 +260,7 @@ describe("deleting a hub outright", () => {
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(confirm);
 
-    await waitFor(() => expect(deleteDeployment).toHaveBeenCalledWith(DEPLOYMENT.id));
+    await waitFor(() => expect(deleteDeployment).toHaveBeenCalledWith(DEPLOYMENT.id, false));
     await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
@@ -266,8 +271,46 @@ describe("deleting a hub outright", () => {
     expect(dialog.textContent).toContain("database and object storage");
     // The plan is fetched once the dialog is open, and adds what the registry cannot know.
     await waitFor(() => expect(dialog.textContent).toContain("rekuest, mikro"));
-    expect(dialog.textContent).toContain("coordination server");
+    // An authorized hub is taken off its server first, and the dialog names it.
+    expect(dialog.textContent).toContain("removed from the coordination server at go.arkitekt.live");
     expect(dialog.textContent).toContain("images stay");
+  });
+
+  it("says an engine's registration stays, since nothing here can withdraw it", async () => {
+    planDeletion.mockResolvedValueOnce({
+      path: "/home/someone/MyHub",
+      name: "MyHub",
+      checkouts: [],
+      was_authorized: true,
+      will_deregister: false,
+      coord_server: "go.arkitekt.live",
+      data_dirs: [],
+      skipped: [],
+      on_a_mesh: false,
+      storage: "deployment-folder" as const,
+    });
+    const dialog = await openDelete();
+    await waitFor(() => expect(dialog.textContent).toContain("stays until it is removed there"));
+  });
+
+  it("offers a local delete once the server has refused, and only then", async () => {
+    deleteDeployment.mockRejectedValueOnce(
+      "The hub could not be removed from its coordination server, so nothing was deleted: " +
+        "the coordination server at https://go.arkitekt.live did not answer. " +
+        "Deleting it locally anyway leaves it listed there."
+    );
+    const dialog = await openDelete();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "MyHub" } });
+    expect(screen.queryByRole("button", { name: "Delete locally anyway" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Delete this hub" }));
+
+    await waitFor(() => expect(dialog.textContent).toContain("did not answer"));
+    expect(deleteDeployment).toHaveBeenLastCalledWith(DEPLOYMENT.id, false);
+    expect(dialog.textContent).toContain("leaves it listed there");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete locally anyway" }));
+    await waitFor(() => expect(deleteDeployment).toHaveBeenLastCalledWith(DEPLOYMENT.id, true));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
   it("keeps the dialog open and shows why when the delete fails", async () => {
@@ -365,6 +408,8 @@ describe("deleting a hub's data", () => {
       name: "MyHub",
       checkouts: [],
       was_authorized: true,
+      will_deregister: true,
+      coord_server: null,
       data_dirs: ["/home/someone/MyHub/db_data"],
       skipped: [],
       on_a_mesh: true,
@@ -380,6 +425,8 @@ describe("deleting a hub's data", () => {
       name: "MyHub",
       checkouts: [],
       was_authorized: false,
+      will_deregister: false,
+      coord_server: null,
       data_dirs: ["/home/someone/MyHub/db_data"],
       skipped: [
         {

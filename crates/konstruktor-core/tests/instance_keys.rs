@@ -158,7 +158,8 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
         );
         assert_eq!(
             yaml["rekuest_hook"]["rekuest_url"].as_str(),
-            Some("http://rekuest:80/rekuest")
+            // takt, which serves the agent protocol the reports and signals belong to.
+            Some("http://rekuest-takt:8080/rekuest")
         );
         let provenance = &yaml["authentikate"]["provenance"]["issuers"][0];
         assert_eq!(
@@ -172,6 +173,16 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
     assert!(
         rekuest["provenance"].get("private_key").is_none(),
         "the instance key signs provenance"
+    );
+    // The pair's two addresses, in the one file both read: where Rekuest reaches takt, and
+    // where takt reaches Rekuest for its upkeep jobs.
+    assert_eq!(
+        rekuest["rekuest"]["takt_url"].as_str(),
+        Some("http://rekuest-takt:8080/rekuest")
+    );
+    assert_eq!(
+        rekuest["rekuest"]["server_url"].as_str(),
+        Some("http://rekuest:80/rekuest")
     );
     let agents = rekuest["rekuest"]["service_agents"]
         .as_sequence()

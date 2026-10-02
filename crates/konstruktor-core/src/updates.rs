@@ -397,7 +397,10 @@ pub fn is_infrastructure(config: &HubConfig, service: &str) -> bool {
     // The health reporter holds no data and follows `latest`: moving it risks nothing the
     // infrastructure's caution exists for.
     let reporter = config.reporter.as_ref().is_some_and(|r| r.host == service);
+    // takt is Rekuest's other half: it moves with Rekuest, at Rekuest's risk.
+    let companion = crate::generate::compose::companion_of(config, service).is_some();
     !reporter
+        && !companion
         && !config
             .enabled_services()
             .into_iter()
@@ -450,6 +453,21 @@ pub async fn guard(dir: &std::path::Path, config: &HubConfig, service: &str) -> 
                 .to_string(),
         ),
     }
+}
+
+/// Why Rekuest (or takt) cannot be moved on this hub as its files stand, if it cannot.
+///
+/// A Rekuest image from the release that introduced takt has no reaper to run and serves no
+/// agents itself: beside a compose file that still runs the reaper and no takt, it would
+/// come up with no agent able to connect, nothing scheduled, and a failing health check.
+/// Asked before anything is pulled, so a refused hub keeps the image it runs. See
+/// [`crate::compose_file::predates_takt`].
+pub fn predates_takt(dir: &std::path::Path, config: &HubConfig, service: &str) -> Option<String> {
+    let takt = config.takt_host()?;
+    if service != config.rekuest.host.as_str() && service != takt.as_str() {
+        return None;
+    }
+    crate::compose_file::predates_takt(dir, config)
 }
 
 /// Where a backup taken before an update goes unless somebody says otherwise: a
@@ -643,13 +661,36 @@ pub async fn apply(
 
     // --- pull, guard, recreate -------------------------------------------------------
     for service in &services {
+        // takt moves with Rekuest, below; asked for beside it, it is not moved twice.
+        if crate::generate::compose::companion_of(&config, service)
+            .is_some_and(|of| services.contains(&of))
+        {
+            continue;
+        }
         step(format!("Updating {service}"));
+        // Before anything is pulled: a hub that cannot run the new image is left exactly
+        // as it is, old image included.
+        if let Some(reason) = predates_takt(dir, &config, service) {
+            on_event(UpdateEvent::Refused {
+                service: service.clone(),
+                reason: reason.clone(),
+            });
+            report.refused.push((service.clone(), reason));
+            continue;
+        }
+        let companions: Vec<String> = crate::generate::compose::companions(&config, service)
+            .into_iter()
+            .filter(|c| crate::compose_file::declares_service(dir, c))
+            .collect();
         // Pull first, then ask whether the image that arrived may be run: the guard reads
-        // what the *new* image declares.
+        // what the *new* image declares. takt has an image of its own, released with
+        // Rekuest's under the same tag, so it is pulled with it.
         if request.pull {
-            crate::compose::run_streamed(dir, crate::compose::pull_service(service), &line)
-                .await
-                .map_err(UpdateError::Compose)?;
+            for name in std::iter::once(service).chain(&companions) {
+                crate::compose::run_streamed(dir, crate::compose::pull_service(name), &line)
+                    .await
+                    .map_err(UpdateError::Compose)?;
+            }
         }
         match guard(dir, &config, service).await {
             Guard::Refuse(reason) => {
@@ -667,13 +708,10 @@ pub async fn apply(
         crate::compose::run_streamed(dir, crate::compose::up_service(service), &line)
             .await
             .map_err(UpdateError::Compose)?;
-        // Rekuest's reaper runs Rekuest's image; `--no-deps` would leave it on the old one.
-        // Same image, so nothing more to pull or guard.
-        for companion in crate::generate::compose::companions(&config, service)
-            .into_iter()
-            .filter(|c| crate::compose_file::declares_service(dir, c))
-        {
-            crate::compose::run_streamed(dir, crate::compose::up_service(&companion), &line)
+        // After Rekuest, which migrates the schema takt waits for; `--no-deps` would
+        // otherwise leave takt on the old image.
+        for companion in &companions {
+            crate::compose::run_streamed(dir, crate::compose::up_service(companion), &line)
                 .await
                 .map_err(UpdateError::Compose)?;
         }

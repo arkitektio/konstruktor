@@ -50,6 +50,10 @@ pub enum ProfileError {
     },
     #[error("{path} describes a {found} deployment, not a hub one")]
     WrongKind { path: String, found: String },
+    /// The files on disk are of a layout this build must not rewrite in passing. See
+    /// [`crate::compose_file::predates_takt`].
+    #[error("{0}")]
+    Layout(String),
 }
 
 pub fn read_profile(dir: &Path) -> Result<Profile, ProfileError> {
@@ -87,7 +91,19 @@ pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> 
 /// deployment folder: a profile this build cannot generate from has to leave the folder
 /// unchanged rather than half rewritten.
 pub fn rewrite_images(dir: &Path, images: &[(String, String)]) -> Result<(), ProfileError> {
-    let mut config = read_profile(dir)?.config;
+    let config = read_profile(dir)?.config;
+    if let Some(reason) = crate::compose_file::predates_takt(dir, &config) {
+        return Err(ProfileError::Layout(reason));
+    }
+    rewrite(dir, config, images)
+}
+
+/// [`rewrite_images`], whatever layout the files on disk have.
+fn rewrite(
+    dir: &Path,
+    mut config: HubConfig,
+    images: &[(String, String)],
+) -> Result<(), ProfileError> {
     for (service, image) in images {
         config.set_service_image(service, image);
     }
@@ -102,6 +118,24 @@ pub fn rewrite_images(dir: &Path, images: &[(String, String)]) -> Result<(), Pro
     write_profile(dir, &hub_profile(config))?;
     crate::generate::write::write_generated_files(dir, &files)?;
     Ok(())
+}
+
+/// Write every generated file of the hub in `dir` again, from its profile as it stands.
+///
+/// What brings a hub's files up to what this build generates: a compose service the
+/// generator has gained since (takt), a route, a config key. Nothing in the profile
+/// changes, so every secret, key and image stays what it was. The compose file is the one
+/// generated file people edit by hand, so the one on disk is kept as its backup first.
+pub fn regenerate(dir: &Path) -> Result<(), ProfileError> {
+    let config = read_profile(dir)?.config;
+    let compose = dir.join(crate::compose_file::COMPOSE_FILENAME);
+    if compose.exists() {
+        std::fs::copy(
+            &compose,
+            dir.join(crate::compose_file::COMPOSE_BACKUP_FILENAME),
+        )?;
+    }
+    rewrite(dir, config, &[])
 }
 
 /// Whether a directory already holds a hub deployment.

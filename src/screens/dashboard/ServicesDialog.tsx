@@ -79,7 +79,7 @@ export const ServicesDialog = ({
 
   useEffect(() => {
     api.serviceCatalog().then((all) => {
-      // Lovekit has no image: offering it here would be a switch that changes nothing.
+      // A service with no image to run would be a switch that changes nothing.
       const offered = all.filter((s) => s.emitted);
       setCatalog(offered);
       // A hub already running an experimental service shows the section open.

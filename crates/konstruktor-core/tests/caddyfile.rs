@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use konstruktor_core::catalog::SERVICE_IDS;
 use konstruktor_core::config::hub::ServiceBlock;
-use konstruktor_core::generate::caddy::{build_caddyfile, CaddyService};
+use konstruktor_core::generate::caddy::{
+    build_caddyfile, AgentUpstream, CaddyService, GatewaySites,
+};
 use serde_norway::Value;
 
 /// The Caddyfile is the one generated file the TypeScript suite compares byte-for-byte
@@ -28,17 +30,23 @@ fn str_at<'a>(config: &'a Value, service: &str, key: &str) -> &'a str {
     })
 }
 
-/// Reads the enabled services out of a parsed profile, in whatever order; the emitter
-/// re-orders them by `HUB_SERVICE_ORDER` itself, which is part of what is under test.
+/// Reads the services a parsed profile runs, in whatever order; the emitter re-orders them
+/// by `HUB_SERVICE_ORDER` itself, which is part of what is under test.
+///
+/// Runs, not merely enables: the fixtures are upstream's, which switch Lovekit on without
+/// an image — a block that never ran anything (see `ServiceBlock::runs`).
 fn services_of(config: &Value) -> Vec<CaddyService<'_>> {
     SERVICE_IDS
         .iter()
         .filter(|id| {
-            config
-                .get(id.as_str())
+            let block = config.get(id.as_str());
+            block
                 .and_then(|s| s.get("enabled"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
+                && block
+                    .and_then(|s| s.get("image"))
+                    .is_some_and(|image| !image.is_null())
         })
         .map(|&id| {
             let block = &config[id.as_str()];
@@ -54,6 +62,14 @@ fn services_of(config: &Value) -> Vec<CaddyService<'_>> {
                     .into_iter()
                     .map(|(_, name)| name)
                     .collect(),
+                // As the generator decides it: takt serves the agent endpoints of a Rekuest
+                // this hub runs itself.
+                agent_upstream: (id == konstruktor_core::catalog::ServiceId::Rekuest
+                    && block.get("image").is_some_and(|image| !image.is_null()))
+                .then(|| AgentUpstream {
+                    host: format!("{}-takt", str_at(config, id.as_str(), "host")),
+                    port: konstruktor_core::config::hub::TAKT_INTERNAL_PORT,
+                }),
             }
         })
         .collect()
@@ -64,7 +80,8 @@ fn caddyfile_for(fixture: &str) -> String {
     let services = services_of(&config);
     let minio_host = str_at(&config, "minio", "host").to_string();
     let minio_port = config["minio"]["internal_port"].as_u64().expect("a port") as u16;
-    build_caddyfile(&services, &minio_host, minio_port)
+    // The golden hubs run no Lovekit, so the gateway serves no site beyond their own.
+    build_caddyfile(&services, &minio_host, minio_port, &GatewaySites::default())
 }
 
 #[track_caller]

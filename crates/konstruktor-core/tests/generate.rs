@@ -549,758 +549,180 @@ mod stack_images {
             .map(|(service, _)| service)
             .collect();
 
-        // A companion runs another service's image (Rekuest's reaper runs Rekuest's) and
-        // moves with it — see `generate::compose::companions` — so it is accounted for
-        // through that service rather than reported as an image of its own.
-        let companions: Vec<String> = reported
+        // takt has an image of its own — Rekuest's, with `-takt` on the repository — so
+        // it is reported, pulled and pinned as itself, and moves with Rekuest.
+        let takt = reported
             .iter()
-            .flat_map(|service| konstruktor_core::generate::compose::companions(&config, service))
-            .collect();
-        assert!(
-            companions.contains(&"rekuest-reaper".to_string()),
-            "{companions:?}"
+            .position(|service| service == "rekuest-takt")
+            .expect("takt is reported");
+        assert_eq!(
+            config.stack_images()[takt].1,
+            konstruktor_core::config::hub::takt_image_for(config.rekuest.image.as_deref().unwrap())
+        );
+        assert_eq!(
+            konstruktor_core::generate::compose::companions(&config, "rekuest"),
+            ["rekuest-takt"]
+        );
+        assert_eq!(
+            konstruktor_core::generate::compose::companion_of(&config, "rekuest-takt").as_deref(),
+            Some("rekuest")
         );
 
         for service in compose_service_names(&config) {
             assert!(
-                reported.contains(&service) || companions.contains(&service),
+                reported.contains(&service),
                 "the compose file writes {service}, but stack_images does not report it"
             );
         }
     }
-}
 
-/// The dev hub, which also postdates the goldens.
-///
-/// `mount_github` was ported from upstream's config model and read by nothing until the
-/// dev hub existed; these pin the only place it has an effect, from the option a front
-/// end sets through to the compose file.
-mod dev_hub {
-    use super::*;
-    use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
-    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
-
-    fn built(dev_hub: bool) -> HubConfig {
-        build_hub_config(&HubConfigOptions {
-            coord_server: "go.arkitekt.live".into(),
-            services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
-            dev_hub,
-            ..Default::default()
-        })
-    }
-
-    fn compose(config: &HubConfig) -> Value {
-        let files = generate_hub_files(config, &IssuedIdentity::default());
-        serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML")
-    }
-
-    fn volumes_of(compose: &Value, service: &str) -> Vec<String> {
-        compose["services"][service]["volumes"]
-            .as_sequence()
-            .expect("every service declares volumes")
-            .iter()
-            .map(|v| v.as_str().expect("a volume is a string").to_string())
-            .collect()
-    }
-
+    /// takt's image follows Rekuest's tag until something pins it, and the pin survives.
     #[test]
-    fn an_ordinary_hub_mounts_only_the_config() {
-        let plain = built(false);
-        assert!(plain
-            .enabled_services()
-            .iter()
-            .all(|id| !plain.service(*id).mount_github));
+    fn takt_follows_rekuests_image_until_pinned() {
+        use konstruktor_core::config::hub::takt_image_for;
         assert_eq!(
-            volumes_of(&compose(&plain), "rekuest"),
-            vec!["./configs/rekuest.yaml:/workspace/config.yaml"]
+            takt_image_for("jhnnsrs/rekuest:next"),
+            "jhnnsrs/rekuest-takt:next"
         );
+        assert_eq!(
+            takt_image_for("jhnnsrs/rekuest:next@sha256:abc"),
+            "jhnnsrs/rekuest-takt:next"
+        );
+        assert_eq!(takt_image_for("jhnnsrs/rekuest"), "jhnnsrs/rekuest-takt");
+        assert_eq!(
+            takt_image_for("registry:5000/lab/rekuest:4.1.0"),
+            "registry:5000/lab/rekuest-takt:4.1.0"
+        );
+        assert_eq!(
+            takt_image_for("registry:5000/rekuest"),
+            "registry:5000/rekuest-takt"
+        );
+
+        let mut config = config_of("hub_config.yaml");
+        config.rekuest.image = Some("jhnnsrs/rekuest:4.1.0".into());
+        assert_eq!(
+            config.takt_image().as_deref(),
+            Some("jhnnsrs/rekuest-takt:4.1.0")
+        );
+        assert_eq!(
+            config.takt_url().as_deref(),
+            Some("http://rekuest-takt:8080/rekuest")
+        );
+
+        // A rollback writes the image it ran back, digest and all.
+        config.set_service_image("rekuest-takt", "jhnnsrs/rekuest-takt:4.0.0@sha256:old");
+        assert_eq!(
+            config.takt_image().as_deref(),
+            Some("jhnnsrs/rekuest-takt:4.0.0@sha256:old")
+        );
+        assert_eq!(
+            config.rekuest.image.as_deref(),
+            Some("jhnnsrs/rekuest:4.1.0")
+        );
+
+        // A hub that runs no Rekuest of its own runs no takt.
+        let remote = config_of("hub_config_remote.yaml");
+        assert_eq!(remote.takt_host(), None);
+        assert_eq!(remote.takt_image(), None);
+        assert!(!compose_service_names(&remote).contains(&"rekuest-takt".to_string()));
     }
 
+    /// A rollback, an advanced pin, a re-authorization and a service change all end by
+    /// writing every generated file. On a hub from before takt that would point its
+    /// services and its gateway at a container it does not run, so they refuse and leave
+    /// the folder as it is; only `regenerate`, asked for by name, moves the hub across.
     #[test]
-    fn a_dev_hub_mounts_the_checkout_under_the_config() {
-        let config = built(true);
-        let dev = compose(&config);
+    fn nothing_rewrites_a_hub_from_before_takt_in_passing() {
+        use konstruktor_core::profile::{self, ProfileError};
 
-        // The source first and the config second: the config lives *inside* the workspace
-        // the checkout provides, and reading them the other way round invites the wrong
-        // conclusion about which one survives.
-        assert_eq!(
-            volumes_of(&dev, "rekuest"),
-            vec![
-                "./mounts/rekuest:/workspace",
-                "./configs/rekuest.yaml:/workspace/config.yaml",
-            ]
-        );
-        assert_eq!(
-            volumes_of(&dev, "mikro"),
-            vec![
-                "./mounts/mikro:/workspace",
-                "./configs/mikro.yaml:/workspace/config.yaml",
-            ]
-        );
-
-        // Only the services run from source; infrastructure is untouched.
-        assert!(volumes_of(&dev, "db")
-            .iter()
-            .all(|v| !v.contains("/mounts/")));
-    }
-
-    #[test]
-    fn every_service_names_a_repository_to_check_out() {
-        let config = built(true);
-        for id in SERVICE_IDS {
-            let repo = &config.service(id).github_repo;
-            assert!(
-                repo.starts_with("https://github.com/"),
-                "{id:?} has no repository to clone: {repo}"
-            );
-        }
-    }
-}
-
-/// The two places the generated stack deliberately goes beyond the Python CLI.
-///
-/// Both are opt-in, and that is the whole safety argument: a hub nobody customized still
-/// generates byte-for-byte what upstream generates, which is what the golden cases above
-/// assert. These pin the other half — that asking actually changes something.
-mod beyond_upstream {
-    use super::*;
-    use konstruktor_core::catalog::ServiceId;
-    use konstruktor_core::config::hub::{
-        build_hub_config, HubConfigOptions, OllamaChoice, ServiceOptions,
-    };
-    use std::collections::BTreeMap;
-
-    fn with(options: BTreeMap<ServiceId, ServiceOptions>) -> HubConfig {
-        build_hub_config(&HubConfigOptions {
-            services: Some(vec![
-                ServiceId::Rekuest,
-                ServiceId::Alpaka,
-                ServiceId::Kabinet,
-            ]),
-            service_options: options,
-            ..Default::default()
-        })
-    }
-
-    fn files(config: &HubConfig) -> GeneratedFiles {
-        generate_hub_files(config, &IssuedIdentity::default())
-    }
-
-    fn yaml(files: &GeneratedFiles, name: &str) -> Value {
-        serde_norway::from_str(&files[name]).expect("valid YAML")
-    }
-
-    /// A hub that answered nothing must not gain a container, a volume or a config key.
-    #[test]
-    fn a_hub_nobody_customized_gains_nothing() {
-        let config = with(BTreeMap::new());
-        assert!(config.local_ollama.is_none());
-
-        let files = files(&config);
-        let compose = yaml(&files, "docker-compose.yaml");
-        assert!(
-            compose["services"].get("ollama").is_none(),
-            "no ollama service without being asked"
-        );
-        assert!(compose["volumes"].get("ollama_models").is_none());
-        assert!(yaml(&files, "configs/alpaka.yaml")
-            .get("ollama_url")
-            .is_none());
-        assert!(
-            yaml(&files, "configs/kabinet.yaml")
-                .get("ensured_repos")
-                .is_none(),
-            "the seeded default stays out of the generated config, as upstream leaves it"
-        );
-    }
-
-    #[test]
-    fn running_ollama_here_adds_the_container_its_volume_and_the_url() {
-        let config = with(BTreeMap::from([(
-            ServiceId::Alpaka,
-            ServiceOptions {
-                ollama: Some(OllamaChoice {
-                    run_locally: true,
-                    url: None,
-                }),
-                ..Default::default()
-            },
-        )]));
-
-        let files = files(&config);
-        let compose = yaml(&files, "docker-compose.yaml");
-        assert_eq!(
-            compose["services"]["ollama"]["image"],
-            "ollama/ollama:latest"
-        );
-        // Without the volume every restart re-downloads gigabytes of models.
-        assert_eq!(
-            compose["services"]["ollama"]["volumes"][0],
-            "ollama_models:/root/.ollama"
-        );
-        assert!(compose["volumes"].get("ollama_models").is_some());
-
-        assert_eq!(
-            yaml(&files, "configs/alpaka.yaml")["ollama_url"],
-            "http://ollama:11434"
-        );
-        assert_eq!(config.alpaka.ollama_config.as_ref().unwrap().kind, "local");
-    }
-
-    #[test]
-    fn pointing_at_an_ollama_elsewhere_adds_no_container() {
-        let config = with(BTreeMap::from([(
-            ServiceId::Alpaka,
-            ServiceOptions {
-                ollama: Some(OllamaChoice {
-                    run_locally: false,
-                    url: Some("gpu-box.lab:11434".into()),
-                }),
-                ..Default::default()
-            },
-        )]));
-
-        let files = files(&config);
-        assert!(yaml(&files, "docker-compose.yaml")["services"]
-            .get("ollama")
-            .is_none());
-        // A bare host is plain HTTP, which is what an Ollama on the next machine is.
-        assert_eq!(
-            yaml(&files, "configs/alpaka.yaml")["ollama_url"],
-            "http://gpu-box.lab:11434"
-        );
-        assert_eq!(config.alpaka.ollama_config.as_ref().unwrap().kind, "global");
-    }
-
-    /// Alpaka not being in the hub is the case where pulling several gigabytes for a
-    /// service that does not exist would be worst.
-    #[test]
-    fn no_ollama_for_a_hub_without_alpaka() {
-        let config = build_hub_config(&HubConfigOptions {
-            services: Some(vec![ServiceId::Rekuest]),
-            service_options: BTreeMap::from([(
-                ServiceId::Alpaka,
-                ServiceOptions {
-                    ollama: Some(OllamaChoice {
-                        run_locally: true,
-                        url: None,
-                    }),
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        });
-        assert!(config.local_ollama.is_none());
-    }
-
-    #[test]
-    fn a_customized_repository_list_reaches_kabinet() {
-        let config = with(BTreeMap::from([(
-            ServiceId::Kabinet,
-            ServiceOptions {
-                repositories: Some(vec!["myinstitute/apps:main".into()]),
-                ..Default::default()
-            },
-        )]));
-
-        assert_eq!(
-            config.kabinet.ensured_repositories.as_deref(),
-            Some(["myinstitute/apps:main".to_string()].as_slice()),
-            "an answer replaces the seeded pair rather than adding to it"
-        );
-        assert_eq!(
-            yaml(&files(&config), "configs/kabinet.yaml")["ensured_repos"][0],
-            "myinstitute/apps:main"
-        );
-    }
-
-    /// The dashboard reconciles the compose file against `stack_images`, so a container
-    /// the generator emits but that list forgets shows up as unaccounted for.
-    #[test]
-    fn the_ollama_container_is_accounted_for_like_every_other() {
-        let config = with(BTreeMap::from([(
-            ServiceId::Alpaka,
-            ServiceOptions {
-                ollama: Some(OllamaChoice {
-                    run_locally: true,
-                    url: None,
-                }),
-                ..Default::default()
-            },
-        )]));
-
-        let compose = yaml(&files(&config), "docker-compose.yaml");
-        let emitted: Vec<String> = compose["services"]
-            .as_mapping()
-            .expect("a services mapping")
-            .keys()
-            .map(|k| k.as_str().expect("a name").to_string())
-            .collect();
-        let reported: Vec<String> = config
-            .stack_images()
-            .into_iter()
-            .map(|(host, _)| host)
-            .collect();
-
-        assert!(emitted.contains(&"ollama".to_string()));
-        assert!(
-            reported.contains(&"ollama".to_string()),
-            "stack_images must know about it: {reported:?}"
-        );
-    }
-
-    /// `debug` is the one new setting that needed no generator work: it was already being
-    /// written, and only the question was missing.
-    #[test]
-    fn debug_reaches_the_service_config() {
-        let config = with(BTreeMap::from([(
-            ServiceId::Kabinet,
-            ServiceOptions {
-                debug: true,
-                ..Default::default()
-            },
-        )]));
-
-        let files = files(&config);
-        assert_eq!(
-            yaml(&files, "configs/kabinet.yaml")["django"]["debug"],
-            true
-        );
-        assert_eq!(
-            yaml(&files, "configs/rekuest.yaml")["django"]["debug"],
-            false,
-            "it is per service, not per hub"
-        );
-    }
-}
-
-/// Where the data goes, as the compose file spells it. The default is the engine's own
-/// volumes; the opt-out is bind mounts in the folder, and then no data volume is declared
-/// at all — which is what makes `down --volumes` harmless for that shape of hub.
-mod storage {
-    use super::*;
-    use konstruktor_core::catalog::ServiceId;
-    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions, StorageMode};
-
-    fn built(storage: StorageMode) -> HubConfig {
-        build_hub_config(&HubConfigOptions {
-            device_id: "device".into(),
-            coord_server: "go.arkitekt.live".into(),
-            services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
-            storage,
-            ..Default::default()
-        })
-    }
-
-    fn compose(config: &HubConfig) -> Value {
-        let files = generate_hub_files(config, &IssuedIdentity::default());
-        serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML")
-    }
-
-    #[test]
-    fn the_default_keeps_the_data_in_named_volumes() {
-        let compose = compose(&built(StorageMode::DockerVolumes));
-        assert_eq!(
-            compose["services"]["db"]["volumes"][0],
-            Value::from("db_data:/var/lib/postgresql/data")
-        );
-        assert_eq!(
-            compose["services"]["rustfs"]["volumes"][0],
-            Value::from("rustfs_data:/data")
-        );
-        assert!(compose["volumes"].get("db_data").is_some());
-        assert!(compose["volumes"].get("rustfs_data").is_some());
-    }
-
-    #[test]
-    fn the_opt_out_bind_mounts_into_the_folder_and_declares_no_data_volume() {
-        let compose = compose(&built(StorageMode::DeploymentFolder));
-        assert_eq!(
-            compose["services"]["db"]["volumes"][0],
-            Value::from("./db_data:/var/lib/postgresql/data")
-        );
-        assert_eq!(
-            compose["services"]["rustfs"]["volumes"][0],
-            Value::from("./rustfs_data:/data")
-        );
-        assert!(compose["volumes"].get("db_data").is_none());
-        assert!(compose["volumes"].get("rustfs_data").is_none());
-    }
-}
-
-/// A rollback works by writing a digest-pinned reference into the profile and
-/// regenerating. That only puts anything back if the pin survives the round trip — a
-/// generator that rebuilt the reference from its parts would drop the digest, and the
-/// rollback would report success while changing nothing.
-#[test]
-fn a_digest_pinned_image_survives_the_profile_and_reaches_the_compose_file() {
-    use konstruktor_core::profile::{hub_profile, read_profile, write_profile};
-
-    let pinned = "jhnnsrs/rekuest:next@sha256:\
-0123456789012345678901234567890123456789012345678901234567890123";
-    let mut config = config_of("hub_config.yaml");
-    config.rekuest.image = Some(pinned.to_string());
-
-    let dir = std::env::temp_dir().join(format!("konstruktor-pin-{}", rand::random::<u32>()));
-    std::fs::create_dir_all(&dir).expect("a scratch folder");
-    write_profile(&dir, &hub_profile(config)).expect("writing the profile");
-    let read_back = read_profile(&dir).expect("reading it back").config;
-
-    assert_eq!(read_back.rekuest.image.as_deref(), Some(pinned));
-    assert!(
-        read_back
-            .stack_images()
-            .iter()
-            .any(|(service, image)| service == "rekuest" && image == pinned),
-        "the pin did not reach stack_images"
-    );
-
-    let files = generate_hub_files(&read_back, &IssuedIdentity::default());
-    assert!(
-        files["docker-compose.yaml"].contains(pinned),
-        "the pin did not reach the compose file"
-    );
-}
-
-/// Bank and Kuvert: offered, never switched on unless asked for, and unknown upstream.
-///
-/// The golden cases above already pin that a hub without them generates what it always
-/// did — their fixture profiles predate both. These pin the other half: what a hub that
-/// asked for them gets, and that asking never touches a profile that did not.
-mod experimental_services {
-    use super::*;
-    use konstruktor_core::catalog::ServiceId;
-    use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
-    use konstruktor_core::connect::manifest::{build_hub_request, HubManifestOptions};
-    use konstruktor_core::profile::{hub_profile, read_profile, rewrite_images, write_profile};
-
-    fn with_both() -> HubConfig {
-        build_hub_config(&HubConfigOptions {
-            coord_server: "go.arkitekt.live".into(),
-            rekuest_server: "local".into(),
-            services: Some(vec![
-                ServiceId::Rekuest,
-                ServiceId::Mikro,
-                ServiceId::Bank,
-                ServiceId::Kuvert,
-            ]),
-            ..Default::default()
-        })
-    }
-
-    fn yaml(files: &GeneratedFiles, name: &str) -> Value {
-        serde_norway::from_str(&files[name]).unwrap_or_else(|e| panic!("{name}: {e}"))
-    }
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("konstruktor-{name}-{}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).expect("a scratch folder");
-        dir
-    }
-
-    #[test]
-    fn an_old_profile_loads_and_writes_neither_back() {
         let config = config_of("hub_config.yaml");
-        assert!(!config.bank.enabled && !config.kuvert.enabled);
-        assert!(config.kuvert.fernet_key.is_none());
+        let dir =
+            std::env::temp_dir().join(format!("konstruktor-in-passing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        profile::write_profile(&dir, &profile::hub_profile(config.clone())).unwrap();
+        let before = "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-reaper:\n    image: jhnnsrs/rekuest:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n";
+        std::fs::write(dir.join("docker-compose.yaml"), before).unwrap();
+        let profile_before = std::fs::read_to_string(profile::profile_path(&dir)).unwrap();
 
-        let written = serde_norway::to_value(&config).expect("serializes");
+        let moved = [("mikro".to_string(), "jhnnsrs/mikro:9.9.9".to_string())];
+        let refused = profile::rewrite_images(&dir, &moved).unwrap_err();
         assert!(
-            written.get("bank").is_none(),
-            "no bank key upstream would refuse"
+            matches!(&refused, ProfileError::Layout(why) if why.contains("konstruktor hub regenerate")),
+            "{refused}"
         );
-        assert!(written.get("kuvert").is_none());
-
-        let files = generate_hub_files(&config, &IssuedIdentity::default());
-        assert!(!files
-            .keys()
-            .any(|name| name.contains("bank") || name.contains("kuvert")));
-        assert!(!files.keys().any(|name| name.starts_with("secrets/")));
-    }
-
-    #[test]
-    fn a_kuvert_switched_off_keeps_its_key() {
-        let mut config = with_both();
-        let key = config.kuvert.fernet_key.clone().expect("an enabled Kuvert has a key");
-        config.kuvert.enabled = false;
-
-        let written = serde_norway::to_string(&config).expect("serializes");
-        let read: HubConfig = serde_norway::from_str(&written).expect("reads back");
-        assert!(!read.kuvert.enabled);
         assert_eq!(
-            read.kuvert.fernet_key.as_deref(),
-            Some(key.as_str()),
-            "switching Kuvert back on must not lose its mailboxes"
+            std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
+            before
         );
-    }
-
-    #[test]
-    fn a_new_hub_that_did_not_ask_writes_neither() {
-        let config = build_hub_config(&HubConfigOptions {
-            coord_server: "go.arkitekt.live".into(),
-            ..Default::default()
-        });
-        let written = serde_norway::to_value(&config).expect("serializes");
-        assert!(written.get("bank").is_none());
-        assert!(written.get("kuvert").is_none());
-    }
-
-    #[test]
-    fn enabling_them_emits_their_containers_and_kuverts_key_mount() {
-        let config = with_both();
-        let files = generate_hub_files(&config, &IssuedIdentity::default());
-        let compose = yaml(&files, "docker-compose.yaml");
-
-        let bank = &compose["services"]["bank"];
-        assert_eq!(bank["image"].as_str(), Some("jhnnsrs/bank:latest"));
         assert_eq!(
-            bank["volumes"].as_sequence().unwrap().len(),
-            1,
-            "bank holds no key file"
+            std::fs::read_to_string(profile::profile_path(&dir)).unwrap(),
+            profile_before
         );
+        assert!(!dir.join("configs").exists(), "no config was written");
 
-        let kuvert = &compose["services"]["kuvert"];
-        assert_eq!(kuvert["image"].as_str(), Some("jhnnsrs/kuvert:latest"));
-        let volumes: Vec<&str> = kuvert["volumes"]
-            .as_sequence()
+        profile::regenerate(&dir).unwrap();
+        assert!(konstruktor_core::compose_file::declares_service(
+            &dir,
+            "rekuest-takt"
+        ));
+        assert!(!konstruktor_core::compose_file::declares_service(
+            &dir,
+            "rekuest-reaper"
+        ));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("docker-compose.yaml.bak")).unwrap(),
+            before
+        );
+        assert!(std::fs::read_to_string(dir.join("configs/Caddyfile"))
             .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(volumes.contains(&"./configs/kuvert.yaml:/workspace/config.yaml"));
-        assert!(volumes.contains(&"./secrets/kuvert.fernet:/secrets/kuvert.fernet:ro"));
+            .contains("reverse_proxy rekuest-takt:8080"));
 
-        // Each gets its own database.
-        let databases = compose["services"]["db"]["environment"].clone();
-        let databases = serde_norway::to_string(&databases).unwrap();
-        assert!(databases.contains("bank") && databases.contains("kuvert"));
-    }
-
-    #[test]
-    fn their_configs_carry_the_datalayer_the_hook_and_the_instance() {
-        let config = with_both();
-        let files = generate_hub_files(&config, &IssuedIdentity::default());
-
-        for (id, bucket) in [
-            (ServiceId::Bank, "bankbigfile"),
-            (ServiceId::Kuvert, "kuvertbigfile"),
-        ] {
-            let name = format!("configs/{}.yaml", id.as_str());
-            let service = yaml(&files, &name);
-            assert_eq!(
-                service["datalayer"]["bigfile"]["bucket"].as_str(),
-                Some(bucket),
-                "{name}"
-            );
-            assert!(
-                service["datalayer"].get("media").is_none(),
-                "{name}: only the bucket it declares"
-            );
-            assert_eq!(
-                service["rekuest_hook"]["rekuest_url"].as_str(),
-                Some("http://rekuest:80/rekuest")
-            );
-            assert!(service["instance"]["private_key"].as_str().is_some());
-            assert_eq!(service["postgres"]["db_name"].as_str(), Some(id.as_str()));
-            assert_eq!(
-                service["django"]["force_script_name"].as_str(),
-                Some(id.as_str())
-            );
-        }
-
-        let kuvert = yaml(&files, "configs/kuvert.yaml");
+        // On the layout this build generates, the same rewrite goes through.
+        profile::rewrite_images(&dir, &moved).unwrap();
         assert_eq!(
-            kuvert["secrets"]["key_path"].as_str(),
-            Some("/secrets/kuvert.fernet")
-        );
-        assert!(yaml(&files, "configs/bank.yaml").get("secrets").is_none());
-
-        let key = config.kuvert.fernet_key.as_deref().expect("minted");
-        assert_eq!(files["secrets/kuvert.fernet"], format!("{key}\n"));
-        // What `Fernet.generate_key()` writes: 32 bytes, URL-safe base64, padded.
-        {
-            use base64::Engine;
-            assert_eq!(key.len(), 44);
-            let raw = base64::engine::general_purpose::URL_SAFE
-                .decode(key)
-                .expect("url-safe base64");
-            assert_eq!(raw.len(), 32);
-        }
-
-        // Rekuest runs their periodic work.
-        let rekuest = yaml(&files, "configs/rekuest.yaml");
-        let agents: Vec<&str> = rekuest["rekuest"]["service_agents"]
-            .as_sequence()
-            .unwrap()
-            .iter()
-            .map(|a| a["service"].as_str().unwrap())
-            .collect();
-        assert!(
-            agents.contains(&"bank") && agents.contains(&"kuvert"),
-            "{agents:?}"
-        );
-    }
-
-    #[test]
-    fn the_gateway_the_buckets_and_the_manifest_know_them() {
-        let config = with_both();
-        let files = generate_hub_files(&config, &IssuedIdentity::default());
-
-        let caddy = &files["configs/Caddyfile"];
-        for id in ["bank", "kuvert"] {
-            assert!(caddy.contains(&format!("/{id}*")), "no route for {id}");
-            assert!(caddy.contains(&format!("{id}:80")), "no upstream for {id}");
-        }
-
-        let init = yaml(&files, "configs/rustfs_init.yaml");
-        let buckets: Vec<&str> = init["buckets"]
-            .as_sequence()
-            .unwrap()
-            .iter()
-            .map(|b| b["name"].as_str().unwrap())
-            .collect();
-        assert!(buckets.contains(&"bankbigfile") && buckets.contains(&"kuvertbigfile"));
-
-        let request = build_hub_request(
-            &config,
-            &HubManifestOptions {
-                identifier: "lab-hub".into(),
-                ..Default::default()
-            },
-        );
-        for (id, scope) in [("bank", "bank_read"), ("kuvert", "kuvert_write")] {
-            let instance = request
-                .hub
-                .instances
-                .iter()
-                .find(|i| i.manifest.identifier == format!("live.arkitekt.{id}"))
-                .unwrap_or_else(|| panic!("{id} is in the manifest"));
-            assert!(instance.manifest.scopes.iter().any(|s| s.key == scope));
-            assert!(instance.manifest.roles.is_empty());
-            assert!(instance.manifest.challenge_key.is_some());
-        }
-    }
-
-    /// A new key would make every linked mailbox unreadable, so it is minted once and every
-    /// regenerate writes the same one.
-    #[test]
-    fn kuverts_key_survives_the_profile_and_every_regenerate() {
-        let config = with_both();
-        let key = config.kuvert.fernet_key.clone().expect("minted on create");
-
-        let dir = scratch("kuvert-key");
-        write_profile(&dir, &hub_profile(config)).expect("writing the profile");
-        let mut read_back = read_profile(&dir).expect("reading it back").config;
-        assert_eq!(read_back.kuvert.fernet_key.as_deref(), Some(key.as_str()));
-        assert!(!read_back.ensure_service_secrets(), "kept, not re-minted");
-
-        // The regenerate every image change goes through.
-        rewrite_images(&dir, &[]).expect("regenerates");
-        rewrite_images(&dir, &[]).expect("and again");
-        let on_disk = std::fs::read_to_string(dir.join("secrets/kuvert.fernet")).unwrap();
-        assert_eq!(on_disk, format!("{key}\n"));
-        assert_eq!(
-            read_profile(&dir).unwrap().config.kuvert.fernet_key,
-            Some(key)
-        );
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join("secrets/kuvert.fernet"))
+            profile::read_profile(&dir)
                 .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600, "readable by its owner alone");
-        }
-
+                .config
+                .mikro
+                .image
+                .as_deref(),
+            Some("jhnnsrs/mikro:9.9.9")
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Only an enabled Kuvert gets a key — a hub without it must not grow a block.
+    /// The compose file a hub from before takt runs: Rekuest's reaper, and no takt.
     #[test]
-    fn a_hub_without_kuvert_mints_no_key() {
-        let mut config = config_of("hub_config.yaml");
-        assert!(!config.ensure_service_secrets());
-        assert!(config.kuvert.fernet_key.is_none());
-    }
-}
+    fn a_hub_whose_files_predate_takt_is_not_updated_into_a_broken_one() {
+        let config = config_of("hub_config.yaml");
+        let dir = std::env::temp_dir().join(format!("konstruktor-predates-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-reaper:\n    image: jhnnsrs/rekuest:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n",
+        )
+        .unwrap();
 
-/// Django compares `scheme://host[:port]` as a whole, so every address the hub is reached
-/// at has to be spelled with the port the browser uses there.
-mod trusted_origins {
-    use super::*;
-    use konstruktor_core::config::hub::trusted_origins;
-    use konstruktor_core::config::mesh::{build_mesh_block, MeshOptions};
-
-    #[test]
-    fn every_address_with_its_published_port_and_the_mesh_name() {
-        let mut config = config_of("hub_config.yaml");
-        config.gateway.exposed_http_port = Some(7080);
-        config.gateway.exposed_https_port = Some(7443);
-        config.gateway.ssl = false;
-        config.mesh = Some(build_mesh_block(&MeshOptions {
-            hostname: "lab-hub".into(),
-            auth_key: "tskey-auth-secret".into(),
-            coord_url: None,
-            login: None,
-        }));
-
-        let origins = trusted_origins(&config, &["192.168.1.20".into(), "lab.local".into()]);
-        for expected in [
-            "http://localhost",
-            "http://localhost:7080",
-            "http://192.168.1.20:7080",
-            "http://lab.local:7080",
-            "http://gateway",
-            "http://lab-hub",
-        ] {
-            assert!(
-                origins.contains(&expected.to_string()),
-                "{expected} in {origins:?}"
-            );
-        }
-        // Plain HTTP gateway: no https origin beyond the one always written.
-        assert!(!origins
-            .iter()
-            .any(|o| o.starts_with("https://") && o != "https://localhost"));
-        // No duplicates.
-        let mut deduped = origins.clone();
-        deduped.dedup();
-        assert_eq!(deduped.len(), origins.len());
-    }
-
-    #[test]
-    fn https_origins_only_when_the_hub_terminates_tls() {
-        let mut config = config_of("hub_config.yaml");
-        config.gateway.ssl = true;
-        config.gateway.exposed_https_port = Some(443);
-        let origins = trusted_origins(&config, &["hub.example.org".into()]);
-        assert!(
-            origins.contains(&"https://hub.example.org".to_string()),
-            "{origins:?}"
+        let refusal = konstruktor_core::updates::predates_takt(&dir, &config, "rekuest")
+            .expect("rekuest is refused");
+        assert!(refusal.contains("konstruktor hub regenerate"), "{refusal}");
+        assert!(konstruktor_core::updates::predates_takt(&dir, &config, "rekuest-takt").is_some());
+        // Nothing else is held back by it.
+        assert_eq!(
+            konstruktor_core::updates::predates_takt(&dir, &config, "mikro"),
+            None
         );
-    }
 
-    /// The origins land in every service's `django` block.
-    #[test]
-    fn reach_every_services_config() {
-        let mut config = config_of("hub_config.yaml");
-        config.csrf_trusted_origins = Some(trusted_origins(&config, &["10.0.0.5".into()]));
-        let files = generate_hub_files(&config, &IssuedIdentity::default());
-        for (name, text) in files.iter().filter(|(n, _)| {
-            n.starts_with("configs/") && n.ends_with(".yaml") && !n.contains("rustfs_init")
-        }) {
-            let doc: Value = serde_norway::from_str(text).unwrap();
-            let origins = doc["django"]["csrf_trusted_origins"].as_sequence().unwrap();
-            assert!(
-                origins
-                    .iter()
-                    .any(|o| o.as_str().is_some_and(|o| o.starts_with("http://10.0.0.5"))),
-                "{name}"
-            );
-        }
+        // Regenerated, the same hub updates.
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            konstruktor_core::compose_file::regenerate_from(&config),
+        )
+        .unwrap();
+        assert_eq!(
+            konstruktor_core::updates::predates_takt(&dir, &config, "rekuest"),
+            None
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

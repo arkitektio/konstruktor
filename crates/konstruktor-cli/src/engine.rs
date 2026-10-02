@@ -24,6 +24,7 @@ pub struct EngineCreateArgs {
     /// The engine's name inside the organization it belongs to.
     #[arg(long)]
     pub identifier: Option<String>,
+    /// A line about the engine, sent to the coordination server with the request.
     #[arg(long)]
     pub description: Option<String>,
     /// Join this hub's network (a name or a path), so the engine and the plugins it
@@ -32,10 +33,11 @@ pub struct EngineCreateArgs {
     pub hub: Option<String>,
     /// Put the engine on the mesh, so the plugins it starts reach the hub it is bound to
     /// over the tailnet — from this machine or any other. A mesh key is asked for with
-    /// the authorization; the engine is not written if none is granted.
+    /// the authorization; the engine is not written if none is granted. A switch, unlike
+    /// `hub create --mesh`: the key always comes from the coordination server.
     #[arg(long)]
     pub mesh: bool,
-    /// Write it, but leave it stopped.
+    /// Write the files, but do not start the containers.
     #[arg(long)]
     pub no_start: bool,
     /// Do not open a browser for the authorization.
@@ -133,8 +135,8 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
 
 #[derive(Args, Debug, Clone)]
 pub struct EngineAttachArgs {
-    /// The engine: a path, or the name of a registered one. Defaults to here.
-    pub engine: Option<String>,
+    #[command(flatten)]
+    pub engine: crate::manage::Target,
     /// The hub whose network it joins: a name or a path.
     #[arg(long)]
     pub hub: String,
@@ -142,20 +144,17 @@ pub struct EngineAttachArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct EngineDetachArgs {
-    /// The engine: a path, or the name of a registered one. Defaults to here.
-    pub engine: Option<String>,
+    #[command(flatten)]
+    pub engine: crate::manage::Target,
 }
 
 /// A hub's folder, from its name or path — refused, by name, when it is not a hub.
 fn resolve_hub(given: &str) -> Result<std::path::PathBuf> {
-    crate::manage::Target {
-        target: Some(given.to_string()),
-    }
-    .resolve()
+    crate::manage::Target::named(Some(given.to_string())).resolve()
 }
 
-fn resolve_engine(given: Option<String>) -> Result<std::path::PathBuf> {
-    let resolved = crate::manage::Target { target: given }.resolve_any()?;
+fn resolve_engine(engine: &crate::manage::Target) -> Result<std::path::PathBuf> {
+    let resolved = engine.resolve_any()?;
     if resolved.kind != konstruktor_core::profile::DeploymentKind::Engine {
         bail!(
             "{} is a {}, not a plugin engine",
@@ -168,8 +167,8 @@ fn resolve_engine(given: Option<String>) -> Result<std::path::PathBuf> {
 
 /// `konstruktor engine attach` / `detach`: rewrites the engine's compose file, then
 /// restarts the engine if it is running so the deployer picks the network up.
-pub async fn attach(engine: Option<String>, hub: Option<String>) -> Result<()> {
-    let dir = resolve_engine(engine)?;
+pub async fn attach(engine: crate::manage::Target, hub: Option<String>) -> Result<()> {
+    let dir = resolve_engine(&engine)?;
     let hub = hub.as_deref().map(resolve_hub).transpose()?;
 
     konstruktor_core::engine::attach(&dir, hub.as_deref()).await?;

@@ -24,11 +24,14 @@ pub struct AuthorizeArgs {
     /// The hub's name inside the organization. Defaults to what it is authorized as now.
     #[arg(long)]
     pub identifier: Option<String>,
+    /// A line about the hub, sent to the coordination server with the request.
     #[arg(long)]
     pub description: Option<String>,
-    /// An address to advertise. Repeatable. Replaces what the hub advertises now, and
-    /// overrides --reach. Ignored for a mesh-only hub.
-    #[arg(long = "host")]
+    /// An address to advertise. Repeatable.
+    ///
+    /// Replaces what the hub advertises now, and overrides --reach. Ignored for a
+    /// mesh-only hub.
+    #[arg(long = "host", value_name = "HOST")]
     pub hosts: Vec<String>,
     /// Rescan this machine and advertise what matches: local-only · this-network · public.
     ///
@@ -37,18 +40,21 @@ pub struct AuthorizeArgs {
     /// fills it in once the hub has joined.
     #[arg(long, value_parser = crate::parse_reach)]
     pub reach: Option<hosts::ReachPresetId>,
-    /// Whether to ask for a mesh key: auto (when the hub is not on a mesh yet, or its key
-    /// was issued for a login), fresh (always — for a hub whose key expired before it
-    /// joined, or whose node the coordination server removed), or never.
+    /// Whether to ask for a mesh key: auto · fresh · never.
+    ///
+    /// auto asks when the hub is not on a mesh yet, or its key was issued for a login.
+    /// fresh always asks — for a hub whose key expired before it joined, or whose node
+    /// the coordination server removed.
     #[arg(long, default_value = "auto", value_parser = parse_mesh_key)]
     pub mesh_key: MeshKeyRequest,
-    /// Shorthand for `--mesh-key fresh`.
-    #[arg(long)]
+    /// Shorthand for `--mesh-key fresh`. Kept for scripts that already pass it; the
+    /// help shows the one spelling.
+    #[arg(long, hide = true)]
     pub request_auth_key: bool,
     /// Do not open a browser for the authorization.
     #[arg(long)]
     pub no_open: bool,
-    /// Never prompt.
+    /// Answer yes to the confirmation. It is never asked when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }

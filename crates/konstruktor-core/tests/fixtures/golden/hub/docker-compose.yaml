@@ -112,33 +112,21 @@ services:
         delay: 10s
         max_attempts: 10
         window: 300s
-  rekuest-reaper:
-    image: jhnnsrs/rekuest:latest
-    command: bash run-reaper.sh
+  rekuest-takt:
+    image: jhnnsrs/rekuest-takt:latest
     depends_on:
     - db
     - redis
     - rekuest
     stop_grace_period: 2s
     volumes:
-    - ./configs/rekuest.yaml:/workspace/config.yaml
+    - ./configs/rekuest.yaml:/workspace/config.yaml:ro
     deploy:
       restart_policy:
         condition: on-failure
         delay: 10s
         max_attempts: 10
         window: 300s
-    healthcheck:
-      test:
-      - CMD
-      - python
-      - manage.py
-      - reaper
-      - --check
-      interval: 30s
-      timeout: 20s
-      retries: 3
-      start_period: 60s
   gateway:
     image: caddy:latest
     ports:

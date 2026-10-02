@@ -4,11 +4,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.sh | sh
 #
 # Downloads the binary for this machine, verifies it against the release's published
-# checksums, installs it, and — when there is a terminal to talk to — goes straight into
-# creating a hub in ~/MyHubs/<identifier>.
+# checksums and installs it. Then, when there is a terminal to talk to, it asks two things:
+# whether to put konstruktor on your PATH (`konstruktor self install`), and whether to
+# create a hub now, in ~/MyHubs/<identifier>.
 #
 # Options (pass after `| sh -s --`):
-#   --no-run            install only; do not start the wizard
+#   --no-run            install only; ask nothing
 #   --hub-dir <path>    put the hub here instead of ~/MyHubs/<identifier>
 #   --version <tag>     a specific release, e.g. konstruktor-v0.0.1
 #   --dir <path>        where to install (default: ~/.local/bin)
@@ -37,7 +38,7 @@ while [ $# -gt 0 ]; do
         --version) VERSION="${2:-}"; [ -n "$VERSION" ] || die "--version needs a tag"; shift ;;
         --dir) INSTALL_DIR="${2:-}"; [ -n "$INSTALL_DIR" ] || die "--dir needs a path"; shift ;;
         -h|--help)
-            sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown option: $1" ;;
@@ -151,12 +152,55 @@ mv "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
 BIN="$INSTALL_DIR/$BIN_NAME"
 say "Installed to $BIN"
 
+# --- two questions, both optional --------------------------------------------------------
+#
+# This script's own stdin is the curl pipe, so anything that asks has to re-open the
+# terminal — otherwise it would read the rest of the script instead of the user. Without a
+# terminal (a container, a CI job) or with --no-run there is nobody to ask, and installing
+# and stopping is the right thing: no prompts, and no edits to anybody's shell files.
+INTERACTIVE=0
+if [ "$RUN_AFTER" -eq 1 ] && [ -r /dev/tty ] && [ -t 1 ]; then
+    INTERACTIVE=1
+fi
+
+# Yes unless told otherwise: a bare Enter takes the default.
+confirm() {
+    printf '  %s [Y/n] ' "$1" >&2
+    read -r reply < /dev/tty || reply="n"
+    case "$reply" in
+        ""|[Yy]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# --- on PATH ----------------------------------------------------------------------------
+# `self install` writes the PATH line into the startup file of every shell this machine is
+# set up for. Releases up to konstruktor-v0.11.0 do not have it, and --version can ask for
+# one of those, so it is probed for rather than assumed.
+export_hint() { say "Add it with: export PATH=\"$INSTALL_DIR:\$PATH\""; }
+
+path_hint() {
+    if "$BIN" self install --help >/dev/null 2>&1; then
+        say "Put it on your PATH with: $BIN self install"
+    else
+        export_hint
+    fi
+}
+
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
         printf '\n'
-        say "! $INSTALL_DIR is not on your PATH. Add it with:"
-        say "    export PATH=\"\$PATH:$INSTALL_DIR\""
+        say "! $INSTALL_DIR is not on your PATH."
+        if [ "$INTERACTIVE" -eq 1 ] && "$BIN" self install --help >/dev/null 2>&1; then
+            if confirm "Add it for your shells?"; then
+                "$BIN" self install --dir "$INSTALL_DIR" || export_hint
+            else
+                path_hint
+            fi
+        else
+            path_hint
+        fi
         ;;
 esac
 
@@ -201,39 +245,39 @@ free_hub_dir() {
     return 1
 }
 
-if [ "$RUN_AFTER" -eq 0 ]; then
+HUB_HINT="Create a hub with: $BIN hub create $HUB_PARENT/my-hub"
+
+if [ "$INTERACTIVE" -eq 0 ]; then
     printf '\n'
-    say "Run: mkdir -p $HUB_PARENT/my-hub && cd \$_ && $BIN_NAME hub create"
+    [ "$RUN_AFTER" -eq 0 ] || say "No terminal attached, so nothing was created."
+    say "$HUB_HINT"
     printf '\n'
     exit 0
 fi
 
-# This script's own stdin is the curl pipe, so the wizard would otherwise read the rest of
-# the script instead of the user. Re-opening the terminal is what makes the one-liner work.
-if [ -r /dev/tty ] && [ -t 1 ]; then
+printf '\n'
+if ! confirm "Create a hub now?"; then
     printf '\n'
-    HUB_ID=""
-    while [ -z "$HUB_ID" ]; do
-        printf '  Hub identifier: ' >&2
-        read -r HUB_ID_RAW < /dev/tty || die "no identifier given."
-        HUB_ID="$(slugify "$HUB_ID_RAW")"
-        [ -n "$HUB_ID" ] || say "! letters, digits, dot, underscore and dash — try again."
-    done
-
-    # An explicit --hub-dir is used verbatim; otherwise the first free ~/MyHubs/<id>.
-    if [ -z "$HUB_DIR" ]; then
-        HUB_DIR="$(free_hub_dir "$HUB_ID")" || die "no free folder for $HUB_ID under $HUB_PARENT — pass --hub-dir to say where it should go."
-    fi
-
+    say "$HUB_HINT"
     printf '\n'
-    say "Creating $HUB_ID in $HUB_DIR"
-    # `hub create` makes the folder itself, so there is nothing to mkdir or cd into here.
-    exec "$BIN" hub create --identifier "$HUB_ID" "$HUB_DIR" < /dev/tty
+    exit 0
 fi
 
-# No terminal — a container, a CI job, a non-interactive shell. Installing and stopping is
-# the right thing here; prompting into a pipe is not.
 printf '\n'
-say "No terminal attached, so nothing was created."
-say "Run: mkdir -p $HUB_PARENT/my-hub && cd \$_ && $BIN_NAME hub create"
+HUB_ID=""
+while [ -z "$HUB_ID" ]; do
+    printf '  Hub identifier: ' >&2
+    read -r HUB_ID_RAW < /dev/tty || die "no identifier given."
+    HUB_ID="$(slugify "$HUB_ID_RAW")"
+    [ -n "$HUB_ID" ] || say "! letters, digits, dot, underscore and dash — try again."
+done
+
+# An explicit --hub-dir is used verbatim; otherwise the first free ~/MyHubs/<id>.
+if [ -z "$HUB_DIR" ]; then
+    HUB_DIR="$(free_hub_dir "$HUB_ID")" || die "no free folder for $HUB_ID under $HUB_PARENT — pass --hub-dir to say where it should go."
+fi
+
 printf '\n'
+say "Creating $HUB_ID in $HUB_DIR"
+# `hub create` makes the folder itself, so there is nothing to mkdir or cd into here.
+exec "$BIN" hub create --identifier "$HUB_ID" "$HUB_DIR" < /dev/tty

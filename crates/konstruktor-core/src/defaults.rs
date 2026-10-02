@@ -13,9 +13,19 @@ use crate::hosts::ReachPresetId;
 
 /// The coordination server a hub authorizes against unless told otherwise.
 pub const COORDINATION_SERVER: &str = "go.arkitekt.live";
-/// High ports nothing else on the machine is likely to hold.
-pub const HTTP_PORT: u16 = 7080;
-pub const HTTPS_PORT: u16 = 7443;
+/// The ports a hub takes on this machine, in one run starting at 2754 — A-R-K-I on a
+/// phone keypad. Away from the 3000s, 5000s, 7000s and 8000s that development servers
+/// crowd into, below every system's ephemeral range, and the default of no common open
+/// source project (their IANA entries are old proprietary registrations).
+pub const HTTP_PORT: u16 = 2754;
+pub const HTTPS_PORT: u16 = 2755;
+/// LiveKit's signalling, as the gateway serves it. Not LiveKit's own 7880: a second
+/// LiveKit on the machine — any other stack that brings one — would already hold it.
+pub const LIVEKIT_SIGNAL_PORT: u16 = 2756;
+/// LiveKit's media, over TCP and over UDP. Published as they are; see
+/// [`crate::config::hub::LivekitBlock`].
+pub const LIVEKIT_RTC_TCP_PORT: u16 = 2757;
+pub const LIVEKIT_RTC_UDP_PORT: u16 = 2758;
 /// How far a hub is advertised: the addresses others on this network can use.
 pub const REACH: ReachPresetId = ReachPresetId::ThisNetwork;
 /// Join the organization's mesh, keeping the LAN addresses too.

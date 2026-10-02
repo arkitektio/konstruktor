@@ -294,7 +294,7 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
         bank.url
     );
 
-    // Rekuest's reaper, restarted onto the rewritten rekuest.yaml, provisions bank's agent.
+    // Rekuest and takt, restarted onto the rewritten rekuest.yaml, provision bank's agent.
     let deadline = std::time::Instant::now() + secs("KONSTRUKTOR_E2E_PROVISION_SECS", 180);
     let agents = loop {
         let found = provisioned_agents(&dir, &config);
@@ -305,7 +305,7 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
         tokio::time::sleep(Duration::from_secs(10)).await;
     };
     if agents.get("bank").copied().unwrap_or(0) == 0 {
-        logs(&dir, "rekuest-reaper");
+        logs(&dir, "rekuest-takt");
         logs(&dir, "bank");
         panic!("rekuest did not provision bank's HookAgent: {agents:?}");
     }

@@ -35,4 +35,4 @@ authentikate:
       jwks_uri: http://rekuest:80/rekuest/.well-known/jwks.json
       kind: jwks_uri
 rekuest_hook:
-  rekuest_url: http://rekuest:80/rekuest
+  rekuest_url: http://rekuest-takt:8080/rekuest

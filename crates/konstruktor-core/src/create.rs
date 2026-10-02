@@ -288,7 +288,7 @@ pub async fn create_hub(
         answers.hosts.clone()
     };
 
-    let config = build_hub_config(&HubConfigOptions {
+    let mut config = build_hub_config(&HubConfigOptions {
         device_id: store.device_id.clone(),
         coord_server: answers.coord_server.trim().to_string(),
         rekuest_server: answers.rekuest_server.clone(),
@@ -306,6 +306,8 @@ pub async fn create_hub(
         storage: answers.storage,
         ..Default::default()
     });
+    // LiveKit announces one of the addresses the hub is about to advertise.
+    config.place_livekit(&host_names(&hosts));
 
     // --- authorize ----------------------------------------------------------
     let request = build_hub_request(
@@ -354,7 +356,6 @@ pub async fn create_hub(
     });
 
     // Fold a minted key into the config that was *just* accepted, rather than rebuilding.
-    let mut config = config;
     if answers.mesh_mode == MeshMode::Coordination {
         if let Some(key) = issued_key {
             config.mesh = Some(build_mesh_block(&MeshOptions {
@@ -908,6 +909,11 @@ pub async fn reauthorize(
     let profile = crate::profile::read_profile(&answers.dir)
         .map_err(|e| CreateError::Folder(e.to_string()))?;
     let mut config = profile.config;
+    // It ends by rewriting every generated file, which a hub from before takt must not
+    // have done to it in passing.
+    if let Some(reason) = crate::compose_file::predates_takt(&answers.dir, &config) {
+        return Err(CreateError::Folder(reason));
+    }
     // A service change is refused here, before anybody is sent to a browser, and applied
     // to this copy only: the profile on disk changes once the grant is accepted.
     let services = match &answers.services {
@@ -941,6 +947,9 @@ pub async fn reauthorize(
     } else {
         answers.hosts.clone()
     };
+    // The hub may have moved networks, or just gained Lovekit: either way LiveKit
+    // announces one of the addresses advertised now.
+    config.place_livekit(&host_names(&hosts));
 
     on(CreateEvent::Building);
     let request = build_hub_request(

@@ -312,8 +312,8 @@ export const HubWizard = () => {
     rekuestServer: "local",
     // Rekuest is decided by the provenance question, not by this list.
     services: (defaults?.services ?? []).filter((id) => id !== "rekuest"),
-    httpPort: defaults?.http_port ?? 7080,
-    httpsPort: defaults?.https_port ?? 7443,
+    httpPort: defaults?.http_port ?? 2754,
+    httpsPort: defaults?.https_port ?? 2755,
     ssl: false,
     domain: "",
     globalDescription: "",

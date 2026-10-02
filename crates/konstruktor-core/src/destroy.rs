@@ -13,15 +13,20 @@
 //! applies — it takes the stack down with its volumes *and* removes the directories a
 //! folder-mode profile names — and it is the only place data is deleted from.
 //!
+//! An authorized hub is also listed on a coordination server this machine does not own.
+//! [`delete`] takes it off that list first, as the hub itself — see [`crate::deregister`]
+//! — and only then removes anything here: the login that can ask is in a volume the
+//! local delete destroys, so afterwards nobody on this machine could. A server that
+//! cannot be asked therefore stops the delete, unless the caller says
+//! [`ServerSide::LeaveRegistered`].
+//!
 //! What it deliberately does **not** touch:
 //!
 //! * **Images.** `docker compose down --rmi local` would take them, but images are shared
 //!   between hubs and expensive to fetch again; removing them would slow down every other
 //!   deployment on the machine to tidy up after one.
-//! * **The coordination server.** An authorized hub holds an identifier on a server this
-//!   machine does not own. Deleting the folder cannot revoke it, and pretending otherwise
-//!   would be the more dangerous lie — [`DeletionPlan::was_authorized`] exists so the
-//!   caller can say so.
+//! * **An engine's registration.** A plugin engine is an app on its coordination server,
+//!   with a different login and no way to withdraw itself.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -30,6 +35,7 @@ use serde::Serialize;
 
 use crate::compose;
 use crate::config::hub::HubConfig;
+use crate::deregister::{self, ServerOutcome};
 use crate::profile;
 use crate::reclaim::{self, SkippedMount};
 use crate::registry::{self, DeploymentRecord};
@@ -55,6 +61,22 @@ pub enum DeleteError {
          and volumes would have been left with no folder to remove them from. {0}"
     )]
     ComposeFailed(String),
+    #[error(
+        "The hub could not be removed from its coordination server, so nothing was \
+         deleted: {0}. Deleting it locally anyway leaves it listed there."
+    )]
+    NotDeregistered(String),
+    #[error(
+        "The hub's login for its coordination server could not be used on this machine, \
+         so nothing was deleted: {0}"
+    )]
+    LoginUnavailable(String),
+    #[error(
+        "The hub is gone from its coordination server, but Docker could not take the \
+         stack down, so nothing on this machine was deleted. Delete it again once Docker \
+         works. {0}"
+    )]
+    ComposeFailedAfterDeregistering(String),
     #[error("The stack was taken down, but the folder could not be removed: {0}")]
     FolderNotRemoved(String),
     #[error("The stack was taken down, but this hub's data could not be removed: {0}")]
@@ -74,8 +96,13 @@ pub struct DeletionPlan {
     pub name: String,
     /// Source checkouts under `mounts/`, which may hold work that exists nowhere else.
     pub checkouts: Vec<String>,
-    /// The hub holds an identifier on a coordination server that this cannot revoke.
+    /// The deployment holds an identifier on a coordination server.
     pub was_authorized: bool,
+    /// Deleting will take it off that server first: it is a hub, and it has the login to
+    /// ask with. An authorized deployment without this stays listed there.
+    pub will_deregister: bool,
+    /// The coordination server it was authorized against, to be named in the warning.
+    pub coord_server: Option<String>,
     /// The data directories a purge would remove, resolved. Named rather than guessed at
     /// by the UI: `db_data` and `rustfs_data` are defaults, not constants, and a profile
     /// in the wild can point somewhere else entirely.
@@ -98,6 +125,8 @@ pub struct DeletionPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct Deletion {
     pub path: String,
+    /// What became of the hub's entry on its coordination server.
+    pub server: ServerOutcome,
     /// The containers, networks and volumes are gone.
     pub stack_removed: bool,
     /// The folder and everything in it is gone.
@@ -168,9 +197,9 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
     // longer holds a deployment is a stale entry, not a licence to delete that folder.
     // What counts as a deployment is `profile::holds_a_deployment`'s to say, so that
     // resolving one and deleting one cannot disagree.
-    if profile::holds_a_deployment(&dir).is_none() {
+    let Some(kind) = profile::holds_a_deployment(&dir) else {
         return Err(DeleteError::NotADeployment(dir.display().to_string()));
-    }
+    };
 
     // A profile that will not parse costs the preview its data directories, not the whole
     // plan: `delete` removes the folder wholesale and does not need them.
@@ -189,6 +218,11 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
         name: record.name.clone(),
         checkouts: checkouts(&dir),
         was_authorized: record.identifier.is_some(),
+        // By the credentials rather than the record: they are what the server is asked
+        // with, and a delete that already removed the hub there has moved them aside.
+        will_deregister: kind == profile::DeploymentKind::Hub
+            && crate::credentials::credentials_path(&dir).is_file(),
+        coord_server: record.coord_server.clone(),
         data_dirs: found
             .removable
             .iter()
@@ -229,20 +263,34 @@ fn compose_down(dir: &Path) -> Result<(), DeleteError> {
     Ok(())
 }
 
+/// Whether a delete also takes the hub off its coordination server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerSide {
+    /// Ask the server first, and delete nothing here if it does not agree.
+    Deregister,
+    /// Delete locally and leave the hub listed — for a server that is gone for good, or
+    /// one that cannot remove hubs.
+    LeaveRegistered,
+}
+
 /// Deletes one deployment, entirely.
 ///
 /// The order is the whole point:
 ///
-/// 1. compose down, with volumes — it reads the compose file out of the folder, so it can
+/// 1. the coordination server, for a hub that was authorized — the login it is asked
+///    with lives in a volume, so it can only be asked while the volumes are still there;
+/// 2. compose down, with volumes — it reads the compose file out of the folder, so it can
 ///    only run while the folder is still there;
-/// 2. the folder;
-/// 3. the registry entry.
+/// 3. the folder;
+/// 4. the registry entry.
 ///
-/// A failure at step 1 **aborts**, leaving everything exactly as it was. Deleting the
-/// folder while the containers are still up is the one mistake here that cannot be undone
-/// from inside the app — the stack would keep running with nothing left to stop it by.
-/// Being unable to delete a hub while Docker is off is merely inconvenient.
-pub fn delete(id: &str) -> Result<Deletion, DeleteError> {
+/// A failure at step 1 or 2 **aborts**, leaving everything on this machine exactly as it
+/// was. Deleting the folder while the containers are still up is the one mistake here
+/// that cannot be undone from inside the app — the stack would keep running with nothing
+/// left to stop it by — and deleting the volumes of a hub the server would not let go of
+/// leaves it listed there with no login left to remove it. Being unable to delete a hub
+/// while Docker is off is merely inconvenient.
+pub async fn delete(id: &str, server: ServerSide) -> Result<Deletion, DeleteError> {
     let mut store = registry::load();
     let record = store
         .deployments
@@ -251,7 +299,7 @@ pub fn delete(id: &str) -> Result<Deletion, DeleteError> {
         .ok_or(DeleteError::UnknownDeployment)?
         .clone();
 
-    let (dir, _) = plan(&record)?;
+    let (dir, plan) = plan(&record)?;
 
     // Read before the stack goes down and long before the folder does: the images are in
     // the profile, and the profile is inside the folder we are about to remove. A profile
@@ -261,20 +309,48 @@ pub fn delete(id: &str) -> Result<Deletion, DeleteError> {
         .map(|profile| reclaim::repair_images(&profile.config))
         .unwrap_or_default();
 
-    compose_down(&dir)?;
+    let outcome = match (plan.will_deregister, server) {
+        (false, _) => ServerOutcome::NotRegistered,
+        (true, ServerSide::LeaveRegistered) => ServerOutcome::LeftRegistered,
+        // Told apart because the remedies differ: a server that will not do it can be
+        // left behind, a login this machine could not get at is a reason to try again.
+        (true, ServerSide::Deregister) => {
+            deregister::deregister(&dir)
+                .await
+                .map_err(|e| match e.is_local() {
+                    true => DeleteError::LoginUnavailable(e.to_string()),
+                    false => DeleteError::NotDeregistered(e.to_string()),
+                })?
+        }
+    };
 
-    // The whole folder is going, so handing all of it back to its owner is proportionate.
-    // If the retry still fails, a dev hub's `mounts/` checkouts have been reowned to the
-    // desktop user — harmless, since they were the user's to begin with, but the error
-    // says so rather than leaving it to be discovered.
-    reclaim::remove_tree(&dir, &dir, &images)
-        .map_err(|e| DeleteError::FolderNotRemoved(e.to_string()))?;
+    // Blocking, both of them, and long: a dev hub's checkouts take a while to remove.
+    let removed = dir.clone();
+    tokio::task::spawn_blocking(move || {
+        compose_down(&removed).map_err(|error| match (outcome, error) {
+            (
+                ServerOutcome::Removed | ServerOutcome::AlreadyGone,
+                DeleteError::ComposeFailed(detail),
+            ) => DeleteError::ComposeFailedAfterDeregistering(detail),
+            (_, error) => error,
+        })?;
+
+        // The whole folder is going, so handing all of it back to its owner is
+        // proportionate. If the retry still fails, a dev hub's `mounts/` checkouts have
+        // been reowned to the desktop user — harmless, since they were the user's to
+        // begin with, but the error says so rather than leaving it to be discovered.
+        reclaim::remove_tree(&removed, &removed, &images)
+            .map_err(|e| DeleteError::FolderNotRemoved(e.to_string()))
+    })
+    .await
+    .map_err(|e| DeleteError::FolderNotRemoved(e.to_string()))??;
 
     store.deployments.retain(|d| d.id != id);
     registry::save(&store).map_err(|e| DeleteError::RegistryNotSaved(e.to_string()))?;
 
     Ok(Deletion {
         path: dir.display().to_string(),
+        server: outcome,
         stack_removed: true,
         folder_removed: true,
         forgotten: true,
@@ -468,6 +544,28 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// What decides whether the server is asked is the login in the folder, not the
+    /// registry's memory of an authorization.
+    #[test]
+    fn a_hub_deregisters_only_while_it_holds_its_credentials() {
+        let dir = scratch("deregisters");
+        std::fs::write(dir.join(crate::profile::HUB_CONFIG_FILENAME), "{}").unwrap();
+
+        let mut record = record_at(&dir);
+        record.identifier = Some("mylab".into());
+        record.coord_server = Some("go.arkitekt.live".into());
+
+        let (_, before) = plan(&record).expect("plans");
+        assert!(!before.will_deregister);
+        assert_eq!(before.coord_server.as_deref(), Some("go.arkitekt.live"));
+
+        std::fs::write(dir.join(crate::credentials::CREDENTIALS_FILENAME), "{}").unwrap();
+        let (_, after) = plan(&record).expect("plans");
+        assert!(after.will_deregister);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A plugin engine has no profile — one deployer container, no `hub_config.yaml` —
     /// and deleting one has to work all the same.
     #[test]
@@ -538,6 +636,17 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The desktop app is handed errors as text, and offers "delete locally anyway" by how
+    /// this one begins — `serverRefusedDeletion` in `src/api/index.ts`.
+    #[test]
+    fn the_server_refusal_reads_the_way_the_app_recognises_it() {
+        let refusal = DeleteError::NotDeregistered("it did not answer".into()).to_string();
+        assert!(
+            refusal.starts_with("The hub could not be removed from its coordination server"),
+            "{refusal}"
+        );
     }
 
     /// The home check is an exact match, not a prefix: `MyHub` living *inside* the home

@@ -8,23 +8,30 @@ use tokio_util::sync::CancellationToken;
 use crate::ui;
 
 /// A deployment to act on: a path, a registered name, or — when neither is given — the
-/// current directory, if it holds a hub.
+/// current directory, if it holds a deployment.
 #[derive(Args, Debug, Clone)]
 pub struct Target {
-    /// A path, or the name of a registered deployment.
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
+    #[arg(value_name = "TARGET")]
     pub target: Option<String>,
+    /// The deployment, as a flag: every command takes it this way.
+    // Beside the positional rather than instead of it: the commands whose positional is
+    // something else — a service, a branch, a folder — can only take the deployment as
+    // `--in`, and one spelling that works everywhere is worth more than the shorter one.
+    #[arg(long = "in", value_name = "TARGET", conflicts_with = "target")]
+    pub in_deployment: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct CheckoutArgs {
     /// The branch to switch to. Left out, the branches on offer are listed instead.
     pub branch: Option<String>,
-    /// The deployment: a path, or the name of a registered one. Defaults to here.
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
     // A flag rather than the second positional every other command uses. Two optional
     // positionals of different kinds cannot be told apart — `konstruktor checkout .`
     // would be a request for a branch named `.` — and the branch is what this command is
     // for, so the branch is what gets the positional.
-    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_deployment: Option<String>,
     /// Only this service. By default every checkout in the deployment is switched, which
     /// is what a dev hub following one branch across the services wants.
@@ -37,9 +44,10 @@ pub struct DownArgs {
     #[command(flatten)]
     pub target: Target,
     /// Also remove the volumes — the database and everything stored in this deployment.
+    /// The same data `purge` deletes.
     #[arg(long)]
     pub volumes: bool,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -49,17 +57,19 @@ pub struct SuperuserArgs {
     /// The service whose admin site the account is for. Each keeps its own database, so
     /// an account made in one is not an account in another.
     pub service: String,
-    /// The deployment: a path, or the name of a registered one. Defaults to here.
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
     // A flag, for the reason `CheckoutArgs` gives: two optional positionals of different
     // kinds cannot be told apart, and here the service is the one worth the positional.
-    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_deployment: Option<String>,
+    /// The account's name. Left out, it is asked for.
     #[arg(long)]
     pub username: Option<String>,
     /// Left out, it is asked for without echoing — which is the only way it does not end
     /// up in the shell's history.
     #[arg(long)]
     pub password: Option<String>,
+    /// The account's email address. Optional.
     #[arg(long)]
     pub email: Option<String>,
 }
@@ -68,8 +78,8 @@ pub struct SuperuserArgs {
 pub struct BackupArgs {
     /// The folder to back up into. A timestamped subfolder is created inside it.
     pub into: PathBuf,
-    /// The deployment: a path, or the name of a registered one. Defaults to here.
-    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_deployment: Option<String>,
 }
 
@@ -77,9 +87,9 @@ pub struct BackupArgs {
 pub struct RestoreArgs {
     /// The backup folder — the one holding `manifest.json`.
     pub backup: PathBuf,
-    /// The deployment to restore into: a path, or the name of a registered one. Defaults
-    /// to here.
-    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    /// The deployment to restore into: a path, or a name from `konstruktor list`.
+    /// Defaults to here.
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_deployment: Option<String>,
     /// Copy the raw database files back instead of replaying the SQL dump. Only into the
     /// same Postgres major.
@@ -91,7 +101,7 @@ pub struct RestoreArgs {
     /// Leave the object storage alone.
     #[arg(long)]
     pub skip_minio: bool,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -126,7 +136,21 @@ pub struct Resolved {
 }
 
 impl Target {
-    /// A hub or an engine — for the commands that drive containers, which both have.
+    /// A target that was not parsed from this command's own arguments: `--in` on a
+    /// command whose positional is something else, or a hub named by another flag.
+    pub fn named(target: Option<String>) -> Self {
+        Target {
+            target,
+            in_deployment: None,
+        }
+    }
+
+    /// What was given, by either spelling. `None` means the current directory.
+    pub fn given(&self) -> Option<&str> {
+        self.target.as_deref().or(self.in_deployment.as_deref())
+    }
+
+    /// Any of the three kinds — for the commands that drive containers, which all have.
     pub fn resolve_any(&self) -> Result<Resolved> {
         let store = registry::load();
 
@@ -139,7 +163,7 @@ impl Target {
             }
         };
 
-        match &self.target {
+        match self.given() {
             Some(given) => {
                 let as_path = PathBuf::from(given);
                 if profile::holds_a_deployment(&as_path).is_some() {
@@ -188,8 +212,8 @@ impl Target {
             profile::DeploymentKind::Hub => Ok(resolved.dir),
             other => bail!(
                 "{} is a {}, which has no hub profile. `up`, `stop`, `down`, `pull`, \
-                 `ps`, `logs`, `restart`, `status`, `destroy`, `purge` and `forget` work \
-                 on it; this command does not.",
+                 `ps`, `logs`, `restart`, `status`, `report`, `destroy`, `purge` and \
+                 `forget` work on it; this command does not.",
                 resolved.dir.display(),
                 other.label()
             ),
@@ -437,10 +461,7 @@ async fn apply_remedy(probe: &docker::DockerProbe, yes: bool) -> Result<()> {
 /// one it switches. The switch refuses over uncommitted work, and says so per service
 /// rather than stopping at the first — a partial answer here is worse than a full report.
 pub fn checkout(args: &CheckoutArgs) -> Result<()> {
-    let dir = Target {
-        target: args.in_deployment.clone(),
-    }
-    .resolve()?;
+    let dir = Target::named(args.in_deployment.clone()).resolve()?;
     let profile = profile::read_profile(&dir)?;
     let checkouts = git::checkouts(&dir, &profile.config);
 
@@ -848,11 +869,12 @@ pub fn compose(target: &Target, args: Vec<&str>, verb: &str) -> Result<()> {
     }
 }
 
-/// `konstruktor gateway`: every service, through every advertised address this machine
+/// `konstruktor check`: every service, through every advertised address this machine
 /// can reach. Exits non-zero when a reachable address has a service that does not answer;
 /// an address that is simply not reachable from here is reported, not failed.
 pub async fn gateway(target: &Target, json: bool) -> Result<()> {
-    let dir = target.resolve_any()?.dir;
+    // A hub, by name: the addresses come from its profile, which nothing else has.
+    let dir = target.resolve()?;
     let profile = konstruktor_core::profile::read_profile(&dir)?;
     let aliases = konstruktor_core::gateway_check::check(&dir, &profile.config).await;
 
@@ -1002,10 +1024,7 @@ pub async fn ps(target: &Target, json: bool) -> Result<()> {
 /// creating a hub — the container has to be up and its migrations applied before there
 /// is a table to write to.
 pub async fn superuser(args: SuperuserArgs) -> Result<()> {
-    let dir = Target {
-        target: args.in_deployment.clone(),
-    }
-    .resolve()?;
+    let dir = Target::named(args.in_deployment.clone()).resolve()?;
 
     let username = match args.username {
         Some(name) => name,
@@ -1097,10 +1116,7 @@ fn was_interrupted(status: &std::process::ExitStatus) -> bool {
 pub async fn backup(args: BackupArgs) -> Result<()> {
     use konstruktor_core::backup::{self, BackupEvent, BackupRequest};
 
-    let dir = Target {
-        target: args.in_deployment.clone(),
-    }
-    .resolve()?;
+    let dir = Target::named(args.in_deployment.clone()).resolve()?;
     let request = BackupRequest {
         dir,
         target: args.into.clone(),
@@ -1139,10 +1155,7 @@ pub async fn backup(args: BackupArgs) -> Result<()> {
 pub async fn restore(args: RestoreArgs) -> Result<()> {
     use konstruktor_core::restore::{self, DbMethod, RestoreEvent, RestoreRequest, Verdict};
 
-    let dir = Target {
-        target: args.in_deployment.clone(),
-    }
-    .resolve()?;
+    let dir = Target::named(args.in_deployment.clone()).resolve()?;
     let request = RestoreRequest {
         dir,
         backup: args.backup.clone(),
@@ -1276,7 +1289,20 @@ pub async fn restore(args: RestoreArgs) -> Result<()> {
 pub struct DestroyArgs {
     #[command(flatten)]
     pub target: Target,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Delete what is on this machine without asking the coordination server to remove
+    /// the hub. It stays listed there. For a server that is gone, or that refuses.
+    #[arg(long)]
+    pub local_only: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PurgeArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -1302,13 +1328,18 @@ fn record_for(
 }
 
 /// Prints what an action is about to take, and everything it deliberately will not.
+///
+/// `server` is what a delete will do about the coordination server; a purge, which
+/// leaves the hub and its registration alone, has none.
 fn show_plan(
     plan: &konstruktor_core::destroy::DeletionPlan,
-    whole_folder: bool,
+    server: Option<konstruktor_core::destroy::ServerSide>,
     kind: profile::DeploymentKind,
 ) {
+    use konstruktor_core::destroy::ServerSide;
+
     ui::say("");
-    if whole_folder {
+    if server.is_some() {
         ui::warn(&format!("This deletes {} and everything in it.", plan.path));
     } else {
         ui::warn(&format!("This deletes the data in {}.", plan.path));
@@ -1339,10 +1370,22 @@ fn show_plan(
              joined it was single-use — it cannot simply rejoin.",
         );
     }
-    if plan.was_authorized {
-        ui::step(&ui::dim(
-            "It holds an identifier on a coordination server, which this cannot revoke.",
-        ));
+    let listed_on = plan
+        .coord_server
+        .as_deref()
+        .unwrap_or("its coordination server");
+    match server {
+        Some(ServerSide::Deregister) if plan.will_deregister => ui::step(&ui::dim(&format!(
+            "It is removed from {listed_on} first. If that fails, nothing is deleted."
+        ))),
+        Some(ServerSide::LeaveRegistered) if plan.will_deregister => ui::warn(&format!(
+            "It stays listed on {listed_on}: --local-only does not ask the server, and \
+             afterwards only an administrator there can remove it."
+        )),
+        Some(_) if plan.was_authorized => ui::step(&ui::dim(&format!(
+            "It stays listed on {listed_on}, which this cannot remove it from."
+        ))),
+        _ => {}
     }
     for skipped in &plan.skipped {
         ui::step(&ui::dim(&format!(
@@ -1378,12 +1421,18 @@ fn confirm_destruction(name: &str, yes: bool, by_name: bool, what: &str) -> Resu
 }
 
 /// `konstruktor destroy`: the stack, the folder and the registry entry.
-pub fn destroy(args: DestroyArgs) -> Result<()> {
-    use konstruktor_core::destroy;
+pub async fn destroy(args: DestroyArgs) -> Result<()> {
+    use konstruktor_core::deregister::ServerOutcome;
+    use konstruktor_core::destroy::{self, ServerSide};
 
+    let server = if args.local_only {
+        ServerSide::LeaveRegistered
+    } else {
+        ServerSide::Deregister
+    };
     let (_, record, kind) = record_for(&args.target)?;
     let (_, plan) = destroy::plan(&record)?;
-    show_plan(&plan, true, kind);
+    show_plan(&plan, Some(server), kind);
 
     if !confirm_destruction(&plan.name, args.yes, true, "Deleting this deployment")? {
         ui::step("Left alone.");
@@ -1392,8 +1441,22 @@ pub fn destroy(args: DestroyArgs) -> Result<()> {
     }
 
     ui::step(&format!("Deleting {}…", ui::bold(&plan.name)));
-    let done = destroy::delete(&record.id)?;
+    let done = destroy::delete(&record.id, server).await.map_err(|error| {
+        // The way out is a flag, and the core does not know what front end it is in.
+        match error {
+            destroy::DeleteError::NotDeregistered(_) => {
+                anyhow::anyhow!("{error} Pass --local-only to do that.")
+            }
+            other => other.into(),
+        }
+    })?;
     ui::say("");
+    match done.server {
+        ServerOutcome::Removed => ui::ok("removed from the coordination server"),
+        ServerOutcome::AlreadyGone => ui::ok("already gone from the coordination server"),
+        ServerOutcome::LeftRegistered => ui::warn("still listed on the coordination server"),
+        ServerOutcome::NotRegistered => {}
+    }
     // Per step, because "what is still on my machine" is the question after a failure.
     for (label, ok) in [
         ("containers, networks and volumes", done.stack_removed),
@@ -1412,12 +1475,12 @@ pub fn destroy(args: DestroyArgs) -> Result<()> {
 
 /// `konstruktor purge`: the data, and nothing else. The hub stays, and can be started
 /// again into an empty database.
-pub fn purge(args: DestroyArgs) -> Result<()> {
+pub fn purge(args: PurgeArgs) -> Result<()> {
     use konstruktor_core::destroy;
 
     let (_, record, kind) = record_for(&args.target)?;
     let (_, plan) = destroy::plan(&record)?;
-    show_plan(&plan, false, kind);
+    show_plan(&plan, None, kind);
 
     if !confirm_destruction(&plan.name, args.yes, false, "Delete the data?")? {
         ui::step("Left alone.");
@@ -1452,7 +1515,7 @@ pub fn forget(target: &Target) -> Result<()> {
     // folder was moved or deleted is exactly the one worth forgetting, and resolving it
     // would refuse for that very reason.
     let store = registry::load();
-    let given = target.target.clone().unwrap_or_else(|| ".".into());
+    let given = target.given().unwrap_or(".").to_string();
     let by_path = konstruktor_core::paths::canonical(&given)
         .ok()
         .and_then(|path| registry::find_by_path(&store, &path.to_string_lossy()).cloned());
@@ -1478,8 +1541,8 @@ pub fn forget(target: &Target) -> Result<()> {
 pub struct RestartArgs {
     /// The service to restart. Left out, every container in the deployment is restarted.
     pub service: Option<String>,
-    /// The deployment: a path, or the name of a registered one. Defaults to here.
-    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_deployment: Option<String>,
 }
 
@@ -1489,11 +1552,7 @@ pub struct RestartArgs {
 /// which is what "it has wedged, kick it" means. Recreating against a newer image is
 /// `update`'s job.
 pub async fn restart(args: RestartArgs) -> Result<()> {
-    let dir = Target {
-        target: args.in_deployment.clone(),
-    }
-    .resolve_any()?
-    .dir;
+    let dir = Target::named(args.in_deployment.clone()).resolve_any()?.dir;
 
     let containers = docker::list_deployment_containers(&dir.to_string_lossy())
         .await
@@ -1613,7 +1672,7 @@ pub struct UpdateArgs {
     /// beside the deployment.
     #[arg(long, value_name = "FOLDER")]
     pub backup_into: Option<PathBuf>,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -1888,7 +1947,7 @@ pub struct RollbackArgs {
     /// Show what would be put back, and change nothing.
     #[arg(long)]
     pub check: bool,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -1986,8 +2045,8 @@ pub async fn rollback(args: RollbackArgs, json: bool) -> Result<()> {
 pub struct ReportArgs {
     /// The service the report is about, by its compose name.
     pub service: String,
-    /// The deployment: a path, or the name of a registered one. Defaults to here.
-    #[arg(long = "in", value_name = "DEPLOYMENT")]
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_deployment: Option<String>,
     /// Open the prefilled issue page in a browser.
     #[arg(long)]
@@ -2000,11 +2059,7 @@ pub struct ReportArgs {
 /// thing; the count of redacted values goes to stderr, because a claim that credentials
 /// were removed is one the user is entitled to see and a pipe must not swallow it.
 pub async fn report(args: ReportArgs) -> Result<()> {
-    let dir = Target {
-        target: args.in_deployment.clone(),
-    }
-    .resolve_any()?
-    .dir;
+    let dir = Target::named(args.in_deployment.clone()).resolve_any()?.dir;
 
     let report = konstruktor_core::report::bug_report(
         &dir,
@@ -2059,7 +2114,7 @@ pub struct DoctorArgs {
     /// engine that is already installed. Anything needing sudo stays yours to paste.
     #[arg(long)]
     pub fix: bool,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }

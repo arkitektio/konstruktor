@@ -35,6 +35,56 @@ pub struct CaddyService<'a> {
     pub internal_port: u16,
     /// Bucket names, in `bucket_purposes()` order, for the purposes this service has.
     pub buckets: Vec<String>,
+    /// Where this service's agent protocol is served, when something other than the
+    /// service itself serves it: takt, for Rekuest.
+    pub agent_upstream: Option<AgentUpstream>,
+}
+
+/// The container that serves a service's agent endpoints (`/<service>/agent*`, and
+/// `/<service>/agi*`, as the endpoint used to be called and released agents still ask for).
+#[derive(Debug, Clone)]
+pub struct AgentUpstream {
+    pub host: String,
+    pub port: u16,
+}
+
+/// The agent endpoints of `service`, before its own route: named `handle` blocks run in
+/// the order they are written, and `/rekuest*` would take these too.
+fn agent_route(out: &mut String, service: &str, upstream: &AgentUpstream) {
+    let _ = write!(
+        out,
+        "\t@{service}_agent path /{service}/agent /{service}/agent/* /{service}/agi /{service}/agi/*\n"
+    );
+    let _ = write!(out, "\thandle @{service}_agent {OPEN_BRACE_BARE}\n");
+    let _ = write!(
+        out,
+        "\t\treverse_proxy {}:{}\n",
+        upstream.host, upstream.port
+    );
+    out.push_str("\t}\n\n");
+}
+
+/// The services' internal hooks (`/<service>/_rekuest/…`: scheduled runs, manifests,
+/// Rekuest's upkeep jobs) are called inside the stack's own network, signed with instance
+/// keys. Nothing outside it has a reason to reach them, so the gateway answers 404.
+const INTERNAL_HOOKS: &str = "\t@internal_hooks path_regexp ^/[^/]+/_rekuest(/|$)\n\
+\thandle @internal_hooks {\n\
+\t\trespond 404\n\
+\t}\n\n";
+
+/// The sites the gateway serves beyond the hub's own routes.
+#[derive(Debug, Clone, Default)]
+pub struct GatewaySites<'a> {
+    /// LiveKit's signalling, on a port of its own. See [`crate::config::hub::LivekitBlock`].
+    pub livekit: Option<LivekitSite<'a>>,
+}
+
+/// Where the gateway listens for LiveKit's signalling, and where it forwards it.
+#[derive(Debug, Clone)]
+pub struct LivekitSite<'a> {
+    pub listen_port: u16,
+    pub upstream_host: &'a str,
+    pub upstream_port: u16,
 }
 
 /// Builds the Caddyfile for the enabled services.
@@ -42,7 +92,12 @@ pub struct CaddyService<'a> {
 /// Two passes in [`HUB_SERVICE_ORDER`]: every service's own route first, then every
 /// bucket of every service. Then the minio catch-all — note `path /minio/*`, with a slash
 /// before the star, unlike the service routes.
-pub fn build_caddyfile(services: &[CaddyService<'_>], minio_host: &str, minio_port: u16) -> String {
+pub fn build_caddyfile(
+    services: &[CaddyService<'_>],
+    minio_host: &str,
+    minio_port: u16,
+    sites: &GatewaySites<'_>,
+) -> String {
     let ordered = |f: &mut dyn FnMut(&CaddyService<'_>)| {
         for id in HUB_SERVICE_ORDER {
             if let Some(service) = services.iter().find(|s| s.id == id) {
@@ -53,7 +108,13 @@ pub fn build_caddyfile(services: &[CaddyService<'_>], minio_host: &str, minio_po
 
     let mut out = String::from("http:// {\n");
     out.push_str(CORS);
+    out.push_str(INTERNAL_HOOKS);
 
+    ordered(&mut |service| {
+        if let Some(upstream) = &service.agent_upstream {
+            agent_route(&mut out, service.host, upstream);
+        }
+    });
     ordered(&mut |service| route(&mut out, service.host, service.host, service.internal_port));
     ordered(&mut |service| {
         for bucket in &service.buckets {
@@ -78,6 +139,20 @@ pub fn build_caddyfile(services: &[CaddyService<'_>], minio_host: &str, minio_po
     out.push_str("\t}\n\n");
 
     out.push_str("}\n");
+
+    // LiveKit's signalling — HTTP and the WebSocket its clients upgrade to — on a port of
+    // its own, as the reference deployment serves it: every LiveKit SDK takes a bare
+    // `ws(s)://host:port` and appends `/rtc` itself. Plain HTTP whatever the hub's own site
+    // does; see `LivekitBlock` for why the media ports cannot come through here at all.
+    if let Some(livekit) = &sites.livekit {
+        let _ = write!(out, "\n:{} {{\n", livekit.listen_port);
+        let _ = write!(
+            out,
+            "\treverse_proxy {}:{}\n",
+            livekit.upstream_host, livekit.upstream_port
+        );
+        out.push_str("}\n");
+    }
     out
 }
 

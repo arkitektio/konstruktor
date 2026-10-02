@@ -20,6 +20,11 @@ http:// {
 		respond 204
 	}
 
+	@internal_hooks path_regexp ^/[^/]+/_rekuest(/|$)
+	handle @internal_hooks {
+		respond 404
+	}
+
 	@kabinet path /kabinet*
 	handle @kabinet { 
 		reverse_proxy kabinet:80

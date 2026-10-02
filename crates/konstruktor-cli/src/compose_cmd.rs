@@ -13,18 +13,24 @@ use crate::ui;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ComposeCommand {
-    /// Print the compose file — or what the generator would write, or the last backup.
+    /// Print the compose file, what the generator would write, or the previous version.
     Show(ShowArgs),
     /// Ask the engine whether it accepts the file (`docker compose config`).
     Validate(Target),
-    /// Open the file in $EDITOR, then check what you saved. The previous version is kept
-    /// as docker-compose.yaml.bak.
+    /// Open the file in $EDITOR, then check what you saved.
+    ///
+    /// The previous version is kept as docker-compose.yaml.bak.
     Edit(Target),
-    /// Replace the file with what the generator writes from the hub's profile — undoing
-    /// every hand edit. The previous version is kept as the backup.
+    /// Replace the file with the generated one, undoing every hand edit.
+    ///
+    /// The previous version is kept. Only the compose file: `hub regenerate` rewrites
+    /// the gateway and service configs as well.
     Reset(ConfirmArgs),
-    /// Put the backup back: the version before the last edit or reset.
-    RestoreBackup(ConfirmArgs),
+    /// Put back the file as it was before the last edit or reset.
+    // `restore-backup` is what this was called while "backup" still meant two things —
+    // this file's `.bak`, and `konstruktor backup` of the data.
+    #[command(alias = "restore-backup")]
+    Undo(ConfirmArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -32,18 +38,18 @@ pub struct ShowArgs {
     #[command(flatten)]
     pub target: Target,
     /// What the generator would write from the profile, instead of the file on disk.
-    #[arg(long, conflicts_with = "backup")]
+    #[arg(long, conflicts_with = "previous")]
     pub generated: bool,
-    /// The version before the last edit.
-    #[arg(long)]
-    pub backup: bool,
+    /// The version before the last edit or reset.
+    #[arg(long, alias = "backup")]
+    pub previous: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ConfirmArgs {
     #[command(flatten)]
     pub target: Target,
-    /// Skip the confirmation. Required when this is not a terminal.
+    /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -54,9 +60,10 @@ pub async fn run(command: ComposeCommand) -> Result<()> {
             let dir = args.target.resolve()?;
             let text = if args.generated {
                 compose_file::regenerate(&dir)?
-            } else if args.backup {
-                compose_file::read_backup(&dir)?
-                    .ok_or_else(|| anyhow!("there is no backup — nothing has been edited yet"))?
+            } else if args.previous {
+                compose_file::read_backup(&dir)?.ok_or_else(|| {
+                    anyhow!("there is no previous version — nothing has been edited yet")
+                })?
             } else {
                 compose_file::read(&dir)?
             };
@@ -76,25 +83,77 @@ pub async fn run(command: ComposeCommand) -> Result<()> {
             confirm(
                 args.yes,
                 "Replace the compose file with the generated one? Hand edits are lost; the \
-                 current file becomes the backup.",
+                 current file is kept as the previous version.",
             )?;
             compose_file::write(&dir, &compose_file::regenerate(&dir)?)?;
             ui::ok("The compose file is what the generator writes again.");
             validate(&dir).await
         }
-        ComposeCommand::RestoreBackup(args) => {
+        ComposeCommand::Undo(args) => {
             let dir = args.target.resolve()?;
             let backup = compose_file::read_backup(&dir)?
-                .ok_or_else(|| anyhow!("there is no backup to restore"))?;
+                .ok_or_else(|| anyhow!("there is no previous version to put back"))?;
             confirm(
                 args.yes,
-                "Put the backup back? The current file becomes the new backup.",
+                "Put the previous version back? The current file becomes the previous one.",
             )?;
             compose_file::write(&dir, &backup)?;
-            ui::ok("The backup is the compose file again.");
+            ui::ok("The previous version is the compose file again.");
             validate(&dir).await
         }
     }
+}
+
+/// `hub regenerate`: every generated file again, from the profile as it stands.
+///
+/// The profile is not touched, so the hub keeps its keys, secrets and images. What changes
+/// is what the generator has learnt since the files were written — a hub from before takt
+/// gets takt, its routes and the configs that name it, and loses Rekuest's reaper.
+pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
+    let dir = args.target.resolve()?;
+    let config = konstruktor_core::profile::read_profile(&dir)?.config;
+    confirm(
+        args.yes,
+        "Write this hub's generated files again (compose file, gateway, service configs)? \
+         Hand edits to them are lost; the current compose file is kept as the previous \
+         version.",
+    )?;
+
+    // A service the generator no longer writes has to go while the file on disk still
+    // names it: afterwards compose would not know the container as one of its own.
+    let reaper = konstruktor_core::generate::compose::legacy_reaper_host(&config);
+    if compose_file::declares_service(&dir, &reaper) {
+        let removed = konstruktor_core::compose::run_streamed(
+            &dir,
+            vec![
+                "compose".into(),
+                "rm".into(),
+                "--stop".into(),
+                "--force".into(),
+                reaper.clone(),
+            ],
+            &|_| {},
+        )
+        .await;
+        match removed {
+            Ok(_) => ui::ok(&format!("Removed `{reaper}`: takt does its work now.")),
+            Err(error) => ui::warn(&format!(
+                "could not remove `{reaper}` ({error}) — remove its container by hand once \
+                 the hub is up"
+            )),
+        }
+    }
+
+    konstruktor_core::profile::regenerate(&dir)?;
+    ui::ok("The hub's files are what this Konstruktor generates.");
+    // In this order: `up` alone would start takt beside a Rekuest from before it, and takt
+    // waits for migrations only the new Rekuest has.
+    ui::say(
+        "Nothing running has changed yet. `konstruktor update` moves Rekuest and takt to the \
+         release these files expect; `konstruktor restart` then makes the gateway and the \
+         services read them.",
+    );
+    validate(&dir).await
 }
 
 async fn validate(dir: &std::path::Path) -> Result<()> {
@@ -147,7 +206,7 @@ async fn edit(dir: &std::path::Path) -> Result<()> {
     ui::ok("Saved. The previous version is docker-compose.yaml.bak.");
     if let Err(error) = validate(dir).await {
         ui::step(&ui::dim(
-            "`konstruktor compose restore-backup` puts the previous version back.",
+            "`konstruktor compose undo` puts the previous version back.",
         ));
         return Err(error);
     }

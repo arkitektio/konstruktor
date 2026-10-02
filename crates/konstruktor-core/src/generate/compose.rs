@@ -1,7 +1,9 @@
 use serde_norway::{Mapping, Value};
 
 use crate::catalog::ServiceId;
-use crate::config::hub::{HubConfig, ServiceBlock, DB_COMPOSE_SERVICE};
+use crate::config::hub::{
+    HubConfig, LivekitBlock, ServiceBlock, DB_COMPOSE_SERVICE, LIVEKIT_INTERNAL_PORT,
+};
 use crate::config::mesh::{
     MESH_ENV_FILE, MESH_SOCKET as TAILSCALE_SOCKET, MESH_SOCKET_DIR as TAILSCALE_SOCKET_DIR,
     MESH_SOCKET_VOLUME as TAILSCALE_SOCKET_VOLUME, MESH_STATE_DIR,
@@ -117,65 +119,150 @@ fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
     ])
 }
 
-/// The compose service of Rekuest's reaper, when this hub runs a Rekuest of its own.
+/// The compose service Rekuest's reaper ran as, before takt took its work over.
 ///
-/// Every deadline, schedule, delayed task, trigger and retention sweep of Rekuest fires
-/// from this one loop (`manage.py reaper`) — and it is what provisions the hub's services
-/// as HookAgents. The web container never sweeps, so a hub without it looks healthy while
-/// nothing scheduled ever runs. It serves nothing: no route, no manifest instance.
-pub fn reaper_host(config: &HubConfig) -> Option<String> {
-    let rekuest = &config.rekuest;
-    (rekuest.enabled && rekuest.image.is_some()).then(|| format!("{}-reaper", rekuest.host))
+/// Nothing generates it any more. It is named only to recognise a hub whose files predate
+/// takt: such a hub runs a compose file with this service and without takt's, and must be
+/// regenerated before its Rekuest can move to an image that expects takt.
+pub fn legacy_reaper_host(config: &HubConfig) -> String {
+    format!("{}-reaper", config.rekuest.host)
 }
 
-/// The compose services that run `service`'s image besides `service` itself, and so have to
-/// be recreated with it when its image moves: Rekuest's reaper, for Rekuest.
+/// The compose services that move with `service` when its image moves, and are restarted
+/// with it when its config changes: takt, for Rekuest. The two are one release and read one
+/// config file.
 pub fn companions(config: &HubConfig, service: &str) -> Vec<String> {
     if service == config.rekuest.host {
-        reaper_host(config).into_iter().collect()
+        config.takt_host().into_iter().collect()
     } else {
         Vec::new()
     }
 }
 
-/// Rekuest's reaper: Rekuest's own service — same image, config, mounts and restart policy
-/// — running `run-reaper.sh`, with the heartbeat check the image ships as its health.
-fn reaper_service(config: &HubConfig) -> Value {
+/// The service `companion` moves with, if it is one: Rekuest, for takt.
+pub fn companion_of(config: &HubConfig, companion: &str) -> Option<String> {
+    (config.takt_host().as_deref() == Some(companion)).then(|| config.rekuest.host.clone())
+}
+
+/// takt: its own image, Rekuest's config (read-only: the same file, mounted where the image
+/// looks for it), and nothing else — no source mount, no object storage. Its health is the
+/// image's own `HEALTHCHECK` (`takt healthcheck`), which only passes once Rekuest has
+/// migrated, so it depends on Rekuest having started and waits for the rest itself.
+fn takt_service(config: &HubConfig, image: &str) -> Value {
     let rekuest = &config.rekuest;
-    let mut service = compose_service(config, rekuest);
-    insert(&mut service, "command", s("bash run-reaper.sh"));
-    // No object storage: the reaper reaches it only through Rekuest's code paths, which
-    // run in the web container. Rekuest owns the schema, so it has to have migrated first.
-    insert(
-        &mut service,
-        "depends_on",
-        list(vec![
-            s(DB_COMPOSE_SERVICE),
-            s(&config.local_redis.host),
-            s(&rekuest.host),
-        ]),
-    );
-    insert(
-        &mut service,
-        "healthcheck",
-        map(vec![
-            (
-                "test",
-                list(vec![
-                    s("CMD"),
-                    s("python"),
-                    s("manage.py"),
-                    s("reaper"),
-                    s("--check"),
+    map(vec![
+        ("image", s(image)),
+        (
+            "depends_on",
+            list(vec![
+                s(DB_COMPOSE_SERVICE),
+                s(&config.local_redis.host),
+                s(&rekuest.host),
+            ]),
+        ),
+        ("stop_grace_period", s("2s")),
+        (
+            "volumes",
+            list(vec![s(&format!(
+                "./configs/{}.yaml:/workspace/config.yaml:ro",
+                rekuest.host
+            ))]),
+        ),
+        (
+            "deploy",
+            map(vec![(
+                "restart_policy",
+                map(vec![
+                    ("condition", s("on-failure")),
+                    ("delay", s("10s")),
+                    ("max_attempts", Value::from(10)),
+                    ("window", s("300s")),
                 ]),
-            ),
-            ("interval", s("30s")),
-            ("timeout", s("20s")),
-            ("retries", Value::from(3)),
-            ("start_period", s("60s")),
-        ]),
-    );
-    service
+            )]),
+        ),
+    ])
+}
+
+/// Where LiveKit's config is mounted inside its container.
+const LIVEKIT_CONFIG_PATH: &str = "/etc/livekit.yaml";
+
+/// Whether the hub publishes nothing on this machine: a mesh-only hub, reached through its
+/// tailnet node alone.
+fn publishes_nothing(config: &HubConfig) -> bool {
+    config
+        .mesh
+        .as_ref()
+        .is_some_and(|m| m.enabled && m.mesh_only)
+}
+
+/// `configs/livekit.yaml`: what the media server reads instead of `--dev`'s fixed key.
+///
+/// The key names are LiveKit's own (`config-sample.yaml`). `use_external_ip` is off on
+/// purpose: it has LiveKit ask a STUN server for this machine's public address and
+/// announce that, which is the one address the media ports are not reachable on. It
+/// announces [`LivekitBlock::node_ip`] instead — or, without one, the container's own
+/// address, which only this machine can reach.
+pub fn build_livekit_config(livekit: &LivekitBlock) -> Value {
+    let mut rtc = vec![
+        ("tcp_port", Value::from(livekit.rtc_tcp_port)),
+        ("udp_port", Value::from(livekit.rtc_udp_port)),
+        ("use_external_ip", Value::from(false)),
+    ];
+    if let Some(ip) = livekit.node_ip.as_deref().filter(|ip| !ip.is_empty()) {
+        rtc.push(("node_ip", s(ip)));
+    }
+    map(vec![
+        ("port", Value::from(LIVEKIT_INTERNAL_PORT)),
+        ("rtc", map(rtc)),
+        (
+            "keys",
+            map(vec![(livekit.api_key.as_str(), s(&livekit.api_secret))]),
+        ),
+    ])
+}
+
+/// LiveKit: someone else's image, its config, and the two ports its media flows on.
+///
+/// Those are published as they are — LiveKit announces the port it listens on, so the two
+/// sides of the mapping must match — and by this container rather than the gateway: the
+/// media never passes through it. A mesh-only hub publishes nothing, here as elsewhere.
+fn livekit_service(config: &HubConfig, livekit: &LivekitBlock) -> Value {
+    let mut service = vec![
+        ("image", s(&livekit.image)),
+        ("command", list(vec![s("--config"), s(LIVEKIT_CONFIG_PATH)])),
+    ];
+    if !publishes_nothing(config) {
+        service.push((
+            "ports",
+            list(vec![
+                s(&format!("{0}:{0}", livekit.rtc_tcp_port)),
+                s(&format!("{0}:{0}/udp", livekit.rtc_udp_port)),
+            ]),
+        ));
+    }
+    service.extend([
+        ("stop_grace_period", s("2s")),
+        (
+            "volumes",
+            list(vec![s(&format!(
+                "./configs/{}.yaml:{LIVEKIT_CONFIG_PATH}:ro",
+                livekit.host
+            ))]),
+        ),
+        (
+            "deploy",
+            map(vec![(
+                "restart_policy",
+                map(vec![
+                    ("condition", s("on-failure")),
+                    ("delay", s("10s")),
+                    ("max_attempts", Value::from(10)),
+                    ("window", s("300s")),
+                ]),
+            )]),
+        ),
+    ]);
+    map(service)
 }
 
 /// The bucket + user manifest the init container (`rustfs_init`) reads. `None` when nothing declares a bucket.
@@ -341,8 +428,10 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         let service = config.service(*id);
         insert(&mut services, &service.host, compose_service(config, service));
     }
-    if let Some(reaper) = reaper_host(config).filter(|_| enabled.contains(&ServiceId::Rekuest)) {
-        insert(&mut services, &reaper, reaper_service(config));
+    if enabled.contains(&ServiceId::Rekuest) {
+        if let (Some(takt), Some(image)) = (config.takt_host(), config.takt_image()) {
+            insert(&mut services, &takt, takt_service(config, &image));
+        }
     }
 
     // --- the model provider, when this hub runs its own -----------------------
@@ -367,6 +456,21 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         );
     }
 
+    // --- Lovekit's media server, while Lovekit runs ---------------------------
+    //
+    // Beyond upstream, like the model provider above: its generator has no LiveKit, and
+    // a hub without Lovekit is byte-identical to what it writes.
+    let livekit = config
+        .running_livekit()
+        .filter(|_| enabled.contains(&ServiceId::Lovekit));
+    if let Some(livekit) = livekit {
+        insert(
+            &mut services,
+            &livekit.host,
+            livekit_service(config, livekit),
+        );
+    }
+
     // --- gateway, and the mesh sidecar when there is one ----------------------
     let mut ports: Vec<Value> = Vec::new();
     if let Some(port) = config.gateway.exposed_http_port {
@@ -374,6 +478,11 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     }
     if let Some(port) = config.gateway.exposed_https_port {
         ports.push(s(&format!("{port}:443")));
+    }
+    // LiveKit's signalling is the gateway's to serve, on a port of its own — the same
+    // inside and out, since that is the port every alias of it names.
+    if let Some(livekit) = livekit.filter(|_| !publishes_nothing(config)) {
+        ports.push(s(&format!("{0}:{0}", livekit.signal_port)));
     }
 
     let mesh = config.mesh.as_ref().filter(|m| m.enabled);

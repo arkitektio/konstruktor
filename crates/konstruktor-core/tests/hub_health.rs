@@ -50,7 +50,7 @@ fn compose(dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 /// A port nothing is listening on right now, so the test never collides with a real hub
-/// on 7080 on the same machine.
+/// on its default port on the same machine.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -154,21 +154,21 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         panic!("unhealthy services:\n{}", report(&unhealthy));
     }
 
-    // --- rekuest's reaper -------------------------------------------------------------
-    // Nothing routes to it, so `health::check` judges it by its own healthcheck (the
-    // heartbeat `manage.py reaper --check` reads). It has to be there and healthy: without
-    // it no deadline, schedule or trigger ever fires.
-    let reaper = results
+    // --- takt ----------------------------------------------------------------------
+    // Rekuest's other half: the agent protocol, every deadline and schedule, and the clock
+    // of Rekuest's upkeep jobs. `health::check` judges it by its image's own healthcheck.
+    // It has to be there and healthy: without it no agent connects and nothing fires.
+    let takt = results
         .iter()
-        .find(|s| s.service == "rekuest-reaper")
-        .expect("the health check looked at rekuest-reaper");
-    assert!(reaper.healthy, "rekuest-reaper: {}", reaper.detail);
+        .find(|s| s.service == "rekuest-takt")
+        .expect("the health check looked at rekuest-takt");
+    assert!(takt.healthy, "rekuest-takt: {}", takt.detail);
 
     // --- one HookAgent per hooked service ---------------------------------------------
-    // The reaper provisions every `rekuest.service_agents` entry as a WEBHOOK agent and
-    // registers the actions it reads from the service's manifest. That fetch is signed
-    // both ways with instance keys, so an agent *with actions* proves the whole chain —
-    // the reaper runs, the service answers, and each side finds the other's key in the
+    // Rekuest provisions every `rekuest.service_agents` entry as a WEBHOOK agent, when takt
+    // asks it to, and registers the actions it reads from the service's manifest. Every
+    // request on the way is signed with instance keys, so an agent *with actions* proves
+    // the whole chain — takt asks, the service answers, and each side finds the other's key in the
     // (inline) trust bundle. Every hooked service declares at least its embeddings sweep.
     let expected = expected_service_agents(&dir);
     assert!(!expected.is_empty(), "the hub has hooked services");
@@ -195,10 +195,10 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     if !missing.is_empty() {
         let logs = compose(
             &dir,
-            &["logs", "--no-color", "--tail", "120", "rekuest-reaper"],
+            &["logs", "--no-color", "--tail", "120", "rekuest-takt"],
         );
         eprintln!(
-            "----- logs: rekuest-reaper -----\n{}{}",
+            "----- logs: rekuest-takt -----\n{}{}",
             String::from_utf8_lossy(&logs.stdout),
             String::from_utf8_lossy(&logs.stderr)
         );
@@ -210,7 +210,7 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
 }
 
 /// How long rekuest gets to provision every service agent once the hub is healthy. The
-/// reaper retries an unreachable service every 30 s, so a service that was slow to boot
+/// takt asks again 30 s after a pass in which a service was unreachable, so one that was slow to boot
 /// costs a round or two.
 fn provision_timeout() -> Duration {
     std::env::var("KONSTRUKTOR_E2E_PROVISION_SECS")

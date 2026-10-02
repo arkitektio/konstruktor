@@ -68,7 +68,8 @@ pub struct ServiceBlock {
     pub enabled: bool,
     pub github_repo: String,
     pub host: String,
-    /// Lovekit is not a container in the generated stack and declares no image.
+    /// Absent only on the Lovekit block of a profile written before Lovekit had an image
+    /// (upstream still writes it so): such a block runs nothing. See [`Self::runs`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     pub internal_port: u16,
@@ -131,6 +132,15 @@ impl ServiceBlock {
     /// dropping the key would make its mailboxes unreadable once it is switched back on.
     pub fn is_disposable(&self) -> bool {
         !self.enabled && self.fernet_key.is_none() && !self.retained
+    }
+
+    /// Whether this service is part of the stack: switched on, and with an image to run.
+    ///
+    /// Not just `enabled`: upstream seeds `lovekit: enabled: true` without an image, and
+    /// every profile written before Lovekit had one says the same — a switch that never ran
+    /// anything, and must not start running something now.
+    pub fn runs(&self) -> bool {
+        self.enabled && self.image.is_some()
     }
 
     /// The bucket declared for a purpose, if this service declares one.
@@ -286,6 +296,94 @@ impl OllamaBlock {
     }
 }
 
+/// The LiveKit media server Lovekit hands rooms out on.
+///
+/// Present once Lovekit has run on this hub — minted with it by
+/// [`HubConfig::ensure_service_secrets`] and kept when Lovekit is taken out, like Kuvert's
+/// Fernet key, so adding it back does not change the credentials. The container runs only
+/// while Lovekit does ([`HubConfig::running_livekit`]).
+///
+/// Omitted entirely when absent: upstream's model has no key for it.
+///
+/// **Networking.** Signalling (HTTP and WebSocket) goes through the gateway, which listens on
+/// [`Self::signal_port`] for it — LiveKit's clients append `/rtc` to the URL they are given,
+/// and a dedicated port is what every LiveKit SDK handles, where a path prefix is not. The
+/// media itself cannot be proxied: it flows between the client and LiveKit directly, over
+/// ICE on [`Self::rtc_tcp_port`] and [`Self::rtc_udp_port`], which are published as they
+/// are (LiveKit announces the port it listens on, so the two must match). The address it
+/// announces is [`Self::node_ip`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LivekitBlock {
+    /// The compose service name, which is also how Lovekit reaches its API.
+    pub host: String,
+    pub image: String,
+    /// The key LiveKit knows Lovekit by. Not secret on its own, but redacted all the same.
+    pub api_key: String,
+    /// What Lovekit signals its access tokens with. At least 32 characters: LiveKit refuses
+    /// a shorter one.
+    pub api_secret: String,
+    /// Where the gateway serves LiveKit's signalling, on this machine and on the mesh.
+    pub signal_port: u16,
+    /// ICE over TCP, the fallback where UDP is blocked. Published as is.
+    pub rtc_tcp_port: u16,
+    /// ICE over UDP, every stream multiplexed on one port. Published as is.
+    pub rtc_udp_port: u16,
+    /// The address LiveKit announces in its ICE candidates: the first private IPv4 address
+    /// the hub advertises, set when it is authorized. Without one LiveKit announces its
+    /// container's address, which only this machine (on Linux) can reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_ip: Option<String>,
+}
+
+/// LiveKit 1.13.7. Pinned, not `latest`: it is not ours, and a media server's wire protocol
+/// is worth moving on purpose.
+pub const LIVEKIT_IMAGE: &str = "livekit/livekit-server:v1.13.7";
+
+/// The port LiveKit itself listens on for signalling, inside its container.
+pub const LIVEKIT_INTERNAL_PORT: u16 = 7880;
+
+impl LivekitBlock {
+    /// Fresh credentials, on the ports that follow the gateway's (see [`crate::defaults`]).
+    pub fn minted() -> Self {
+        Self {
+            host: "livekit".into(),
+            image: LIVEKIT_IMAGE.into(),
+            api_key: format!("API{}", generate_alpha_numeric_string(12)),
+            api_secret: generate_alpha_numeric_string(48),
+            signal_port: crate::defaults::LIVEKIT_SIGNAL_PORT,
+            rtc_tcp_port: crate::defaults::LIVEKIT_RTC_TCP_PORT,
+            rtc_udp_port: crate::defaults::LIVEKIT_RTC_UDP_PORT,
+            node_ip: None,
+        }
+    }
+
+    /// The URL Lovekit calls LiveKit's API on, inside the stack's network.
+    pub fn api_url(&self) -> String {
+        format!("http://{}:{LIVEKIT_INTERNAL_PORT}", self.host)
+    }
+}
+
+/// The address LiveKit should announce, of the ones a hub advertises: the first private
+/// IPv4 literal, else the first other routable IPv4 literal. Names are no use — ICE
+/// candidates carry addresses — and neither are loopback, link-local or tailnet (CGNAT)
+/// addresses, since the media ports are published on this machine's own interfaces.
+pub fn livekit_node_ip(hosts: &[String]) -> Option<String> {
+    let v4: Vec<std::net::Ipv4Addr> = hosts
+        .iter()
+        .filter_map(|h| h.trim().parse::<std::net::Ipv4Addr>().ok())
+        .filter(|ip| {
+            !ip.is_loopback()
+                && !ip.is_link_local()
+                && !ip.is_unspecified()
+                && !crate::hosts::is_cgnat(&ip.to_string())
+        })
+        .collect();
+    v4.iter()
+        .find(|ip| ip.is_private())
+        .or_else(|| v4.first())
+        .map(|ip| ip.to_string())
+}
+
 /// The image the `reporter` container runs: Konstruktor's CLI, in a container, published
 /// to Docker Hub by every release. `latest` rather than a version, so a stack written by a
 /// build that was never released still has an image to pull.
@@ -348,6 +446,21 @@ pub struct HubConfig {
     pub kraph: ServiceBlock,
     /// Experimental, and unknown upstream. See [`Self::bank`].
     #[serde(
+        default = "disabled_dokuments",
+        skip_serializing_if = "ServiceBlock::is_disposable"
+    )]
+    pub dokuments: ServiceBlock,
+    /// Experimental, and unknown upstream. See [`Self::bank`].
+    #[serde(
+        default = "disabled_lokate",
+        skip_serializing_if = "ServiceBlock::is_disposable"
+    )]
+    pub lokate: ServiceBlock,
+    /// Lovekit's media server, once Lovekit has run here. See [`LivekitBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub livekit: Option<LivekitBlock>,
+    /// Experimental, and unknown upstream. See [`Self::bank`].
+    #[serde(
         default = "disabled_kuvert",
         skip_serializing_if = "ServiceBlock::is_disposable"
     )]
@@ -364,13 +477,72 @@ pub struct HubConfig {
     pub minio: MinioBlock,
     pub rekuest: ServiceBlock,
     pub rekuest_server: String,
+    /// The image takt runs, once something pinned it (a rollback, an advanced pin). Unset,
+    /// it follows Rekuest's image — see [`Self::takt_image`]. Unknown upstream, so it is
+    /// written only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takt_image: Option<String>,
     /// Present once the hub is authorized. See [`ReporterBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reporter: Option<ReporterBlock>,
     pub lovekit: ServiceBlock,
 }
 
+/// The port takt listens on inside the stack; its image's default.
+pub const TAKT_INTERNAL_PORT: u16 = 8080;
+
+/// The image of takt that belongs to a Rekuest image: the same repository with `-takt`
+/// appended, under the same tag. The two are released together under the same tags, and a
+/// digest pins one image only, so it is dropped.
+///
+/// `jhnnsrs/rekuest:next@sha256:…` → `jhnnsrs/rekuest-takt:next`.
+pub fn takt_image_for(rekuest_image: &str) -> String {
+    let reference = rekuest_image.split('@').next().unwrap_or(rekuest_image);
+    // A colon after the last slash separates the tag; one before it is a registry's port.
+    let name_starts = reference.rfind('/').map_or(0, |slash| slash + 1);
+    match reference[name_starts..].rfind(':') {
+        Some(colon) => {
+            let (repository, tag) = reference.split_at(name_starts + colon);
+            format!("{repository}-takt{tag}")
+        }
+        None => format!("{reference}-takt"),
+    }
+}
+
 impl HubConfig {
+    /// The compose service of takt, when this hub runs a Rekuest of its own.
+    ///
+    /// takt is Rekuest's other half (its own image, the same `rekuest.yaml`): every agent
+    /// socket and hook intake, every deadline, schedule and trigger, and the clock of the
+    /// server's upkeep jobs. A Rekuest without it serves GraphQL and nothing else — no agent
+    /// connects, nothing is assigned, and its health check fails.
+    pub fn takt_host(&self) -> Option<String> {
+        self.rekuest
+            .runs()
+            .then(|| format!("{}-takt", self.rekuest.host))
+    }
+
+    /// The image takt runs: the pinned one, else the one that belongs to Rekuest's.
+    pub fn takt_image(&self) -> Option<String> {
+        let rekuest = self
+            .rekuest
+            .image
+            .as_deref()
+            .filter(|_| self.rekuest.runs())?;
+        Some(
+            self.takt_image
+                .clone()
+                .unwrap_or_else(|| takt_image_for(rekuest)),
+        )
+    }
+
+    /// Where the stack's own containers reach takt, with Rekuest's path: what Rekuest
+    /// signs its internal requests to, and what the hooked services report to.
+    pub fn takt_url(&self) -> Option<String> {
+        self.takt_host()
+            .map(|host| format!("http://{host}:{TAKT_INTERNAL_PORT}/{}", self.rekuest.host))
+    }
+
     pub fn service(&self, id: ServiceId) -> &ServiceBlock {
         match id {
             ServiceId::Rekuest => &self.rekuest,
@@ -383,6 +555,8 @@ impl HubConfig {
             ServiceId::Lovekit => &self.lovekit,
             ServiceId::Bank => &self.bank,
             ServiceId::Kuvert => &self.kuvert,
+            ServiceId::Dokuments => &self.dokuments,
+            ServiceId::Lokate => &self.lokate,
         }
     }
 
@@ -417,13 +591,37 @@ impl HubConfig {
     /// a new one cannot decrypt what the old one encrypted. Only an *enabled* Kuvert gets
     /// one, so a hub without it never writes a `kuvert` block. A Kuvert disabled later keeps
     /// its block and key in the profile (see [`ServiceBlock::is_disposable`]).
+    ///
+    /// Lovekit's LiveKit credentials are minted the same way, once Lovekit runs, and kept
+    /// with the rest of its [`LivekitBlock`] when it is taken out again.
     pub fn ensure_service_secrets(&mut self) -> bool {
+        let mut changed = false;
         let kuvert = &mut self.kuvert;
         if kuvert.enabled && kuvert.fernet_key.is_none() {
             kuvert.fernet_key = Some(crate::secrets::generate_fernet_key());
-            return true;
+            changed = true;
         }
-        false
+        if self.lovekit.runs() && self.livekit.is_none() {
+            self.livekit = Some(LivekitBlock::minted());
+            changed = true;
+        }
+        changed
+    }
+
+    /// The LiveKit this stack runs, if it runs one: only while Lovekit does, like
+    /// [`Self::running_ollama`].
+    pub fn running_livekit(&self) -> Option<&LivekitBlock> {
+        self.livekit.as_ref().filter(|_| self.lovekit.runs())
+    }
+
+    /// Point LiveKit at the address clients should send media to, from the hosts this hub
+    /// advertises (see [`livekit_node_ip`]). Left as it is when none of them is an address.
+    pub fn place_livekit(&mut self, hosts: &[String]) {
+        if let Some(livekit) = self.livekit.as_mut() {
+            if let Some(ip) = livekit_node_ip(hosts) {
+                livekit.node_ip = Some(ip);
+            }
+        }
     }
 
     /// The mutable half of [`Self::service`], used by [`Self::set_service_image`].
@@ -439,6 +637,8 @@ impl HubConfig {
             ServiceId::Lovekit => &mut self.lovekit,
             ServiceId::Bank => &mut self.bank,
             ServiceId::Kuvert => &mut self.kuvert,
+            ServiceId::Dokuments => &mut self.dokuments,
+            ServiceId::Lokate => &mut self.lokate,
         }
     }
 
@@ -450,7 +650,7 @@ impl HubConfig {
             .into_iter()
             .filter(|id| {
                 let block = self.service(*id);
-                block.enabled || block.retained
+                block.runs() || block.retained
             })
             .collect()
     }
@@ -492,11 +692,12 @@ impl HubConfig {
         block.retained = true;
     }
 
-    /// Enabled services, in the order the generator feeds them.
+    /// The services the stack runs, in the order the generator feeds them: enabled, with
+    /// an image (see [`ServiceBlock::runs`]).
     pub fn enabled_services(&self) -> Vec<ServiceId> {
         crate::catalog::HUB_SERVICE_ORDER
             .into_iter()
-            .filter(|id| self.service(*id).enabled)
+            .filter(|id| self.service(*id).runs())
             .collect()
     }
 
@@ -521,6 +722,9 @@ impl HubConfig {
                     .map(|image| (block.host.clone(), image.clone()))
             })
             .collect();
+        if let (Some(host), Some(image)) = (self.takt_host(), self.takt_image()) {
+            images.push((host, image));
+        }
 
         images.push((DB_COMPOSE_SERVICE.to_string(), self.db.image.clone()));
         images.push((
@@ -539,6 +743,9 @@ impl HubConfig {
         }
         if let Some(ollama) = self.running_ollama() {
             images.push((ollama.host.clone(), ollama.image.clone()));
+        }
+        if let Some(livekit) = self.running_livekit() {
+            images.push((livekit.host.clone(), livekit.image.clone()));
         }
         if let Some(reporter) = self.reporter.as_ref().filter(|r| r.enabled) {
             images.push((reporter.host.clone(), reporter.image.clone()));
@@ -588,6 +795,14 @@ impl HubConfig {
         }
         if let Some(reporter) = self.reporter.as_mut().filter(|r| r.host == service) {
             reporter.image = image.to_string();
+            return;
+        }
+        if let Some(livekit) = self.livekit.as_mut().filter(|l| l.host == service) {
+            livekit.image = image.to_string();
+            return;
+        }
+        if self.takt_host().as_deref() == Some(service) {
+            self.takt_image = Some(image.to_string());
             return;
         }
         for id in self.enabled_services() {
@@ -651,10 +866,11 @@ fn seed(id: ServiceId) -> ServiceSeed {
             db: "alpaka",
             github_repo: "https://github.com/arkitektio/alpaka-server",
         },
-        // No image: lovekit is a LiveKit service, not a Django app, and is never emitted.
+        // Experimental, like the ones below. Upstream still seeds it enabled and without
+        // an image, which is what older profiles say; see `ServiceBlock::runs`.
         ServiceId::Lovekit => ServiceSeed {
-            enabled: true,
-            image: None,
+            enabled: false,
+            image: Some("jhnnsrs/lovekit:latest"),
             db: "lovekit",
             github_repo: "https://github.com/arkitektio/lovekit-server",
         },
@@ -671,6 +887,18 @@ fn seed(id: ServiceId) -> ServiceSeed {
             db: "kuvert",
             github_repo: "https://github.com/jhnnsrs/kuvert",
         },
+        ServiceId::Dokuments => ServiceSeed {
+            enabled: false,
+            image: Some("jhnnsrs/dokuments:latest"),
+            db: "dokuments",
+            github_repo: "https://github.com/jhnnsrs/dokuments-server",
+        },
+        ServiceId::Lokate => ServiceSeed {
+            enabled: false,
+            image: Some("jhnnsrs/lokate:latest"),
+            db: "lokate",
+            github_repo: "https://github.com/arkitektio/lokate-server",
+        },
     }
 }
 
@@ -682,6 +910,16 @@ fn disabled_bank() -> ServiceBlock {
 /// What a profile written before Kuvert existed reads as. See [`disabled_bank`].
 fn disabled_kuvert() -> ServiceBlock {
     build_service_block(ServiceId::Kuvert, false)
+}
+
+/// What a profile written before Dokuments existed reads as. See [`disabled_bank`].
+fn disabled_dokuments() -> ServiceBlock {
+    build_service_block(ServiceId::Dokuments, false)
+}
+
+/// What a profile written before Lokate existed reads as. See [`disabled_bank`].
+fn disabled_lokate() -> ServiceBlock {
+    build_service_block(ServiceId::Lokate, false)
 }
 
 fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
@@ -1007,8 +1245,8 @@ impl Default for HubConfigOptions {
             coord_server: String::new(),
             rekuest_server: "local".into(),
             services: None,
-            http_port: Some(7080),
-            https_port: Some(7443),
+            http_port: Some(crate::defaults::HTTP_PORT),
+            https_port: Some(crate::defaults::HTTPS_PORT),
             ssl: false,
             domain: None,
             global_admin: "admin".into(),
@@ -1107,6 +1345,10 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         lovekit: take(&mut blocks, ServiceId::Lovekit),
         bank: take(&mut blocks, ServiceId::Bank),
         kuvert: take(&mut blocks, ServiceId::Kuvert),
+        dokuments: take(&mut blocks, ServiceId::Dokuments),
+        lokate: take(&mut blocks, ServiceId::Lokate),
+        // Minted below, once Lovekit is known to run.
+        livekit: None,
 
         coord_server: options.coord_server.clone(),
         csrf_trusted_origins: options.csrf_trusted_origins.clone(),
@@ -1156,6 +1398,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         // Added when the hub is authorized; a profile that never was has nothing to log
         // in as.
         reporter: None,
+        takt_image: None,
         minio: MinioBlock {
             access_key: generate_alpha_numeric_string(40),
             console_port: 9001,

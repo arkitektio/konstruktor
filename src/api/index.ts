@@ -290,9 +290,23 @@ export const planDeletion = (id: string) =>
  *
  * By id rather than by path — the core resolves and guards the folder itself, so the only
  * thing this can ever delete is a deployment Konstruktor already lists.
+ *
+ * An authorized hub is removed from its coordination server first, and nothing is
+ * deleted if that fails. `localOnly` skips asking the server and leaves the hub listed
+ * there.
  */
-export const deleteDeployment = (id: string) =>
-  invoke<Deletion>("delete_deployment", { id });
+export const deleteDeployment = (id: string, localOnly = false) =>
+  invoke<Deletion>("delete_deployment", { id, localOnly });
+
+/**
+ * Whether a failed delete stopped at the coordination server, with nothing removed —
+ * the one failure `localOnly` is the answer to.
+ *
+ * Commands reject with the error's text, so this goes by how
+ * `DeleteError::NotDeregistered` begins; a test in the core holds that wording still.
+ */
+export const serverRefusedDeletion = (error: unknown) =>
+  String(error).startsWith("The hub could not be removed from its coordination server");
 
 /**
  * Erases a hub's data in place: the containers first, with their volumes, then any

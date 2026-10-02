@@ -213,32 +213,36 @@ pub async fn check(
         });
     }
 
-    // --- 4. rekuest's reaper: nothing to route to, so its own healthcheck -----------
-    // Judged only where the compose file runs one: a hub from before the reaper has none
-    // until its files are regenerated, and "no container" there is not a fault of the hub.
-    if let Some(reaper) = crate::generate::compose::reaper_host(config)
-        .filter(|reaper| crate::compose_file::declares_service(dir, reaper))
+    // --- 4. takt: Rekuest's other half, judged by its image's own healthcheck -------
+    // Rekuest's `ht` answers for takt as well, but only says "unhealthy"; this says which
+    // half. Judged only where the compose file runs one: a hub whose files predate takt has
+    // none until they are regenerated, and "no container" there is not a fault of the hub.
+    if let Some(takt) = config
+        .takt_host()
+        .filter(|takt| crate::compose_file::declares_service(dir, takt))
     {
-        let restarts = seen_down.get(&reaper).copied().unwrap_or(false);
-        let (state, verdict) = wait_for_container_health(&path, &reaper).await;
+        let restarts = seen_down.get(&takt).copied().unwrap_or(false);
+        let (state, verdict) = wait_for_container_health(&path, &takt).await;
         let healthy = verdict == Some(ContainerHealth::Healthy) && !restarts;
         let detail = match (verdict, restarts, state.as_deref()) {
             (_, _, None) => "no container".to_string(),
             (Some(ContainerHealth::Healthy), true, _) => {
                 "healthy, but the container was seen going down".to_string()
             }
-            (Some(ContainerHealth::Healthy), false, _) => "heartbeat is fresh".to_string(),
-            (Some(ContainerHealth::Unhealthy), _, _) => "heartbeat is stale".to_string(),
+            (Some(ContainerHealth::Healthy), false, _) => "serving".to_string(),
+            (Some(ContainerHealth::Unhealthy), _, _) => {
+                "not serving: it waits for Rekuest's migrations, its database and redis".to_string()
+            }
             (Some(ContainerHealth::Starting), _, _) => "still starting".to_string(),
             (None, _, Some(other)) => format!("container is {other}"),
         };
         on_event(HealthEvent::Checked {
-            service: reaper.clone(),
+            service: takt.clone(),
             healthy,
             detail: detail.clone(),
         });
         results.push(ServiceHealth {
-            service: reaper,
+            service: takt,
             container_state: state,
             restarts_seen: restarts,
             http_status: None,

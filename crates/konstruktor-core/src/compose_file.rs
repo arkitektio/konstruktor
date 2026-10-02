@@ -136,14 +136,38 @@ pub fn write(dir: &Path, contents: &str) -> Result<(), ComposeFileError> {
 /// Whether the compose file on disk declares `service`.
 ///
 /// The profile says what the generator *would* write; a hub keeps running the file it was
-/// last given until something regenerates it. A service added to the generator since — the
-/// reaper, for hubs from before it — is only there once that has happened, and a compose
+/// last given until something regenerates it. A service added to the generator since —
+/// takt, for hubs from before it — is only there once that has happened, and a compose
 /// command naming it before then fails with "no such service".
 pub fn declares_service(dir: &Path, service: &str) -> bool {
     std::fs::read_to_string(dir.join(COMPOSE_FILENAME))
         .ok()
         .and_then(|text| serde_norway::from_str::<serde_norway::Value>(&text).ok())
         .is_some_and(|doc| doc.get("services").and_then(|s| s.get(service)).is_some())
+}
+
+/// Why this hub's generated files must not be rewritten as they stand, if they must not.
+///
+/// A hub created before takt runs a compose file with Rekuest and without takt, on a
+/// Rekuest image that serves its agents itself. What the generator writes today assumes
+/// the pair: services report to takt, the gateway routes agents to takt. Writing that
+/// beside the old compose file — as a rollback, a re-authorization or a service change
+/// would, in passing — points the hub at a container that is not there. So every path that
+/// rewrites an existing hub's files asks here first and refuses; only
+/// [`crate::profile::regenerate`], which the operator asks for by name, moves a hub across.
+pub fn predates_takt(dir: &Path, config: &HubConfig) -> Option<String> {
+    let takt = config.takt_host()?;
+    let rekuest = &config.rekuest.host;
+    if !declares_service(dir, rekuest) || declares_service(dir, &takt) {
+        return None;
+    }
+    Some(format!(
+        "this hub's files were generated before `{takt}` existed, and what is generated now \
+         does not work without it: no agent could connect and nothing scheduled would run. \
+         Run `konstruktor hub regenerate` first, then `konstruktor update` (it moves \
+         `{rekuest}` and `{takt}` to the release the new files expect) and `konstruktor \
+         restart`. Nothing was changed."
+    ))
 }
 
 /// What the generator would write for this hub's profile today.
@@ -226,8 +250,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A hub from before the reaper still runs a compose file without it; nothing may
-    /// name it there.
+    /// A hub from before takt still runs a compose file without it; nothing may name it
+    /// there.
     #[test]
     fn says_which_services_the_file_on_disk_declares() {
         let dir = scratch("declares");
@@ -237,7 +261,7 @@ mod tests {
         )
         .unwrap();
         assert!(declares_service(&dir, "rekuest"));
-        assert!(!declares_service(&dir, "rekuest-reaper"));
+        assert!(!declares_service(&dir, "rekuest-takt"));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
             !declares_service(&dir, "rekuest"),

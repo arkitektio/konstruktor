@@ -19,16 +19,21 @@ use crate::ui;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ServicesCommand {
-    /// What the hub runs, what it could, and which removed services still keep their data.
+    /// List what the hub runs, what it could, and which removed services still keep
+    /// their data.
     List(Target),
     /// Add services: re-authorize with them, write their files, and start them.
     Add(ChangeArgs),
-    /// Take services out. Their databases and buckets are kept, so adding one back later
-    /// finds its data again.
+    /// Take services out, keeping their data.
+    ///
+    /// Their databases and buckets are kept, so adding one back later finds its data
+    /// again.
     Remove(ChangeArgs),
-    /// Bring the stack to the services the profile names: create missing databases, start
-    /// new containers, remove the ones taken out, and restart the gateway and every service
-    /// so they read their rewritten configs. What `--no-apply` leaves for later.
+    /// Bring the running stack to the services the profile names.
+    ///
+    /// Creates missing databases, starts new containers, removes the ones taken out, and
+    /// restarts the gateway and every service so they read their rewritten configs. What
+    /// `--no-apply` leaves for later.
     Apply(Target),
 }
 
@@ -37,10 +42,10 @@ pub struct ChangeArgs {
     /// The services, by id: `konstruktor hub services list` shows them.
     #[arg(required = true, value_parser = parse_service)]
     pub services: Vec<ServiceId>,
-    /// The hub: a path, or the name of a registered one. Defaults to here.
+    /// The hub: a path, or a name from `konstruktor list`. Defaults to here.
     // A flag rather than a leading positional: an optional hub in front of a list of
     // services cannot be told apart from the first service — as with `checkout --in`.
-    #[arg(long = "in", value_name = "HUB")]
+    #[arg(long = "in", value_name = "TARGET")]
     pub in_hub: Option<String>,
     /// Write the files, but leave the running stack alone — `konstruktor hub services
     /// apply` brings it to them later.
@@ -49,7 +54,7 @@ pub struct ChangeArgs {
     /// Do not open a browser for the authorization.
     #[arg(long)]
     pub no_open: bool,
-    /// Never prompt.
+    /// Answer yes to the confirmation. It is never asked when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
@@ -177,9 +182,7 @@ fn describe(plan: &ServicePlan) -> Vec<(String, String)> {
 }
 
 async fn change_services(args: &ChangeArgs, change: ServiceChange) -> Result<()> {
-    let target = Target {
-        target: args.in_hub.clone(),
-    };
+    let target = Target::named(args.in_hub.clone());
     let dir = target.resolve()?;
     let config = profile::read_profile(&dir)?.config;
 

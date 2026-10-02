@@ -40,9 +40,16 @@ curl -fsSL https://raw.githubusercontent.com/arkitektio/konstruktor/main/install
 ```
 
 Detects your platform, downloads the matching binary, verifies it against the release's
-published `SHA256SUMS`, installs it to `~/.local/bin`, and — when there is a terminal
-attached — asks for a hub identifier and creates that hub in `~/MyHubs/<identifier>`.
-Pass `--hub-dir <path>` to put it somewhere else, or `--no-run` to just install it.
+published `SHA256SUMS` and installs it to `~/.local/bin`. Then, when there is a terminal
+attached, it asks two things, both defaulting to yes: whether to put that folder on your
+`PATH`, and whether to create a hub now — which asks for an identifier and creates the hub
+in `~/MyHubs/<identifier>`. Pass `--hub-dir <path>` to put it somewhere else, or `--no-run`
+to install and ask nothing.
+
+The `PATH` part is `konstruktor self install`, and can be run on its own at any time. It
+writes one marked block into the startup file of every shell the machine is set up for —
+`.zshrc`, `.bashrc`, `.bash_profile`, `.profile`, fish's `conf.d` — creating one only for
+your login shell, and running it again changes nothing.
 
 On Windows, in PowerShell:
 
@@ -51,8 +58,8 @@ irm https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.ps1 | 
 ```
 
 The same steps: it verifies the binary against `SHA256SUMS`, installs it to
-`%LOCALAPPDATA%\Programs\konstruktor`, adds that to your user `PATH`, and asks for a hub
-to create in `~\MyHubs\<identifier>`. Piped, it reads its options from the environment
+`%LOCALAPPDATA%\Programs\konstruktor`, adds that to your user `PATH`, and asks whether to
+create a hub now in `~\MyHubs\<identifier>`. Piped, it reads its options from the environment
 (`KONSTRUKTOR_NO_RUN=1`, `KONSTRUKTOR_HUB_DIR`, `KONSTRUKTOR_VERSION`,
 `KONSTRUKTOR_INSTALL_DIR`); run as a script it takes `-NoRun`, `-HubDir`, `-Version` and
 `-Dir`.
@@ -65,9 +72,9 @@ can live wherever you want it — `hub create` takes a directory, the way `git i
 and defaults to the one you are standing in. Wherever hubs land, konstruktor keeps its own
 index of them, so `konstruktor list` finds them all and every command takes a name:
 
-Konstruktor deploys three things, and which one you have decides only how you *create* it.
-Once it exists it is a deployment like any other, and the rest of the commands take any of
-them:
+Konstruktor deploys three things. Which one you have decides how you *create* it; once it
+exists it is a deployment like any other, and starting, stopping, inspecting and removing it
+work the same for all three:
 
 | | what it is |
 |---|---|
@@ -76,24 +83,55 @@ them:
 | `coord` | a coordination server: where users, organizations and permissions live, and what a hub or an engine authorizes against |
 
 ```
+# create a deployment
 konstruktor hub create          # the wizard, here
 konstruktor hub create /mnt/data/lab-hub
 konstruktor engine create ~/plugins
 konstruktor coord create ~/lab-coord
-konstruktor list                # what this machine knows about
-konstruktor status [target]     # what a deployment is, and what is running
+
+# run it — any of the three
 konstruktor up|stop|down|pull|ps|logs [target]
 konstruktor logs -f [target]    # stay attached; Ctrl-C stops it
 konstruktor restart [service]   # bounce a container that has wedged
-konstruktor open [target]       # the hub in a browser
+konstruktor status [target]     # what a deployment is, and what is running
+konstruktor list                # what this machine knows about
+
+# change a hub
+konstruktor hub services add|remove <ids…>  # change a hub's services
+konstruktor authorize [target]  # authorize again: new addresses, or a mesh key
 konstruktor update [target]     # only what has actually moved upstream
 konstruktor rollback [target]   # back onto the images it ran before that
-konstruktor authorize [target]  # re-authorize: new addresses, or a mesh key
-konstruktor hub services add|remove <ids…> [--in <hub>]  # change a hub's services
-konstruktor report <service>    # a bug report, with the log's secrets removed
+konstruktor open [target]       # the hub in a browser
+konstruktor check [target]      # does every service answer on every address?
+konstruktor compose show|validate|edit|reset|undo [target]
+konstruktor hub regenerate [target]  # rewrite its generated files from its profile
+konstruktor superuser <service> # an admin account in one service
+konstruktor checkout [branch]   # a dev hub's source checkouts
+
+# change an engine
+konstruktor engine attach [target] --hub <hub>   # join a hub's network
+konstruktor engine detach [target]
+
+# back up a hub
+konstruktor backup <folder>
+konstruktor restore <backup>
+
+# troubleshoot
 konstruktor doctor [--fix]      # is Docker ready — and make it so
-konstruktor destroy|purge|forget <target>
+konstruktor report <service>    # a bug report, with the log's secrets removed
+
+# remove — least to most
+konstruktor forget|purge|destroy [target]
+
+# konstruktor itself
+konstruktor self install        # put it on your PATH
 ```
+
+`[target]` is a path or a name from `konstruktor list`; left out, it is the deployment you
+are standing in. Every command that takes one also takes it as `--in <target>`, which is the only spelling
+where the positional is something else — a service, a branch, a backup folder:
+`konstruktor restart mikro --in lab-hub`. `konstruktor --help` lists the commands under
+these same headings.
 
 > **`coord create` is not finished.** A coordination server is a first-class deployment —
 > it is recognised on disk, listed, and driven by every lifecycle command above — but
@@ -140,6 +178,12 @@ different amounts of destruction: **`forget`** stops listing it and touches no f
 **`purge`** deletes its data and keeps the hub, and **`destroy`** removes the containers,
 the folder and the registry entry. Each prints what it is about to take — including source
 checkouts that may hold commits pushed nowhere — before it asks.
+
+An authorized hub is also listed on its coordination server, and **`destroy` removes it
+there first**, logged in as the hub itself. If the server cannot be asked — it is down, it
+refuses the hub's login, or it predates the endpoint — nothing is deleted, because the
+login that could ask later goes with the volumes. `destroy --local-only` deletes what is on
+the machine anyway and leaves the hub listed, for an administrator of that server to remove.
 
 Every answer has a flag, so a hub can be created unattended:
 

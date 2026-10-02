@@ -119,8 +119,8 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
             plan.services.push(id);
         }
     }
-    // Asked to remove something that is never emitted (Lovekit): it does not run here
-    // either, so it is as unchanged as any other service that is not running.
+    // Asked to remove something with no place in the generation order: it does not run
+    // here either, so it is as unchanged as any other service that is not running.
     for id in &change.remove {
         if !HUB_SERVICE_ORDER.contains(id) && !plan.unchanged.contains(id) {
             plan.unchanged.push(*id);
@@ -189,6 +189,23 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
              one is configured."
                 .to_string(),
         );
+    }
+    if plan.added.contains(&ServiceId::Lovekit) {
+        let mesh_only = config
+            .mesh
+            .as_ref()
+            .is_some_and(|m| m.enabled && m.mesh_only);
+        plan.notes.push(if mesh_only {
+            "Lovekit brings a LiveKit media server with it. This hub is mesh-only and \
+             publishes no port, so only clients that relay their media over the mesh can \
+             hold a room."
+                .to_string()
+        } else {
+            "Lovekit brings a LiveKit media server with it, which opens ports 2756/tcp, \
+             2757/tcp and 2758/udp on this machine. Media flows on them directly, so it \
+             works on this machine's network, not across the internet."
+                .to_string()
+        });
     }
     if !plan.removed.is_empty() {
         plan.notes.push(format!(
@@ -361,7 +378,7 @@ pub fn changed_configs(
 
 /// The running containers that have to be restarted to read a config that changed under
 /// them: the gateway for the Caddyfile (routes came and went), a service — and whatever
-/// runs its image besides it, Rekuest's reaper — for its own config (the services Rekuest
+/// reads it besides it, Rekuest's takt — for its own config (the services Rekuest
 /// hooks into, the inline trust bundle). A service just added or removed is not among them:
 /// `up` starts the one and removes the other.
 pub fn services_to_restart(
@@ -653,10 +670,22 @@ mod tests {
         );
     }
 
+    /// It has an image now. What it brings with it is said before anybody accepts it.
     #[test]
-    fn lovekit_cannot_be_added() {
-        let error = plan(&hub(), &change(&[ServiceId::Lovekit], &[])).unwrap_err();
-        assert!(error.to_string().contains("no published image"), "{error}");
+    fn adding_lovekit_says_what_it_opens() {
+        let mut config = hub();
+        let plan = plan(&config, &change(&[ServiceId::Lovekit], &[])).unwrap();
+        assert_eq!(plan.added, [ServiceId::Lovekit]);
+        assert!(
+            plan.notes.iter().any(|n| n.contains("2758/udp")),
+            "{:?}",
+            plan.notes
+        );
+
+        // Applied, the media server exists, and only while Lovekit runs.
+        apply_plan(&mut config, &plan);
+        config.ensure_service_secrets();
+        assert!(config.running_livekit().is_some());
     }
 
     #[test]
@@ -750,7 +779,7 @@ mod tests {
         .to_vec();
         assert_eq!(
             services_to_restart(&config, &changed, &added),
-            ["gateway", "rekuest", "rekuest-reaper", "mikro"]
+            ["gateway", "rekuest", "rekuest-takt", "mikro"]
         );
 
         // A service taken out is not restarted: `up --remove-orphans` removes it.
@@ -769,7 +798,7 @@ mod tests {
         let config = hub();
         let all = every_config_reader(&config);
         assert_eq!(all[0], "gateway");
-        assert!(all.contains(&"rekuest-reaper".to_string()));
+        assert!(all.contains(&"rekuest-takt".to_string()));
         assert!(all.contains(&"mikro".to_string()));
         assert!(!all.contains(&"bank".to_string()));
     }

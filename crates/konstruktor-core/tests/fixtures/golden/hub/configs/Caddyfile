@@ -20,6 +20,16 @@ http:// {
 		respond 204
 	}
 
+	@internal_hooks path_regexp ^/[^/]+/_rekuest(/|$)
+	handle @internal_hooks {
+		respond 404
+	}
+
+	@rekuest_agent path /rekuest/agent /rekuest/agent/* /rekuest/agi /rekuest/agi/*
+	handle @rekuest_agent {
+		reverse_proxy rekuest-takt:8080
+	}
+
 	@rekuest path /rekuest*
 	handle @rekuest { 
 		reverse_proxy rekuest:80

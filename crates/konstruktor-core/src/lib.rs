@@ -8,6 +8,7 @@ pub mod coord;
 pub mod create;
 pub mod credentials;
 pub mod defaults;
+pub mod deregister;
 pub mod destroy;
 pub mod docker;
 pub mod engine;

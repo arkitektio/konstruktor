@@ -29,10 +29,13 @@ pub struct CoordCreateArgs {
     /// wherever they run — not just from this machine.
     #[arg(long)]
     pub domain: Option<String>,
+    /// The port it answers plain HTTP on.
     #[arg(long, default_value_t = 8080)]
     pub http_port: u16,
+    /// The port it answers HTTPS on, with `--ssl`.
     #[arg(long, default_value_t = 8443)]
     pub https_port: u16,
+    /// Turn HTTPS on.
     #[arg(long)]
     pub ssl: bool,
     /// The first account, which everything else is administered through.
@@ -41,12 +44,13 @@ pub struct CoordCreateArgs {
     /// Left out, a strong one is generated.
     #[arg(long)]
     pub admin_password: Option<String>,
+    /// The first account's email address. Optional.
     #[arg(long)]
     pub admin_email: Option<String>,
-    /// Skip `docker compose up -d`.
+    /// Write the files, but do not start the containers.
     #[arg(long)]
     pub no_start: bool,
-    /// Print what would be written and stop.
+    /// Print what would be written and stop. Nothing is created.
     #[arg(long)]
     pub dry_run: bool,
 }

@@ -4,11 +4,11 @@ Konstruktor installer for Windows (PowerShell 5.1 or 7+).
     irm https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.ps1 | iex
 
 Downloads the binary for this machine, verifies it against the release's published checksums,
-installs it, puts it on your PATH and - when there is a console to talk to - goes straight into
-creating a hub in ~\MyHubs\<identifier>.
+installs it and puts it on your PATH. Then, when there is a console to talk to, it asks whether
+to create a hub now, in ~\MyHubs\<identifier>.
 
 Options, when the script is run rather than piped (or through the environment when piped):
-    -NoRun              install only; do not start the wizard        (KONSTRUKTOR_NO_RUN=1)
+    -NoRun              install only; ask nothing                    (KONSTRUKTOR_NO_RUN=1)
     -HubDir <path>      put the hub here instead of ~\MyHubs\<id>    (KONSTRUKTOR_HUB_DIR)
     -Version <tag>      a specific release, e.g. konstruktor-v0.6.0  (KONSTRUKTOR_VERSION)
     -Dir <path>         where to install                             (KONSTRUKTOR_INSTALL_DIR)
@@ -183,6 +183,16 @@ $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedire
 if (-not $interactive) {
     Write-Host ''
     Say 'No console attached, so nothing was created.'
+    Say $hint
+    Write-Host ''
+    return
+}
+
+# Yes unless told otherwise: a bare Enter takes the default.
+Write-Host ''
+$answer = Read-Host '  Create a hub now? [Y/n]'
+if ($answer -and $answer -notmatch '^[Yy]') {
+    Write-Host ''
     Say $hint
     Write-Host ''
     return

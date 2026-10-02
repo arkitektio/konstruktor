@@ -63,12 +63,18 @@ fn produces_the_same_shape_for_every_block() {
         "minio".into(),
         "local_redis".into(),
     ];
-    // Bank and Kuvert are not upstream: the Python CLI has no block for them to compare
-    // against, and a hub without them writes none (see `experimental_services`).
+    // Bank, Kuvert, Dokuments and Lokate are not upstream: the Python CLI has no block for
+    // them to compare against, and a hub without them writes none (see
+    // `experimental_services`).
     blocks.extend(
         konstruktor_core::catalog::SERVICE_IDS
             .iter()
-            .filter(|id| !matches!(id, ServiceId::Bank | ServiceId::Kuvert))
+            .filter(|id| {
+                !matches!(
+                    id,
+                    ServiceId::Bank | ServiceId::Kuvert | ServiceId::Dokuments | ServiceId::Lokate
+                )
+            })
             .map(|id| id.as_str().to_string()),
     );
 
@@ -81,6 +87,8 @@ fn produces_the_same_shape_for_every_block() {
         ("elektro", "bigfile_bucket"),
         ("kraph", "zarr_bucket"),
         ("kraph", "bigfile_bucket"),
+        // Lovekit has an image here; upstream still seeds it without one.
+        ("lovekit", "image"),
     ];
 
     for block in blocks {
@@ -189,7 +197,7 @@ fn optional_keys_are_absent_rather_than_null() {
         !yaml.contains("mesh:"),
         "a hub with no mesh must carry no mesh key"
     );
-    // Lovekit declares no image, and every service but mikro/elektro declares no zarr.
+    // Every service has an image, and every one but mikro/elektro declares no zarr.
     assert!(!yaml.contains("image: null"));
     assert!(!yaml.contains("zarr_bucket: null"));
     assert!(!yaml.contains("ollama_config: null"));

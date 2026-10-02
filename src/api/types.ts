@@ -17,6 +17,8 @@ export const SERVICE_IDS = [
   "lovekit",
   "bank",
   "kuvert",
+  "dokuments",
+  "lokate",
 ] as const;
 
 export type ServiceId = (typeof SERVICE_IDS)[number];
@@ -29,7 +31,7 @@ export type ServiceMeta = {
   purpose: string;
   /** Pre-ticked when nothing else is said. */
   default: boolean;
-  /** Lovekit has no published image, so ticking it would change nothing. */
+  /** False for a service with no image to run, where ticking it would change nothing. */
   emitted: boolean;
   /** Offered, but listed apart under a collapsed "Experimental" section. */
   experimental: boolean;
@@ -549,15 +551,20 @@ export type ComposeAction = "up" | "stop" | "down" | "pull" | "ps" | "logs";
 /**
  * What deleting a deployment would take with it, worked out before the user is asked.
  *
- * `checkouts` and `was_authorized` exist so the confirmation can name what it cannot
- * undo: a dev hub's `mounts/` trees may hold work that is nowhere else, and an authorized
- * hub keeps an identifier on a coordination server that a local delete cannot revoke.
+ * `checkouts` exists so the confirmation can name what it cannot undo: a dev hub's
+ * `mounts/` trees may hold work that is nowhere else. `will_deregister` says whether the
+ * delete also takes the deployment off its coordination server — a hub that holds its
+ * login does; anything else that `was_authorized` stays listed there.
  */
 export type DeletionPlan = {
   path: string;
   name: string;
   checkouts: string[];
   was_authorized: boolean;
+  /** Deleting removes it from the coordination server first, as the hub itself. */
+  will_deregister: boolean;
+  /** The coordination server it was authorized against. */
+  coord_server: string | null;
   /**
    * The data directories, resolved. Named by the core rather than assumed by the UI:
    * `db_data` and `minio_data` are defaults, not constants, and a profile in the wild can
@@ -574,6 +581,8 @@ export type DeletionPlan = {
 /** What a delete actually managed to remove, step by step. */
 export type Deletion = {
   path: string;
+  /** What became of the hub's entry on its coordination server. */
+  server: "removed" | "already_gone" | "not_registered" | "left_registered";
   stack_removed: boolean;
   folder_removed: boolean;
   forgotten: boolean;

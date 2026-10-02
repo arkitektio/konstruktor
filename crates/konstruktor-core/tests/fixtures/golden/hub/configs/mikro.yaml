@@ -56,4 +56,4 @@ datalayer:
   konnektion:
     bucket: mikrokonnektion
 rekuest_hook:
-  rekuest_url: http://rekuest:80/rekuest
+  rekuest_url: http://rekuest-takt:8080/rekuest
