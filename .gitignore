@@ -25,3 +25,5 @@ dist-ssr
 
 # Rust build output (cargo workspace root)
 /target
+# ...and of a `cargo` run from inside a member crate, which builds beside it
+/crates/*/target
