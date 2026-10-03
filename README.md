@@ -43,8 +43,9 @@ Detects your platform, downloads the matching binary, verifies it against the re
 published `SHA256SUMS` and installs it to `~/.local/bin`. Then, when there is a terminal
 attached, it asks two things, both defaulting to yes: whether to put that folder on your
 `PATH`, and whether to create a hub now — which asks for an identifier and creates the hub
-in `~/MyHubs/<identifier>`. Pass `--hub-dir <path>` to put it somewhere else, or `--no-run`
-to install and ask nothing.
+in `~/MyHubs/<identifier>`. Pass `--hub-dir <path>` to put it somewhere else,
+`--template personal` to make a personal hub instead of a lab hub (see
+[templates](#templates)), or `--no-run` to install and ask nothing.
 
 The `PATH` part is `konstruktor self install`, and can be run on its own at any time. It
 writes one marked block into the startup file of every shell the machine is set up for —
@@ -58,11 +59,11 @@ irm https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.ps1 | 
 ```
 
 The same steps: it verifies the binary against `SHA256SUMS`, installs it to
-`%LOCALAPPDATA%\Programs\konstruktor`, adds that to your user `PATH`, and asks whether to
-create a hub now in `~\MyHubs\<identifier>`. Piped, it reads its options from the environment
-(`KONSTRUKTOR_NO_RUN=1`, `KONSTRUKTOR_HUB_DIR`, `KONSTRUKTOR_VERSION`,
-`KONSTRUKTOR_INSTALL_DIR`); run as a script it takes `-NoRun`, `-HubDir`, `-Version` and
-`-Dir`.
+`%LOCALAPPDATA%\Programs\konstruktor`, then asks whether to add that to your user `PATH` and
+whether to create a hub now in `~\MyHubs\<identifier>`. Piped, it reads its options from the environment
+(`KONSTRUKTOR_NO_RUN=1`, `KONSTRUKTOR_HUB_DIR`, `KONSTRUKTOR_TEMPLATE`, `KONSTRUKTOR_VERSION`,
+`KONSTRUKTOR_INSTALL_DIR`); run as a script it takes `-NoRun`, `-HubDir`, `-Template`,
+`-Version` and `-Dir`.
 
 Both installers take the newest *published* release. A release stays a draft until every
 binary and `SHA256SUMS` are attached, so a release whose build failed is never installed.
@@ -84,8 +85,10 @@ work the same for all three:
 
 ```
 # create a deployment
-konstruktor hub create          # the wizard, here
+konstruktor hub create          # asks you what you want, here
 konstruktor hub create /mnt/data/lab-hub
+konstruktor hub create --template personal   # a ready-made kind of hub
+konstruktor hub templates       # the kinds there are
 konstruktor engine create ~/plugins
 konstruktor coord create ~/lab-coord
 
@@ -192,9 +195,27 @@ konstruktor hub create ~/MyHubs/lab-hub --server go.arkitekt.live \
   --identifier lab-hub --services rekuest,mikro,fluss --yes
 ```
 
+#### Templates
+
+A template is a ready-made kind of hub, so you do not have to pick the services yourself:
+
+| template | what you get |
+|---|---|
+| `default` | A lab hub: images, workflows, apps, a knowledge graph and language models |
+| `personal` | A hub for yourself: bank accounts, mail, documents and your location timeline |
+
+```
+konstruktor hub templates                        # show them
+konstruktor hub create ~/MyHubs/home --template personal
+```
+
+If you do not name a template, `hub create` asks you a few questions instead and you pick
+the services yourself. A template is only a starting point: you can add or remove services
+later with `konstruktor hub services add|remove`.
+
 `--dry-run` prints the files it would write and stops, so an unattended invocation can be
 rehearsed before it is trusted. `--json` on `status`, `list`, `ps`, `doctor`,
-`update --check` and `rollback` puts a document on stdout and nothing else — the narration is on stderr,
+`update --check`, `rollback` and `hub templates` puts a document on stdout and nothing else — the narration is on stderr,
 so `konstruktor status --json | jq .` works in a pipe.
 
 Addresses work the same way as in the wizard: `--reach local-only|this-network|public`

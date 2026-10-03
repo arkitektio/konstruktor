@@ -8,6 +8,7 @@ use konstruktor_core::create::{
 };
 use konstruktor_core::hosts;
 use konstruktor_core::profile;
+use konstruktor_core::templates;
 use tokio_util::sync::CancellationToken;
 
 use crate::ui;
@@ -31,7 +32,12 @@ pub struct CreateArgs {
     /// `local` runs Rekuest here; a host points at a remote provenance authority.
     #[arg(long, default_value = "local")]
     pub rekuest: String,
-    /// Comma-separated. Defaults to rekuest,mikro,fluss,kabinet,kraph,alpaka.
+    /// The kind of hub, which decides the services it starts with. `konstruktor hub
+    /// templates` lists them. Left out, a terminal gets the wizard instead; with nobody
+    /// to ask, `default`.
+    #[arg(long, value_parser = parse_template)]
+    pub template: Option<String>,
+    /// Comma-separated. Overrides the template's services.
     #[arg(long, value_delimiter = ',')]
     pub services: Option<Vec<String>>,
     /// The port the gateway answers plain HTTP on.
@@ -121,7 +127,8 @@ pub struct CreateArgs {
     pub yes: bool,
     /// Walk through the desktop wizard's questions — services, storage, mesh, ports and
     /// addresses — instead of taking them from flags. Flags given anyway pre-fill the
-    /// answers.
+    /// answers. What happens anyway when neither `--template` nor `--services` says what
+    /// the hub is.
     #[arg(long, conflicts_with = "yes")]
     pub wizard: bool,
 }
@@ -214,15 +221,18 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
     // wizard holds.
     konstruktor_core::create::validate_identifier(&identifier)?;
 
-    if args.wizard {
+    if wants_wizard(&args, ask.interactive) {
         wizard(&mut args).await?;
     }
 
     // --- services -----------------------------------------------------------
-    let services = match &args.services {
-        Some(names) => parse_services(names)?,
-        None => konstruktor_core::catalog::default_services(),
-    };
+    let services = services_from(&args)?;
+    // Named in the summary only while it still describes the hub: `--services`, or the
+    // wizard's own picks, replace what the template chose.
+    let template = args
+        .services
+        .is_none()
+        .then(|| template_of(&args).to_string());
 
     if args.mesh_only && args.mesh == MeshMode::None {
         bail!("`--mesh-only` needs a mesh — drop `--mesh none`");
@@ -315,7 +325,7 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
         service_options,
     };
 
-    summarise(&answers);
+    summarise(&answers, template.as_deref());
 
     if args.dry_run {
         ui::say(&ui::bold("  Would write:"));
@@ -457,8 +467,75 @@ pub fn parse_storage(value: &str) -> Result<StorageMode, String> {
     }
 }
 
-fn summarise(answers: &HubAnswers) {
-    ui::table(&[
+/// `konstruktor hub templates`: the kinds of hub `hub create --template` can make.
+pub fn templates(json: bool) -> Result<()> {
+    let templates = templates::templates();
+    if json {
+        return ui::emit_json(&templates);
+    }
+
+    ui::say("");
+    for template in &templates {
+        let tag = if template.id == templates::DEFAULT {
+            ui::dim("  (default)")
+        } else {
+            String::new()
+        };
+        ui::say(&format!("  {}{tag}", ui::bold(template.id)));
+        ui::say(&format!("    {}", template.description));
+        ui::say(&format!(
+            "    {}",
+            ui::dim(
+                &template
+                    .services
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        ));
+        ui::say("");
+    }
+    ui::step(&ui::dim(
+        "Create one with `konstruktor hub create --template <id>`.",
+    ));
+    ui::say("");
+    Ok(())
+}
+
+pub fn parse_template(value: &str) -> Result<String, String> {
+    match templates::find(value) {
+        Some(template) => Ok(template.id.to_string()),
+        None => Err(format!(
+            "unknown template `{value}` — known ones are {}",
+            templates::ids().join(", ")
+        )),
+    }
+}
+
+/// The services the flags ask for: `--services` when given, otherwise the template's.
+fn services_from(args: &CreateArgs) -> Result<Vec<ServiceId>> {
+    match &args.services {
+        Some(names) => parse_services(names),
+        None => Ok(templates::find(template_of(args))
+            .with_context(|| format!("unknown template `{}`", template_of(args)))?
+            .services),
+    }
+}
+
+fn template_of(args: &CreateArgs) -> &str {
+    args.template.as_deref().unwrap_or(templates::DEFAULT)
+}
+
+/// Whether to ask the wizard's questions: when told to, and when nothing says what kind of
+/// hub this is and there is somebody to ask. Naming a template, or the services
+/// themselves, is the answer — the rest comes from flags and defaults.
+fn wants_wizard(args: &CreateArgs, interactive: bool) -> bool {
+    args.wizard || (interactive && args.template.is_none() && args.services.is_none())
+}
+
+fn summarise(answers: &HubAnswers, template: Option<&str>) {
+    let mut rows: Vec<(String, String)> = vec![
         ("folder".into(), answers.dir.clone()),
         (
             "storage".into(),
@@ -501,7 +578,15 @@ fn summarise(answers: &HubAnswers) {
                     .join(", ")
             },
         ),
-    ]);
+    ];
+    if let Some(template) = template {
+        let at = rows
+            .iter()
+            .position(|(key, _)| key == "services")
+            .unwrap_or(rows.len());
+        rows.insert(at, ("template".into(), template.to_string()));
+    }
+    ui::table(&rows);
     ui::say("");
     if answers.mesh_only {
         ui::warn(
@@ -524,10 +609,7 @@ async fn wizard(args: &mut CreateArgs) -> Result<()> {
 
     // --- services ---------------------------------------------------------------
     let offered: Vec<_> = catalog().into_iter().filter(|s| s.emitted).collect();
-    let current = match &args.services {
-        Some(names) => parse_services(names)?,
-        None => konstruktor_core::defaults::services(),
-    };
+    let current = services_from(args)?;
     let labels: Vec<String> = offered
         .iter()
         .map(|s| {
@@ -790,6 +872,53 @@ mod tests {
         let services = konstruktor_core::defaults::services();
         assert!(!services.contains(&ServiceId::Elektro));
         assert!(service_options_from(&args, &services).is_err());
+    }
+
+    /// A template is where the services come from until `--services` says otherwise.
+    #[test]
+    fn the_template_chooses_the_services_unless_they_are_named() {
+        let none = args(&[]);
+        assert_eq!(template_of(&none), templates::DEFAULT);
+        assert_eq!(
+            services_from(&none).unwrap(),
+            konstruktor_core::defaults::services()
+        );
+
+        let personal = services_from(&args(&["--template", "personal"])).unwrap();
+        assert!(personal.contains(&ServiceId::Bank) && personal.contains(&ServiceId::Kuvert));
+        assert!(!personal.contains(&ServiceId::Mikro));
+
+        let named = args(&["--template", "personal", "--services", "rekuest,mikro"]);
+        assert_eq!(
+            services_from(&named).unwrap(),
+            [ServiceId::Rekuest, ServiceId::Mikro]
+        );
+    }
+
+    /// No template and somebody to ask is the wizard; a template, the services, or
+    /// nobody to ask is not.
+    #[test]
+    fn the_wizard_is_what_a_terminal_gets_without_a_template() {
+        assert!(wants_wizard(&args(&[]), true));
+        assert!(!wants_wizard(&args(&[]), false));
+        assert!(!wants_wizard(&args(&["--template", "default"]), true));
+        assert!(!wants_wizard(&args(&["--services", "rekuest,mikro"]), true));
+        assert!(wants_wizard(
+            &args(&["--template", "personal", "--wizard"]),
+            true
+        ));
+    }
+
+    #[test]
+    fn an_unknown_template_is_refused_with_the_known_ones() {
+        let error = Cli::try_parse_from(["konstruktor", "--template", "nope"])
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(error.contains("unknown template `nope`"), "{error}");
+        for id in templates::ids() {
+            assert!(error.contains(id), "{error}");
+        }
     }
 
     /// The defaults the wizard starts from are the ones the flags default to.

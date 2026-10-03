@@ -11,6 +11,7 @@
 # Options (pass after `| sh -s --`):
 #   --no-run            install only; ask nothing
 #   --hub-dir <path>    put the hub here instead of ~/MyHubs/<identifier>
+#   --template <id>     the kind of hub to create (default: default)
 #   --version <tag>     a specific release, e.g. konstruktor-v0.0.1
 #   --dir <path>        where to install (default: ~/.local/bin)
 
@@ -23,6 +24,7 @@ VERSION=""
 RUN_AFTER=1
 HUB_PARENT="${KONSTRUKTOR_HUB_PARENT:-$HOME/MyHubs}"
 HUB_DIR=""
+TEMPLATE="${KONSTRUKTOR_TEMPLATE:-default}"
 
 die() {
     printf '\n  error: %s\n\n' "$1" >&2
@@ -35,10 +37,11 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --no-run) RUN_AFTER=0 ;;
         --hub-dir) HUB_DIR="${2:-}"; [ -n "$HUB_DIR" ] || die "--hub-dir needs a path"; shift ;;
+        --template) TEMPLATE="${2:-}"; [ -n "$TEMPLATE" ] || die "--template needs an id"; shift ;;
         --version) VERSION="${2:-}"; [ -n "$VERSION" ] || die "--version needs a tag"; shift ;;
         --dir) INSTALL_DIR="${2:-}"; [ -n "$INSTALL_DIR" ] || die "--dir needs a path"; shift ;;
         -h|--help)
-            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown option: $1" ;;
@@ -245,7 +248,23 @@ free_hub_dir() {
     return 1
 }
 
-HUB_HINT="Create a hub with: $BIN hub create $HUB_PARENT/my-hub"
+# Templates name the kind of hub: `default`, `personal`, … — `konstruktor hub templates`
+# lists them. Releases up to konstruktor-v0.12.1 have neither the command nor the flag, and
+# --version can ask for one of those, so it is probed for rather than assumed. Without it
+# `default` is still what an older `hub create` makes; anything else cannot be honoured.
+HAS_TEMPLATES=0
+if "$BIN" hub templates >/dev/null 2>&1; then
+    HAS_TEMPLATES=1
+elif [ "$TEMPLATE" != "default" ]; then
+    die "this release of konstruktor has no templates, so it cannot create a \`$TEMPLATE\` hub.
+    Install a newer one, or leave --template out."
+fi
+
+if [ "$TEMPLATE" = "default" ]; then
+    HUB_HINT="Create a hub with: $BIN hub create $HUB_PARENT/my-hub"
+else
+    HUB_HINT="Create a hub with: $BIN hub create --template $TEMPLATE $HUB_PARENT/my-hub"
+fi
 
 if [ "$INTERACTIVE" -eq 0 ]; then
     printf '\n'
@@ -280,4 +299,7 @@ fi
 printf '\n'
 say "Creating $HUB_ID in $HUB_DIR"
 # `hub create` makes the folder itself, so there is nothing to mkdir or cd into here.
+if [ "$HAS_TEMPLATES" -eq 1 ]; then
+    exec "$BIN" hub create --template "$TEMPLATE" --identifier "$HUB_ID" "$HUB_DIR" < /dev/tty
+fi
 exec "$BIN" hub create --identifier "$HUB_ID" "$HUB_DIR" < /dev/tty

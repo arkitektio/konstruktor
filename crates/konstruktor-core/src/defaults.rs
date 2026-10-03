@@ -36,8 +36,11 @@ pub const STORAGE: StorageMode = StorageMode::DockerVolumes;
 /// minutes after it was issued, so a hub that waits to be started may never join.
 pub const START: bool = true;
 
+/// The default template's services.
 pub fn services() -> Vec<ServiceId> {
-    crate::catalog::default_services()
+    crate::templates::find(crate::templates::DEFAULT)
+        .map(|template| template.services)
+        .unwrap_or_else(crate::catalog::default_services)
 }
 
 /// Everything above, for a front end that cannot read Rust constants.

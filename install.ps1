@@ -4,12 +4,14 @@ Konstruktor installer for Windows (PowerShell 5.1 or 7+).
     irm https://raw.githubusercontent.com/arkitektio/konstruktor/main/install.ps1 | iex
 
 Downloads the binary for this machine, verifies it against the release's published checksums,
-installs it and puts it on your PATH. Then, when there is a console to talk to, it asks whether
-to create a hub now, in ~\MyHubs\<identifier>.
+and installs it. Then, when there is a console to talk to, it asks two things: whether to put
+konstruktor on your PATH, and whether to create a hub now, in ~\MyHubs\<identifier>. With
+nobody to ask it goes on your PATH and nothing is created.
 
 Options, when the script is run rather than piped (or through the environment when piped):
     -NoRun              install only; ask nothing                    (KONSTRUKTOR_NO_RUN=1)
     -HubDir <path>      put the hub here instead of ~\MyHubs\<id>    (KONSTRUKTOR_HUB_DIR)
+    -Template <id>      the kind of hub to create; default: default  (KONSTRUKTOR_TEMPLATE)
     -Version <tag>      a specific release, e.g. konstruktor-v0.6.0  (KONSTRUKTOR_VERSION)
     -Dir <path>         where to install                             (KONSTRUKTOR_INSTALL_DIR)
                         default: %LOCALAPPDATA%\Programs\konstruktor
@@ -19,6 +21,7 @@ Options, when the script is run rather than piped (or through the environment wh
 param(
     [switch]$NoRun,
     [string]$HubDir = $env:KONSTRUKTOR_HUB_DIR,
+    [string]$Template = $env:KONSTRUKTOR_TEMPLATE,
     [string]$Version = $env:KONSTRUKTOR_VERSION,
     [string]$Dir = $env:KONSTRUKTOR_INSTALL_DIR,
     # The release asset to fetch. Chosen from this machine; overridable only to test the
@@ -123,11 +126,32 @@ try {
     Remove-Item -LiteralPath $Tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# On the user's PATH for good (new terminals), and in this session right away.
+# --- two questions, both optional ------------------------------------------------------
+#
+# No console to ask in - a CI job, a remote non-interactive session - or -NoRun: there is nobody
+# to ask, so nothing is asked and no hub is created.
+$interactive = -not $NoRun -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+
+# Yes unless told otherwise: a bare Enter takes the default.
+function Confirm-Yes([string]$Question) {
+    $answer = Read-Host "  $Question [Y/n]"
+    return (-not $answer) -or ($answer -match '^[Yy]')
+}
+
+# On the user's PATH for good (new terminals), and in this session right away. Asked first,
+# before a hub is offered; with nobody to ask it is simply done, as it always was.
 $sep = [IO.Path]::PathSeparator
 $onPath = ($env:PATH -split [regex]::Escape($sep)) -contains $Dir
 if (-not $onPath) {
-    if ($IsWindowsTarget -or $env:OS -eq 'Windows_NT') {
+    $addToPath = $true
+    if ($interactive) {
+        Write-Host ''
+        Say "! $Dir is not on your PATH."
+        $addToPath = Confirm-Yes 'Add it?'
+    }
+    if (-not $addToPath) {
+        Say "Put it on your PATH later with: $Bin self install"
+    } elseif ($IsWindowsTarget -or $env:OS -eq 'Windows_NT') {
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         if (-not (($userPath -split ';') -contains $Dir)) {
             $newPath = if ($userPath) { "$userPath;$Dir" } else { $Dir }
@@ -168,7 +192,22 @@ function Get-FreeHubDir([string]$Id) {
     return $null
 }
 
-$hint = "Run: mkdir $(Join-Path $HubParent 'my-hub'); cd $(Join-Path $HubParent 'my-hub'); $BinName hub create"
+# Templates name the kind of hub: `default`, `personal`, ... - `konstruktor hub templates` lists
+# them. Releases up to konstruktor-v0.12.1 have neither the command nor the flag, and -Version can
+# ask for one of those, so it is probed for rather than assumed. Without it `default` is still
+# what an older `hub create` makes; anything else cannot be honoured.
+if (-not $Template) { $Template = 'default' }
+$hasTemplates = $false
+try {
+    & $Bin hub templates *> $null
+    $hasTemplates = ($LASTEXITCODE -eq 0)
+} catch { }
+if (-not $hasTemplates -and $Template -ne 'default') {
+    Die "this release of konstruktor has no templates, so it cannot create a '$Template' hub.`n    Install a newer one, or leave -Template out."
+}
+
+$templateHint = if ($Template -eq 'default') { '' } else { " --template $Template" }
+$hint = "Run: mkdir $(Join-Path $HubParent 'my-hub'); cd $(Join-Path $HubParent 'my-hub'); $BinName hub create$templateHint"
 
 if ($NoRun) {
     Write-Host ''
@@ -177,9 +216,7 @@ if ($NoRun) {
     return
 }
 
-# No console to ask in - a CI job, a remote non-interactive session. Installing and stopping is
-# right there; prompting into nothing is not.
-$interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+# Installing and stopping is right where there is no console; prompting into nothing is not.
 if (-not $interactive) {
     Write-Host ''
     Say 'No console attached, so nothing was created.'
@@ -188,10 +225,8 @@ if (-not $interactive) {
     return
 }
 
-# Yes unless told otherwise: a bare Enter takes the default.
 Write-Host ''
-$answer = Read-Host '  Create a hub now? [Y/n]'
-if ($answer -and $answer -notmatch '^[Yy]') {
+if (-not (Confirm-Yes 'Create a hub now?')) {
     Write-Host ''
     Say $hint
     Write-Host ''
@@ -216,4 +251,8 @@ if (-not $HubDir) {
 Write-Host ''
 Say "Creating $hubId in $HubDir"
 # `hub create` makes the folder itself, so there is nothing to mkdir or cd into here.
-& $Bin hub create --identifier $hubId $HubDir
+if ($hasTemplates) {
+    & $Bin hub create --template $Template --identifier $hubId $HubDir
+} else {
+    & $Bin hub create --identifier $hubId $HubDir
+}

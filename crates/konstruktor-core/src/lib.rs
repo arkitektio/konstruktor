@@ -35,4 +35,5 @@ pub mod services;
 pub mod shutdown;
 pub mod start;
 pub mod status;
+pub mod templates;
 pub mod updates;

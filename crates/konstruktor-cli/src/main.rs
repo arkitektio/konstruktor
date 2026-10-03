@@ -34,8 +34,8 @@ struct Cli {
     /// Emit the answer as JSON on stdout, with no narration mixed into it.
     ///
     /// Global, but only the reporting commands have a document to emit — `status`,
-    /// `list`, `ps`, `doctor`, `check`, `update --check`, `rollback` and
-    /// `hub services list`.
+    /// `list`, `ps`, `doctor`, `check`, `update --check`, `rollback`,
+    /// `hub services list` and `hub templates`.
     #[arg(long, global = true)]
     json: bool,
 }
@@ -49,6 +49,7 @@ struct Cli {
 const COMMANDS: &str = "\
 Create a deployment:
   hub create       A hub: rekuest, mikro, fluss and the rest behind a gateway
+  hub templates    List the kinds of hub `hub create --template` makes
   engine create    A plugin engine: one container running an org's plugins
   coord create     A coordination server: what the other two authorize against
 
@@ -279,6 +280,8 @@ async fn hub_report(args: HubReportArgs) -> anyhow::Result<()> {
 enum HubCommand {
     /// Create a hub: generate it, authorize it, write it, start it.
     Create(Box<create::CreateArgs>),
+    /// List the templates `hub create --template` takes.
+    Templates,
     /// List a hub's services, add some, or take some out.
     #[command(subcommand)]
     Services(services::ServicesCommand),
@@ -384,6 +387,7 @@ async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
+        Command::Hub(HubCommand::Templates) => create::templates(json),
         Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
         Command::Hub(HubCommand::Regenerate(args)) => compose_cmd::regenerate_hub(args).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
