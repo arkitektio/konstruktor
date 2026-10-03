@@ -59,7 +59,6 @@ impl EngineKind {
     }
 }
 
-
 /// Which *product* is serving the engine — the thing the user has to start, or install.
 ///
 /// `EngineKind` says which CLI to run; this says what to call the runtime behind it in a
@@ -173,7 +172,11 @@ impl EngineBrand {
             }
             let program_files =
                 std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
-            if std::path::Path::new(&program_files).join("Docker").join("Docker").exists() {
+            if std::path::Path::new(&program_files)
+                .join("Docker")
+                .join("Docker")
+                .exists()
+            {
                 return EngineBrand::DockerDesktop;
             }
             return EngineBrand::Unknown;
@@ -226,7 +229,10 @@ impl Engine {
         if std::env::split_paths(&current).any(|p| p == dir) {
             return None;
         }
-        std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&current))).ok()
+        std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&current)),
+        )
+        .ok()
     }
 }
 
@@ -318,11 +324,12 @@ fn candidates(name: &str) -> Vec<PathBuf> {
         // Rancher Desktop's own copy of the CLI. Its installer adds this directory to the
         // machine `PATH`, which a Konstruktor started before the install never sees until
         // the user signs out or restarts — though the engine itself already works.
-        dirs.extend(
-            rancher_desktop_installs()
-                .into_iter()
-                .map(|root| root.join("resources").join("resources").join("win32").join("bin")),
-        );
+        dirs.extend(rancher_desktop_installs().into_iter().map(|root| {
+            root.join("resources")
+                .join("resources")
+                .join("win32")
+                .join("bin")
+        }));
         if let Ok(program_files) = std::env::var("ProgramFiles") {
             dirs.push(
                 PathBuf::from(program_files)
@@ -535,23 +542,33 @@ mod tests {
     #[test]
     fn names_the_runtime_from_info() {
         assert_eq!(
-            EngineBrand::from_info(&info(r#"{"Name":"docker-desktop","OperatingSystem":"Docker Desktop"}"#)),
+            EngineBrand::from_info(&info(
+                r#"{"Name":"docker-desktop","OperatingSystem":"Docker Desktop"}"#
+            )),
             EngineBrand::DockerDesktop
         );
         assert_eq!(
-            EngineBrand::from_info(&info(r#"{"Name":"colima","OperatingSystem":"Ubuntu 24.04.1 LTS"}"#)),
+            EngineBrand::from_info(&info(
+                r#"{"Name":"colima","OperatingSystem":"Ubuntu 24.04.1 LTS"}"#
+            )),
             EngineBrand::Colima
         );
         assert_eq!(
-            EngineBrand::from_info(&info(r#"{"Name":"orbstack","KernelVersion":"6.12.13-orbstack-00304-gede1cf3a7c6"}"#)),
+            EngineBrand::from_info(&info(
+                r#"{"Name":"orbstack","KernelVersion":"6.12.13-orbstack-00304-gede1cf3a7c6"}"#
+            )),
             EngineBrand::OrbStack
         );
         assert_eq!(
-            EngineBrand::from_info(&info(r#"{"Name":"rancher-desktop","OperatingSystem":"Rancher Desktop WSL Distribution"}"#)),
+            EngineBrand::from_info(&info(
+                r#"{"Name":"rancher-desktop","OperatingSystem":"Rancher Desktop WSL Distribution"}"#
+            )),
             EngineBrand::RancherDesktop
         );
         assert_eq!(
-            EngineBrand::from_info(&info(r#"{"Name":"myserver","OperatingSystem":"Ubuntu 22.04.4 LTS"}"#)),
+            EngineBrand::from_info(&info(
+                r#"{"Name":"myserver","OperatingSystem":"Ubuntu 22.04.4 LTS"}"#
+            )),
             EngineBrand::Native
         );
         assert_eq!(EngineBrand::from_info(&info("{}")), EngineBrand::Unknown);

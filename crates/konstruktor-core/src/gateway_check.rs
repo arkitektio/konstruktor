@@ -250,6 +250,9 @@ mod tests {
         .await;
         assert!(!alias.reachable);
         assert!(alias.services.is_empty());
-        assert_eq!(alias.detail.as_deref(), Some("not reachable from this machine"));
+        assert_eq!(
+            alias.detail.as_deref(),
+            Some("not reachable from this machine")
+        );
     }
 }

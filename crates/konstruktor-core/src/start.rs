@@ -190,7 +190,12 @@ pub async fn sidecar_missing_a_network(dir: &Path, config: &HubConfig) -> Option
 
     let networks = engine
         .async_command()
-        .args(["inspect", "--format", "{{json .NetworkSettings.Networks}}", &id])
+        .args([
+            "inspect",
+            "--format",
+            "{{json .NetworkSettings.Networks}}",
+            &id,
+        ])
         .stdin(std::process::Stdio::null())
         .output()
         .await

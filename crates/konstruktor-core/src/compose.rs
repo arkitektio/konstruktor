@@ -61,7 +61,10 @@ pub async fn up_in(dir: &std::path::Path) -> (Vec<String>, Option<String>) {
             })
         })
         .unwrap_or_default();
-    let others: Vec<String> = declared.into_iter().filter(|s| *s != reporter.host).collect();
+    let others: Vec<String> = declared
+        .into_iter()
+        .filter(|s| *s != reporter.host)
+        .collect();
     if others.is_empty() {
         return (plain(), None);
     }
@@ -102,7 +105,10 @@ pub async fn run_streamed(
 ) -> Result<String, String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    args.splice(1..1, ["--ansi", "never", "--progress", "plain"].map(String::from));
+    args.splice(
+        1..1,
+        ["--ansi", "never", "--progress", "plain"].map(String::from),
+    );
 
     let mut child = crate::engine_probe::engine()
         .async_command()
@@ -128,7 +134,10 @@ pub async fn run_streamed(
             let line = clean(&raw);
             collected.push_str(&line);
             collected.push('\n');
-            on_line(ComposeLine { line, stderr: false });
+            on_line(ComposeLine {
+                line,
+                stderr: false,
+            });
         }
         collected
     };
@@ -242,9 +251,11 @@ pub async fn run_superuser(
     if output.status.success() {
         Ok(stdout)
     } else {
-        Err(format!("{stdout}{}", String::from_utf8_lossy(&output.stderr))
-            .trim()
-            .to_string())
+        Err(
+            format!("{stdout}{}", String::from_utf8_lossy(&output.stderr))
+                .trim()
+                .to_string(),
+        )
     }
 }
 

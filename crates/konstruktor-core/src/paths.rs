@@ -47,17 +47,28 @@ mod tests {
 
     #[test]
     fn drops_the_verbatim_prefix_from_a_drive_path() {
-        assert_eq!(plain(PathBuf::from(r"\\?\C:\Users\me\MyHub")), PathBuf::from(r"C:\Users\me\MyHub"));
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\C:\Users\me\MyHub")),
+            PathBuf::from(r"C:\Users\me\MyHub")
+        );
     }
 
     #[test]
     fn turns_a_verbatim_unc_path_back_into_a_share() {
-        assert_eq!(plain(PathBuf::from(r"\\?\UNC\server\share\hub")), PathBuf::from(r"\\server\share\hub"));
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\UNC\server\share\hub")),
+            PathBuf::from(r"\\server\share\hub")
+        );
     }
 
     #[test]
     fn leaves_everything_else_alone() {
-        for p in ["/home/me/MyHub", r"C:\Users\me\MyHub", r"\\?\Volume{abc}\hub", r"\\.\pipe\x"] {
+        for p in [
+            "/home/me/MyHub",
+            r"C:\Users\me\MyHub",
+            r"\\?\Volume{abc}\hub",
+            r"\\.\pipe\x",
+        ] {
             assert_eq!(plain(PathBuf::from(p)), PathBuf::from(p));
         }
     }

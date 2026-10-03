@@ -78,7 +78,7 @@ fn golden_of(name: &str) -> GeneratedFiles {
 /// cannot pin: `instance`, whose keys are minted fresh for every profile that has none (the
 /// fixtures predate instance keys). It is tested on its own in `tests/instance_keys.rs`.
 /// What hangs off it and *is* deterministic — the services' `rekuest_hook` — is in the
-/// goldens; Rekuest's `provenance` and `rekuest.service_agents` are only written with an
+/// goldens; Rekuest's `provenance` and `rekuest.services` / `rekuest.hook_agents` are only written with an
 /// instance key, so the fixtures produce neither.
 fn without_instance_trust(mut value: Value) -> Value {
     if let Value::Mapping(map) = &mut value {
@@ -402,17 +402,29 @@ mod mesh {
         let compose = compose(&config);
 
         let reporter = &compose["services"]["reporter"];
-        assert_eq!(reporter["command"], serde_norway::from_str::<Value>("[hub-report]").unwrap());
+        assert_eq!(
+            reporter["command"],
+            serde_norway::from_str::<Value>("[hub-report]").unwrap()
+        );
         let mounts: Vec<&str> = reporter["volumes"]
             .as_sequence()
             .expect("volumes")
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
-        assert!(mounts.contains(&"./hub_credentials.json:/seed/hub_credentials.json:ro"), "{mounts:?}");
-        assert!(mounts.contains(&"./hub_config.yaml:/seed/hub_config.yaml:ro"), "{mounts:?}");
+        assert!(
+            mounts.contains(&"./hub_credentials.json:/seed/hub_credentials.json:ro"),
+            "{mounts:?}"
+        );
+        assert!(
+            mounts.contains(&"./hub_config.yaml:/seed/hub_config.yaml:ro"),
+            "{mounts:?}"
+        );
         assert!(mounts.contains(&"reporter_state:/state"), "{mounts:?}");
-        assert!(mounts.contains(&"tailscale_socket:/var/run/tailscale:ro"), "{mounts:?}");
+        assert!(
+            mounts.contains(&"tailscale_socket:/var/run/tailscale:ro"),
+            "{mounts:?}"
+        );
 
         let sidecar = &compose["services"]["tailscale"];
         assert_eq!(
@@ -429,7 +441,9 @@ mod mesh {
     fn the_socket_is_only_shared_with_a_reporter() {
         let compose = compose(&meshed());
         assert!(compose["services"].get("reporter").is_none());
-        assert!(compose["services"]["tailscale"]["environment"].get("TS_SOCKET").is_none());
+        assert!(compose["services"]["tailscale"]["environment"]
+            .get("TS_SOCKET")
+            .is_none());
         assert!(compose["volumes"].get("tailscale_socket").is_none());
     }
 

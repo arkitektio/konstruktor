@@ -65,7 +65,14 @@ impl ServiceId {
     /// crash without it. Sparse stores live in `zarr`, so they need nothing of their own.
     pub fn bucket_purposes(self) -> &'static [&'static str] {
         match self {
-            ServiceId::Mikro => &["media", "zarr", "parquet", "bigfile", "fabriks", "konnektion"],
+            ServiceId::Mikro => &[
+                "media",
+                "zarr",
+                "parquet",
+                "bigfile",
+                "fabriks",
+                "konnektion",
+            ],
             ServiceId::Elektro => &["media", "zarr", "parquet", "bigfile"],
             ServiceId::Kraph => &["media", "zarr", "bigfile"],
             // Statement exports (bank), raw messages and attachments (kuvert): their

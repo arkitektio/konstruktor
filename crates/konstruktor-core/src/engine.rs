@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_norway::Value;
 
-use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshBlock, MeshOptions, MESH_STATE_DIR};
+use crate::config::mesh::{
+    build_mesh_block, mesh_hostname, MeshBlock, MeshOptions, MESH_STATE_DIR,
+};
 use crate::connect::app::{self, AppEnvelope, AppManifest};
 use crate::create::{now_rfc3339, CreateError, CreateEvent};
 use crate::docker;
@@ -143,7 +145,10 @@ pub fn build_engine_compose(compose: &EngineCompose<'_>) -> Value {
     if let Some(mesh) = compose.mesh {
         environment.push((
             "ARKITEKT_NETWORK_MODE",
-            s(&format!("container:{}", sidecar_container(compose.project, mesh))),
+            s(&format!(
+                "container:{}",
+                sidecar_container(compose.project, mesh)
+            )),
         ));
     }
 
@@ -372,7 +377,12 @@ pub async fn create_engine(
 
     // Before anything is asked of the coordination server: a hub that is not there is a
     // mistake in the answers, and finding out after somebody accepted a code is late.
-    let hub_network = match answers.hub.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+    let hub_network = match answers
+        .hub
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
         Some(hub) => Some(hub_network_of(Path::new(hub))?),
         None => None,
     };
@@ -634,7 +644,10 @@ mod tests {
         let env = &sidecar["environment"];
         assert_eq!(env["TS_AUTHKEY"].as_str(), Some("tskey-engine"));
         assert_eq!(env["TS_AUTH_ONCE"].as_str(), Some("true"));
-        assert_eq!(env["TS_STATE_DIR"].as_str(), Some("/var/lib/tailscale/2-9-48"));
+        assert_eq!(
+            env["TS_STATE_DIR"].as_str(),
+            Some("/var/lib/tailscale/2-9-48")
+        );
         assert_eq!(env["TS_ACCEPT_DNS"].as_str(), Some("true"));
         assert_eq!(
             env["TS_EXTRA_ARGS"].as_str(),
@@ -659,8 +672,13 @@ mod tests {
             compose["services"]["tailscale"]["networks"],
             serde_norway::from_str::<Value>("[default, hub]").unwrap()
         );
-        assert!(compose["services"][DEPLOYER_SERVICE].get("networks").is_none());
-        assert_eq!(compose["networks"]["hub"]["name"].as_str(), Some("young-dream"));
+        assert!(compose["services"][DEPLOYER_SERVICE]
+            .get("networks")
+            .is_none());
+        assert_eq!(
+            compose["networks"]["hub"]["name"].as_str(),
+            Some("young-dream")
+        );
     }
 
     /// The block is kept beside the config, and an attach — which rewrites the compose
@@ -732,11 +750,16 @@ mod tests {
     fn plugins_are_told_where_to_run_and_whom_to_ask() {
         let compose = build_engine_compose(&inputs(None));
         let env = &compose["services"][DEPLOYER_SERVICE]["environment"];
-        assert_eq!(env["ARKITEKT_GATEWAY"].as_str(), Some("https://go.arkitekt.live"));
+        assert_eq!(
+            env["ARKITEKT_GATEWAY"].as_str(),
+            Some("https://go.arkitekt.live")
+        );
         // Not attached: the engine's own default network, which its `up` creates.
         assert_eq!(env["ARKITEKT_NETWORK"].as_str(), Some("myengine_default"));
         assert!(compose.get("networks").is_none());
-        assert!(compose["services"][DEPLOYER_SERVICE].get("networks").is_none());
+        assert!(compose["services"][DEPLOYER_SERVICE]
+            .get("networks")
+            .is_none());
     }
 
     /// Attached: the engine and every plugin it starts join the hub's network — declared
@@ -745,13 +768,19 @@ mod tests {
     fn an_attached_engine_joins_the_hubs_network() {
         let compose = build_engine_compose(&inputs(Some("young-dream")));
         let deployer = &compose["services"][DEPLOYER_SERVICE];
-        assert_eq!(deployer["environment"]["ARKITEKT_NETWORK"].as_str(), Some("young-dream"));
+        assert_eq!(
+            deployer["environment"]["ARKITEKT_NETWORK"].as_str(),
+            Some("young-dream")
+        );
         assert_eq!(
             deployer["networks"],
             serde_norway::from_str::<Value>("[default, hub]").unwrap()
         );
         assert_eq!(compose["networks"]["hub"]["external"].as_bool(), Some(true));
-        assert_eq!(compose["networks"]["hub"]["name"].as_str(), Some("young-dream"));
+        assert_eq!(
+            compose["networks"]["hub"]["name"].as_str(),
+            Some("young-dream")
+        );
     }
 
     /// Attach, read back, detach — the compose file is the whole record.
@@ -763,8 +792,7 @@ mod tests {
         std::fs::create_dir_all(&hub_dir).unwrap();
 
         let hub = crate::config::hub::build_hub_config(&Default::default());
-        crate::profile::write_profile(&hub_dir, &crate::profile::hub_profile(hub.clone()))
-            .unwrap();
+        crate::profile::write_profile(&hub_dir, &crate::profile::hub_profile(hub.clone())).unwrap();
         write_generated_files(
             &engine_dir,
             &generate_engine_files(&answers(), &granted(), &inputs(None)),
@@ -772,7 +800,10 @@ mod tests {
         .unwrap();
 
         attach(&engine_dir, Some(&hub_dir)).await.expect("attached");
-        assert_eq!(attached_network(&engine_dir), Some(hub.internal_network.clone()));
+        assert_eq!(
+            attached_network(&engine_dir),
+            Some(hub.internal_network.clone())
+        );
 
         attach(&engine_dir, None).await.expect("detached");
         assert_eq!(attached_network(&engine_dir), None);

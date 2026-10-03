@@ -31,8 +31,11 @@ fn hub_with_reporter(image: &str, label: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     write_profile(&dir, &hub_profile(config.clone())).expect("profile");
-    write_generated_files(&dir, &generate_hub_files(&config, &IssuedIdentity::default()))
-        .expect("files");
+    write_generated_files(
+        &dir,
+        &generate_hub_files(&config, &IssuedIdentity::default()),
+    )
+    .expect("files");
     dir
 }
 

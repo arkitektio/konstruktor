@@ -217,9 +217,7 @@ pub async fn check(images: &[ImageState]) -> Vec<UpstreamCheck> {
 /// The engine only — no network. Separate from [`for_deployment`] because a front end
 /// showing which images are present refreshes far more often than it asks a registry
 /// anything.
-pub async fn images_for_deployment(
-    dir: &std::path::Path,
-) -> Result<Vec<ImageState>, String> {
+pub async fn images_for_deployment(dir: &std::path::Path) -> Result<Vec<ImageState>, String> {
     let profile = crate::profile::read_profile(dir).map_err(|e| e.to_string())?;
     crate::docker::image_states(&profile.config.stack_images()).await
 }
@@ -473,7 +471,8 @@ pub fn predates_takt(dir: &std::path::Path, config: &HubConfig, service: &str) -
 /// Where a backup taken before an update goes unless somebody says otherwise: a
 /// `konstruktor-backups` folder beside the deployment, so it survives the deployment.
 pub fn default_backup_folder(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    dir.parent().map(|parent| parent.join("konstruktor-backups"))
+    dir.parent()
+        .map(|parent| parent.join("konstruktor-backups"))
 }
 
 /// What the infrastructure could move to: images whose tag moved upstream, and pins with a
@@ -533,13 +532,25 @@ pub struct UpdateRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum UpdateEvent {
-    Step { title: String },
+    Step {
+        title: String,
+    },
     /// A line of output from compose, the backup or the health check.
-    Line { line: String, stderr: bool },
-    Warning { message: String },
+    Line {
+        line: String,
+        stderr: bool,
+    },
+    Warning {
+        message: String,
+    },
     /// This service was left alone: recreating it would break it.
-    Refused { service: String, reason: String },
-    Updated { service: String },
+    Refused {
+        service: String,
+        reason: String,
+    },
+    Updated {
+        service: String,
+    },
 }
 
 /// What an update did.
@@ -647,7 +658,11 @@ pub async fn apply(
         crate::profile::rewrite_images(dir, &images)?;
         step(format!(
             "Profile moved to {}",
-            images.iter().map(|(_, to)| to.as_str()).collect::<Vec<_>>().join(", ")
+            images
+                .iter()
+                .map(|(_, to)| to.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
         // It is the profile that moved, not the tag: these have to be recreated even
         // though the registry said their old reference was current.
@@ -732,7 +747,10 @@ pub async fn apply(
         step("Checking the services still answer".into());
         let health = crate::health::check(dir, &config, &|event| {
             if let crate::health::HealthEvent::Line { line } = event {
-                on_event(UpdateEvent::Line { line, stderr: false });
+                on_event(UpdateEvent::Line {
+                    line,
+                    stderr: false,
+                });
             }
         })
         .await
@@ -764,7 +782,11 @@ async fn check_one(local: ImageState) -> UpstreamCheck {
     if let Some(pinned) = pinned_digest(&local.image) {
         let held = local.repo_digests.iter().any(|d| digest_of(d) == pinned);
         return base(
-            if held { UpstreamState::Current } else { UpstreamState::Newer },
+            if held {
+                UpstreamState::Current
+            } else {
+                UpstreamState::Newer
+            },
             Some(pinned.to_string()),
             None,
         );
@@ -772,10 +794,7 @@ async fn check_one(local: ImageState) -> UpstreamCheck {
 
     match remote_digest(&local.image).await {
         Ok(remote) => {
-            let known = local
-                .repo_digests
-                .iter()
-                .any(|d| digest_of(d) == remote);
+            let known = local.repo_digests.iter().any(|d| digest_of(d) == remote);
             if local.repo_digests.is_empty() {
                 // Built locally, or loaded from a tarball: there is no digest to compare.
                 base(
@@ -859,7 +878,10 @@ mod tests {
         );
         assert_eq!(parse("postgres").repository, "library/postgres");
         assert_eq!(parse("postgres").tag, "latest");
-        assert_eq!(parse("docker.io/library/redis:7").host, "registry-1.docker.io");
+        assert_eq!(
+            parse("docker.io/library/redis:7").host,
+            "registry-1.docker.io"
+        );
     }
 
     #[test]
@@ -913,8 +935,14 @@ mod tests {
 
     #[test]
     fn a_version_is_the_numbers_a_tag_starts_with() {
-        assert_eq!(version_of("16.13-1").expect("a version").parts, vec![16, 13, 1]);
-        assert_eq!(version_of("8.11.0-alpine").expect("a version").variant, "alpine");
+        assert_eq!(
+            version_of("16.13-1").expect("a version").parts,
+            vec![16, 13, 1]
+        );
+        assert_eq!(
+            version_of("8.11.0-alpine").expect("a version").variant,
+            "alpine"
+        );
         assert!(version_of("dev").is_none());
         assert!(version_of("RELEASE.2025-02-18T16-25-55Z").is_none());
     }
@@ -938,7 +966,10 @@ mod tests {
             );
         }
         for infra in ["db", "redis", "rustfs", "rustfs_init", "gateway"] {
-            assert!(is_infrastructure(&config, infra), "{infra} is infrastructure");
+            assert!(
+                is_infrastructure(&config, infra),
+                "{infra} is infrastructure"
+            );
         }
     }
 

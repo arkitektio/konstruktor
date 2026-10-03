@@ -22,8 +22,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::backup::{
     self, postgres_major, BackupEvent, BackupManifest, DataSource, DUMP_FILE, MANIFEST_FILE,
-    MESH_DATA_DIR,
-    MANIFEST_FORMAT, MINIO_DATA_DIR, POSTGRES_DATA_DIR,
+    MANIFEST_FORMAT, MESH_DATA_DIR, MINIO_DATA_DIR, POSTGRES_DATA_DIR,
 };
 use crate::catalog::ServiceId;
 use crate::config::hub::{storage_mode_of, HubConfig, StorageMode, DB_COMPOSE_SERVICE};
@@ -84,10 +83,24 @@ pub struct RestoreRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum RestoreEvent {
-    Step { step: String, title: String },
-    Line { step: String, line: String, stderr: bool },
-    Skipped { step: String, reason: String },
-    Checked { service: String, healthy: bool, detail: String },
+    Step {
+        step: String,
+        title: String,
+    },
+    Line {
+        step: String,
+        line: String,
+        stderr: bool,
+    },
+    Skipped {
+        step: String,
+        reason: String,
+    },
+    Checked {
+        service: String,
+        healthy: bool,
+        detail: String,
+    },
 }
 
 impl From<BackupEvent> for RestoreEvent {
@@ -299,8 +312,16 @@ pub fn judge(
     same_hub: bool,
     asked: Asked,
 ) -> (Vec<String>, Vec<String>) {
-    let Comparison { services: plan_services, extra_in_target, db } = comparison;
-    let Asked { method, postgres: restore_postgres, minio: restore_minio } = asked;
+    let Comparison {
+        services: plan_services,
+        extra_in_target,
+        db,
+    } = comparison;
+    let Asked {
+        method,
+        postgres: restore_postgres,
+        minio: restore_minio,
+    } = asked;
     let mut blocking = Vec::new();
     let mut warnings = Vec::new();
     let target_storage = storage_mode_of(target);
@@ -386,8 +407,7 @@ pub fn judge(
 
     if !same_hub {
         warnings.push(
-            "this backup was taken from a different hub; its data will replace this hub's"
-                .into(),
+            "this backup was taken from a different hub; its data will replace this hub's".into(),
         );
     }
     if manifest.storage != target_storage {
@@ -404,9 +424,9 @@ pub fn judge(
             DbMethod::Dump if !available.dump => {
                 blocking.push(format!("the backup holds no {DUMP_FILE} to replay"))
             }
-            DbMethod::Raw if !available.postgres_raw => {
-                blocking.push(format!("the backup holds no {POSTGRES_DATA_DIR} to copy back"))
-            }
+            DbMethod::Raw if !available.postgres_raw => blocking.push(format!(
+                "the backup holds no {POSTGRES_DATA_DIR} to copy back"
+            )),
             DbMethod::Raw => {
                 match backup::major_move(majors.backup, majors.target) {
                     backup::MajorMove::Across { data, server } => blocking.push(format!(
@@ -537,12 +557,14 @@ pub async fn plan(request: &RestoreRequest) -> Result<RestorePlan, RestoreError>
     // Asked of the running server only when it happens to be up — starting it just to ask
     // would be a side effect a *plan* must not have. It stays on the plan because the UI
     // shows it, but it is no longer what the raw-copy check depends on.
-    let target_postgres_version =
-        if backup::service_running(dir, DB_COMPOSE_SERVICE).await.unwrap_or(false) {
-            backup::postgres_version(dir).await
-        } else {
-            None
-        };
+    let target_postgres_version = if backup::service_running(dir, DB_COMPOSE_SERVICE)
+        .await
+        .unwrap_or(false)
+    {
+        backup::postgres_version(dir).await
+    } else {
+        None
+    };
 
     // Both majors, resolved without starting anything. This is what makes the raw-copy
     // refusal fire for a stopped hub, which is the ordinary case and the one where
@@ -566,7 +588,11 @@ pub async fn plan(request: &RestoreRequest) -> Result<RestorePlan, RestoreError>
         },
     };
 
-    let comparison = Comparison { services, extra_in_target, db };
+    let comparison = Comparison {
+        services,
+        extra_in_target,
+        db,
+    };
     let (blocking, warnings) = judge(
         &comparison,
         &available,
@@ -580,7 +606,11 @@ pub async fn plan(request: &RestoreRequest) -> Result<RestorePlan, RestoreError>
             minio: request.restore_minio,
         },
     );
-    let Comparison { services, extra_in_target, db } = comparison;
+    let Comparison {
+        services,
+        extra_in_target,
+        db,
+    } = comparison;
 
     Ok(RestorePlan {
         manifest,
@@ -664,7 +694,13 @@ pub async fn run(
     step("volumes", "Making sure the data volumes exist");
     backup::compose_streamed(
         dir,
-        &["up", "--no-start", "--no-deps", DB_COMPOSE_SERVICE, &config.minio.host],
+        &[
+            "up",
+            "--no-start",
+            "--no-deps",
+            DB_COMPOSE_SERVICE,
+            &config.minio.host,
+        ],
         "volumes",
         &forward,
     )
@@ -733,7 +769,11 @@ pub async fn run(
         copy_back(
             dir,
             &request.backup.join(MINIO_DATA_DIR),
-            backup::source_of(dir, config.minio.mount.as_deref(), &config.minio.volume_name),
+            backup::source_of(
+                dir,
+                config.minio.mount.as_deref(),
+                &config.minio.volume_name,
+            ),
             "minio",
             &forward,
         )
@@ -767,9 +807,15 @@ pub async fn run(
             line,
             stderr: false,
         }),
-        HealthEvent::Checked { service, healthy, detail } => {
-            on_event(RestoreEvent::Checked { service, healthy, detail })
-        }
+        HealthEvent::Checked {
+            service,
+            healthy,
+            detail,
+        } => on_event(RestoreEvent::Checked {
+            service,
+            healthy,
+            detail,
+        }),
     })
     .await
     .map_err(RestoreError::Engine)?;
@@ -949,7 +995,9 @@ async fn copy_back(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backup::{BackupContents, ManifestHub, ManifestImage, ManifestPostgres, ManifestService};
+    use crate::backup::{
+        BackupContents, ManifestHub, ManifestImage, ManifestPostgres, ManifestService,
+    };
     use crate::config::hub::{build_hub_config, HubConfigOptions};
 
     /// The three halves `compare` returns, as `judge` wants them.
@@ -958,11 +1006,19 @@ mod tests {
         extra: Vec<ServiceId>,
         db: ImageComparison,
     ) -> Comparison {
-        Comparison { services, extra_in_target: extra, db }
+        Comparison {
+            services,
+            extra_in_target: extra,
+            db,
+        }
     }
 
     fn asked(method: DbMethod, postgres: bool, minio: bool) -> Asked {
-        Asked { method, postgres, minio }
+        Asked {
+            method,
+            postgres,
+            minio,
+        }
     }
 
     fn hub(services: Vec<ServiceId>, storage: StorageMode) -> HubConfig {
@@ -1017,23 +1073,41 @@ mod tests {
 
     #[test]
     fn a_service_the_target_does_not_run_blocks_and_an_extra_one_does_not() {
-        let backed = hub(vec![ServiceId::Rekuest, ServiceId::Mikro], StorageMode::DockerVolumes);
-        let target = hub(vec![ServiceId::Rekuest, ServiceId::Fluss], StorageMode::DockerVolumes);
+        let backed = hub(
+            vec![ServiceId::Rekuest, ServiceId::Mikro],
+            StorageMode::DockerVolumes,
+        );
+        let target = hub(
+            vec![ServiceId::Rekuest, ServiceId::Fluss],
+            StorageMode::DockerVolumes,
+        );
         let ids = |_: &str| Some("sha256:abc".to_string());
         let manifest = manifest_of(&backed, &ids);
 
         let (services, extra, db) = compare(&manifest, &target, &ids);
         let mikro = services.iter().find(|s| s.id == ServiceId::Mikro).unwrap();
         assert_eq!(mikro.verdict, Verdict::MissingInTarget);
-        let rekuest = services.iter().find(|s| s.id == ServiceId::Rekuest).unwrap();
+        let rekuest = services
+            .iter()
+            .find(|s| s.id == ServiceId::Rekuest)
+            .unwrap();
         assert_eq!(rekuest.verdict, Verdict::Same);
         assert_eq!(extra, vec![ServiceId::Fluss]);
         assert_eq!(db.verdict, Verdict::Same);
 
-        let available = Available { dump: true, postgres_raw: true, minio: true };
+        let available = Available {
+            dump: true,
+            postgres_raw: true,
+            minio: true,
+        };
         let (blocking, warnings) = judge(
-            &comparison(services.clone(), extra.clone(), db.clone()), &available, &manifest,
-            &target, PostgresMajors::default(), true, asked(DbMethod::Dump, true, true),
+            &comparison(services.clone(), extra.clone(), db.clone()),
+            &available,
+            &manifest,
+            &target,
+            PostgresMajors::default(),
+            true,
+            asked(DbMethod::Dump, true, true),
         );
         assert_eq!(blocking.len(), 1, "{blocking:?}");
         assert!(blocking[0].contains("mikro"));
@@ -1050,7 +1124,9 @@ mod tests {
         // backup is legitimate — but it is no longer silent: fluss keeps its own data
         // while everything else is replaced, and that is worth being told.
         assert!(
-            warnings.iter().any(|w| w.contains("fluss") && w.contains("keep the data")),
+            warnings
+                .iter()
+                .any(|w| w.contains("fluss") && w.contains("keep the data")),
             "{warnings:?}"
         );
     }
@@ -1064,26 +1140,46 @@ mod tests {
         let (services, extra, db) = compare(&manifest, &config, &|_| Some("sha256:abc".into()));
         assert!(extra.is_empty());
 
-        let available = Available { dump: true, postgres_raw: true, minio: true };
+        let available = Available {
+            dump: true,
+            postgres_raw: true,
+            minio: true,
+        };
         let (_, warnings) = judge(
-            &comparison(services.clone(), extra.clone(), db.clone()), &available, &manifest,
-            &config, PostgresMajors::default(), true, asked(DbMethod::Dump, true, true),
+            &comparison(services.clone(), extra.clone(), db.clone()),
+            &available,
+            &manifest,
+            &config,
+            PostgresMajors::default(),
+            true,
+            asked(DbMethod::Dump, true, true),
         );
-        assert!(!warnings.iter().any(|w| w.contains("keep the data")), "{warnings:?}");
+        assert!(
+            !warnings.iter().any(|w| w.contains("keep the data")),
+            "{warnings:?}"
+        );
     }
 
     #[test]
     fn a_different_build_of_the_same_tag_is_a_warning_not_a_block() {
         let config = hub(vec![ServiceId::Rekuest], StorageMode::DockerVolumes);
         let manifest = manifest_of(&config, &|_| Some("sha256:old".into()));
-        let (services, _, db) =
-            compare(&manifest, &config, &|_| Some("sha256:new".to_string()));
+        let (services, _, db) = compare(&manifest, &config, &|_| Some("sha256:new".to_string()));
         assert_eq!(services[0].verdict, Verdict::DifferentBuild);
 
-        let available = Available { dump: true, postgres_raw: true, minio: true };
+        let available = Available {
+            dump: true,
+            postgres_raw: true,
+            minio: true,
+        };
         let (blocking, warnings) = judge(
-            &comparison(services.clone(), vec![], db.clone()), &available, &manifest,
-            &config, PostgresMajors::default(), true, asked(DbMethod::Dump, true, true),
+            &comparison(services.clone(), vec![], db.clone()),
+            &available,
+            &manifest,
+            &config,
+            PostgresMajors::default(),
+            true,
+            asked(DbMethod::Dump, true, true),
         );
         assert!(blocking.is_empty(), "{blocking:?}");
         assert!(warnings.iter().any(|w| w.contains("different build")));
@@ -1096,22 +1192,41 @@ mod tests {
         let (services, _, db) = compare(&manifest, &config, &|_| None);
         assert_eq!(services[0].verdict, Verdict::NotResolvable);
 
-        let available = Available { dump: false, postgres_raw: true, minio: false };
+        let available = Available {
+            dump: false,
+            postgres_raw: true,
+            minio: false,
+        };
         let (blocking, _) = judge(
-            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
+            &comparison(services.clone(), vec![], db.clone()),
+            &available,
+            &manifest,
+            &config,
             // The backup was written by 16 (the manifest's own version) and the target
             // would serve it with 15 — the case that has to be refused.
-            PostgresMajors { backup: Some(16), target: Some(15) },
-            false, asked(DbMethod::Raw, true, false),
+            PostgresMajors {
+                backup: Some(16),
+                target: Some(15),
+            },
+            false,
+            asked(DbMethod::Raw, true, false),
         );
-        assert!(blocking.iter().any(|b| b.contains("Postgres 16")), "{blocking:?}");
+        assert!(
+            blocking.iter().any(|b| b.contains("Postgres 16")),
+            "{blocking:?}"
+        );
 
         // The backup was taken from a volumes hub; this target keeps its data in the
         // folder, which is the storage-mode skew worth mentioning.
         let folder_target = hub(vec![ServiceId::Rekuest], StorageMode::DeploymentFolder);
         let (blocking, warnings) = judge(
-            &comparison(services.clone(), vec![], db.clone()), &available, &manifest,
-            &folder_target, PostgresMajors::default(), false, asked(DbMethod::Dump, true, true),
+            &comparison(services.clone(), vec![], db.clone()),
+            &available,
+            &manifest,
+            &folder_target,
+            PostgresMajors::default(),
+            false,
+            asked(DbMethod::Dump, true, true),
         );
         assert!(blocking.iter().any(|b| b.contains("dump.sql")));
         assert!(blocking.iter().any(|b| b.contains("minio")));
@@ -1127,27 +1242,52 @@ mod tests {
         let config = hub(vec![ServiceId::Rekuest], StorageMode::DeploymentFolder);
         let manifest = manifest_of(&config, &|_| None);
         let (services, _, db) = compare(&manifest, &config, &|_| None);
-        let available = Available { dump: false, postgres_raw: true, minio: false };
+        let available = Available {
+            dump: false,
+            postgres_raw: true,
+            minio: false,
+        };
 
         // No running server to ask — the target major came from the image instead.
         let (blocking, _) = judge(
-            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
-            PostgresMajors { backup: Some(15), target: Some(16) },
-            true, asked(DbMethod::Raw, true, false),
+            &comparison(services.clone(), vec![], db.clone()),
+            &available,
+            &manifest,
+            &config,
+            PostgresMajors {
+                backup: Some(15),
+                target: Some(16),
+            },
+            true,
+            asked(DbMethod::Raw, true, false),
         );
         assert!(
-            blocking.iter().any(|b| b.contains("Postgres 15") && b.contains("Postgres 16")),
+            blocking
+                .iter()
+                .any(|b| b.contains("Postgres 15") && b.contains("Postgres 16")),
             "{blocking:?}"
         );
 
         // Same majors is fine, and must not warn about being unable to read them.
         let (blocking, warnings) = judge(
-            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
-            PostgresMajors { backup: Some(16), target: Some(16) },
-            true, asked(DbMethod::Raw, true, false),
+            &comparison(services.clone(), vec![], db.clone()),
+            &available,
+            &manifest,
+            &config,
+            PostgresMajors {
+                backup: Some(16),
+                target: Some(16),
+            },
+            true,
+            asked(DbMethod::Raw, true, false),
         );
         assert!(blocking.is_empty(), "{blocking:?}");
-        assert!(!warnings.iter().any(|w| w.contains("could not both be read")), "{warnings:?}");
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("could not both be read")),
+            "{warnings:?}"
+        );
     }
 
     /// An image that declares no major must not read as agreement.
@@ -1156,15 +1296,31 @@ mod tests {
         let config = hub(vec![ServiceId::Rekuest], StorageMode::DeploymentFolder);
         let manifest = manifest_of(&config, &|_| None);
         let (services, _, db) = compare(&manifest, &config, &|_| None);
-        let available = Available { dump: false, postgres_raw: true, minio: false };
+        let available = Available {
+            dump: false,
+            postgres_raw: true,
+            minio: false,
+        };
 
         let (blocking, warnings) = judge(
-            &comparison(services.clone(), vec![], db.clone()), &available, &manifest, &config,
-            PostgresMajors { backup: Some(16), target: None },
-            true, asked(DbMethod::Raw, true, false),
+            &comparison(services.clone(), vec![], db.clone()),
+            &available,
+            &manifest,
+            &config,
+            PostgresMajors {
+                backup: Some(16),
+                target: None,
+            },
+            true,
+            asked(DbMethod::Raw, true, false),
         );
         assert!(blocking.is_empty(), "{blocking:?}");
-        assert!(warnings.iter().any(|w| w.contains("could not both be read")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("could not both be read")),
+            "{warnings:?}"
+        );
     }
 
     /// Half a restore is allowed, but it must not be silent: the two halves then describe
@@ -1174,30 +1330,55 @@ mod tests {
         let config = hub(vec![ServiceId::Rekuest], StorageMode::DockerVolumes);
         let manifest = manifest_of(&config, &|_| Some("sha256:abc".into()));
         let (services, extra, db) = compare(&manifest, &config, &|_| Some("sha256:abc".into()));
-        let available = Available { dump: true, postgres_raw: true, minio: true };
+        let available = Available {
+            dump: true,
+            postgres_raw: true,
+            minio: true,
+        };
 
         let judge_with = |postgres, minio| {
             judge(
-                &comparison(services.clone(), extra.clone(), db.clone()), &available, &manifest,
-                &config, PostgresMajors::default(), true, asked(DbMethod::Dump, postgres, minio),
+                &comparison(services.clone(), extra.clone(), db.clone()),
+                &available,
+                &manifest,
+                &config,
+                PostgresMajors::default(),
+                true,
+                asked(DbMethod::Dump, postgres, minio),
             )
         };
 
         let (blocking, warnings) = judge_with(true, false);
         assert!(blocking.is_empty(), "{blocking:?}");
-        assert!(warnings.iter().any(|w| w.contains("object storage is being left")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("object storage is being left")),
+            "{warnings:?}"
+        );
 
         let (blocking, warnings) = judge_with(false, true);
         assert!(blocking.is_empty(), "{blocking:?}");
-        assert!(warnings.iter().any(|w| w.contains("database is being left")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("database is being left")),
+            "{warnings:?}"
+        );
 
         // Both halves is the whole thing, and says nothing about either.
         let (_, warnings) = judge_with(true, true);
-        assert!(!warnings.iter().any(|w| w.contains("being left as it is")), "{warnings:?}");
+        assert!(
+            !warnings.iter().any(|w| w.contains("being left as it is")),
+            "{warnings:?}"
+        );
 
         // Neither is still refused outright.
         let (blocking, _) = judge_with(false, false);
-        assert!(blocking.iter().any(|b| b.contains("nothing was selected")), "{blocking:?}");
+        assert!(
+            blocking.iter().any(|b| b.contains("nothing was selected")),
+            "{blocking:?}"
+        );
     }
 
     /// The health checks alone are not enough: they pass over a half-restored database.
@@ -1212,7 +1393,10 @@ mod tests {
             detail: "answers".into(),
             healthy: true,
         };
-        let bad = crate::health::ServiceHealth { healthy: false, ..ok("mikro") };
+        let bad = crate::health::ServiceHealth {
+            healthy: false,
+            ..ok("mikro")
+        };
 
         assert!(restore_succeeded(&[ok("rekuest"), ok("mikro")], 0));
         // Every service answers, but statements failed on the way in.
@@ -1245,17 +1429,28 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(matches!(read_manifest(&dir), Err(RestoreError::NoManifest(_))));
+        assert!(matches!(
+            read_manifest(&dir),
+            Err(RestoreError::NoManifest(_))
+        ));
 
         let config = hub(vec![ServiceId::Rekuest], StorageMode::DockerVolumes);
         let mut manifest = manifest_of(&config, &|_| None);
-        std::fs::write(dir.join(MANIFEST_FILE), serde_json::to_string(&manifest).unwrap()).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
         let back = read_manifest(&dir).unwrap();
         assert_eq!(back.services[0].id, ServiceId::Rekuest);
         assert_eq!(back.hub.identifier.as_deref(), Some("lab-hub"));
 
         manifest.format = 99;
-        std::fs::write(dir.join(MANIFEST_FILE), serde_json::to_string(&manifest).unwrap()).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
         assert!(matches!(read_manifest(&dir), Err(RestoreError::Format(99))));
         std::fs::remove_dir_all(&dir).ok();
     }

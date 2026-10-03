@@ -149,7 +149,10 @@ impl AppEnvelope {
     /// The granted mesh key and its control server, when there is a key.
     pub fn mesh_key(&self) -> Option<(&str, Option<&str>)> {
         let mesh = self.mesh.as_ref()?;
-        let key = mesh.ionscale_auth_key.as_deref().filter(|k| !k.is_empty())?;
+        let key = mesh
+            .ionscale_auth_key
+            .as_deref()
+            .filter(|k| !k.is_empty())?;
         Some((key, mesh.ionscale_coord_url.as_deref()))
     }
 

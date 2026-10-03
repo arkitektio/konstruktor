@@ -36,8 +36,8 @@ use tokio::process::Command;
 use crate::catalog::ServiceId;
 use crate::config::hub::{storage_mode_of, HubConfig, StorageMode, DB_COMPOSE_SERVICE};
 use crate::credentials::{self, CREDENTIALS_FILENAME};
-use crate::{docker, engine_probe};
 use crate::profile::{self, HUB_CONFIG_FILENAME};
+use crate::{docker, engine_probe};
 
 /// Alpine with `rsync` on it, and nothing else — small enough that pulling it during a
 /// backup is not the slow part. Pinned by tag; a backup tool that changes under people is
@@ -95,7 +95,11 @@ pub enum BackupEvent {
     /// A part is starting.
     Step { step: String, title: String },
     /// A line of output from whatever the step is running.
-    Line { step: String, line: String, stderr: bool },
+    Line {
+        step: String,
+        line: String,
+        stderr: bool,
+    },
     /// A part was skipped, and why. Not a failure: a hub that never started has no
     /// volume to copy, and saying so beats copying nothing in silence.
     Skipped { step: String, reason: String },
@@ -310,7 +314,11 @@ pub struct BackupRequest {
 /// starting: `<target>/<hub>-backup-<UTC timestamp>`.
 pub fn backup_folder(request: &BackupRequest, now: u64) -> PathBuf {
     let hub = crate::compose::project_name(&request.dir.to_string_lossy());
-    let hub = if hub.is_empty() { "hub".to_string() } else { hub };
+    let hub = if hub.is_empty() {
+        "hub".to_string()
+    } else {
+        hub
+    };
     request
         .target
         .join(format!("{hub}-backup-{}", timestamp(now)))
@@ -363,7 +371,11 @@ pub async fn run(
     };
 
     // --- the deployment's own files -----------------------------------------
-    step(on_event, "deployment", "Copying the deployment's configuration");
+    step(
+        on_event,
+        "deployment",
+        "Copying the deployment's configuration",
+    );
     report.deployment_files = copy_deployment_files(dir, &out.join(DEPLOYMENT_DIR))?;
     for file in &report.deployment_files {
         line(on_event, "deployment", file);
@@ -373,9 +385,18 @@ pub async fn run(
     step(on_event, "dump", "Dumping the database");
     let db_was_running = service_running(dir, DB_COMPOSE_SERVICE).await?;
     if !db_was_running {
-        line(on_event, "dump", "The database is not running; starting it for the dump");
-        compose_streamed(dir, &["up", "-d", "--no-deps", DB_COMPOSE_SERVICE], "dump", on_event)
-            .await?;
+        line(
+            on_event,
+            "dump",
+            "The database is not running; starting it for the dump",
+        );
+        compose_streamed(
+            dir,
+            &["up", "-d", "--no-deps", DB_COMPOSE_SERVICE],
+            "dump",
+            on_event,
+        )
+        .await?;
     }
     wait_for_database(dir, &config, "dump", on_event).await?;
     let server_version = postgres_version(dir).await;
@@ -397,7 +418,10 @@ pub async fn run(
             None => {
                 let reason = match &data.source {
                     DataSource::Bind(path) => {
-                        format!("{} does not exist yet — nothing has been stored", path.display())
+                        format!(
+                            "{} does not exist yet — nothing has been stored",
+                            path.display()
+                        )
                     }
                     DataSource::Volume(name) => format!(
                         "the volume `{name}` does not exist yet — the hub has never been started"
@@ -436,9 +460,9 @@ pub async fn run(
     }
 
     if !db_was_running {
-        report.warnings.push(
-            "The database was started for the dump and stopped again afterwards.".into(),
-        );
+        report
+            .warnings
+            .push("The database was started for the dump and stopped again afterwards.".into());
     } else {
         report.warnings.push(
             "postgres/data was copied from a running server; use postgres/dump.sql to restore."
@@ -492,7 +516,10 @@ pub(crate) fn images_of(config: &HubConfig) -> (Vec<ServiceImage>, Vec<InfraImag
 
     let mut infra = vec![
         (DB_COMPOSE_SERVICE.to_string(), config.db.image.clone()),
-        (config.local_redis.host.clone(), config.local_redis.image.clone()),
+        (
+            config.local_redis.host.clone(),
+            config.local_redis.image.clone(),
+        ),
         (config.minio.host.clone(), config.minio.image.clone()),
         (
             config.minio.init_container_host.clone(),
@@ -546,7 +573,9 @@ async fn build_manifest(
                 host: host.clone(),
                 image: image.clone(),
                 image_id: state_of(host).and_then(|s| s.image_id.clone()),
-                repo_digests: state_of(host).map(|s| s.repo_digests.clone()).unwrap_or_default(),
+                repo_digests: state_of(host)
+                    .map(|s| s.repo_digests.clone())
+                    .unwrap_or_default(),
                 db: config.service(*id).db_config.db.clone(),
             })
             .collect(),
@@ -576,7 +605,14 @@ async fn build_manifest(
 /// `postgres --version` inside the running database container. Best effort.
 pub(crate) async fn postgres_version(dir: &Path) -> Option<String> {
     let output = engine()
-        .args(["compose", "exec", "-T", DB_COMPOSE_SERVICE, "postgres", "--version"])
+        .args([
+            "compose",
+            "exec",
+            "-T",
+            DB_COMPOSE_SERVICE,
+            "postgres",
+            "--version",
+        ])
         .current_dir(dir)
         .stdin(Stdio::null())
         .output()
@@ -683,7 +719,11 @@ pub(crate) fn data_sources(dir: &Path, config: &HubConfig) -> Vec<DataPart> {
             step: "minio",
             title: "Copying the object storage",
             destination: MINIO_DATA_DIR,
-            source: source_of(dir, config.minio.mount.as_deref(), &config.minio.volume_name),
+            source: source_of(
+                dir,
+                config.minio.mount.as_deref(),
+                &config.minio.volume_name,
+            ),
         },
     ];
 
@@ -706,7 +746,10 @@ pub(crate) fn data_sources(dir: &Path, config: &HubConfig) -> Vec<DataPart> {
 
 /// The `-v` source for the rsync container: an absolute host path, or the engine's name
 /// for the volume. `None` when there is nothing there yet.
-pub(crate) async fn resolve_source(dir: &Path, source: &DataSource) -> Result<Option<String>, BackupError> {
+pub(crate) async fn resolve_source(
+    dir: &Path,
+    source: &DataSource,
+) -> Result<Option<String>, BackupError> {
     match source {
         DataSource::Bind(path) => {
             if !path.is_dir() {
@@ -819,7 +862,11 @@ pub(crate) async fn wait_for_database(
             return Err(BackupError::DatabaseNotReady(DB_READY_TIMEOUT.as_secs()));
         }
         if !reported {
-            line(on_event, step, "Waiting for the database to accept connections…");
+            line(
+                on_event,
+                step,
+                "Waiting for the database to accept connections…",
+            );
             reported = true;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -868,7 +915,9 @@ async fn dump_database(
     let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
 
-    let mut file = tokio::fs::File::create(into).await.map_err(|e| io(into, e))?;
+    let mut file = tokio::fs::File::create(into)
+        .await
+        .map_err(|e| io(into, e))?;
     let copy = async {
         let mut reader = BufReader::new(stdout);
         let mut written: u64 = 0;
@@ -1149,7 +1198,10 @@ mod tests {
         assert_eq!(major_move(Some(16), Some(16)), MajorMove::Same(16));
         assert_eq!(
             major_move(Some(16), Some(17)),
-            MajorMove::Across { data: 16, server: 17 }
+            MajorMove::Across {
+                data: 16,
+                server: 17
+            }
         );
         assert_eq!(major_move(None, Some(17)), MajorMove::Unknown);
         assert_eq!(major_move(Some(16), None), MajorMove::Unknown);

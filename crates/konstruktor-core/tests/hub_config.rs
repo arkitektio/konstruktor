@@ -251,8 +251,15 @@ fn the_infrastructure_follows_latest_except_the_third_party_pins() {
         ("rustfs", config.minio.image.clone()),
         ("rustfs_init", config.minio.init_container_image.clone()),
     ] {
-        assert_eq!(tag(&image).as_deref(), Some("latest"), "{service} is `{image}`");
-        assert!(!image.contains("@sha256:"), "{service} is `{image}`, pinned by digest");
+        assert_eq!(
+            tag(&image).as_deref(),
+            Some("latest"),
+            "{service} is `{image}`"
+        );
+        assert!(
+            !image.contains("@sha256:"),
+            "{service} is `{image}`, pinned by digest"
+        );
     }
 
     for (service, image) in [

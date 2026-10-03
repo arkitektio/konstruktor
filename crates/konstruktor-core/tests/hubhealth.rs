@@ -68,7 +68,10 @@ async fn a_refresh_persists_the_rotated_token() {
 
     assert_eq!(access.token, "at-1");
     assert_eq!(current.refresh_token, "rt-1");
-    assert_eq!(read_state(&dir).expect("state on disk").refresh_token, "rt-1");
+    assert_eq!(
+        read_state(&dir).expect("state on disk").refresh_token,
+        "rt-1"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -97,7 +100,10 @@ async fn a_refused_refresh_token_is_named_as_such() {
     .err()
     .expect("refused");
 
-    assert!(matches!(error, ReportError::InvalidGrant(_)), "got {error:?}");
+    assert!(
+        matches!(error, ReportError::InvalidGrant(_)),
+        "got {error:?}"
+    );
     // Nothing was rotated, so nothing was written.
     assert_eq!(current.refresh_token, "rt-0");
     assert!(read_state(&dir).is_none());
@@ -111,7 +117,9 @@ async fn a_report_is_sent_as_the_hub_and_says_when_to_come_back() {
         .and(path("/lok/f/hubhealth/"))
         .and(header("authorization", "Bearer at-1"))
         .and(body_string_contains(r#""healthy":true"#))
-        .and(body_string_contains(r#""hostname":"myhub.iac.mesh.arkitekt.live""#))
+        .and(body_string_contains(
+            r#""hostname":"myhub.iac.mesh.arkitekt.live""#,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "status": "reported",
             "message": "Health report processed successfully",
@@ -170,5 +178,8 @@ async fn an_expired_access_token_is_unauthorized_not_a_server_error() {
     .err()
     .expect("refused");
 
-    assert!(matches!(error, ReportError::Unauthorized(ref d) if d == "Token expired"), "got {error:?}");
+    assert!(
+        matches!(error, ReportError::Unauthorized(ref d) if d == "Token expired"),
+        "got {error:?}"
+    );
 }

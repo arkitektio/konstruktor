@@ -489,13 +489,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
     // Every address the hub is reached at, for one path on the gateway: the chosen hosts,
     // the tailnet node, and the gateway's in-network name.
     let aliases_at = |path: &str| {
-        let mut aliases = build_aliases(
-            &options.hosts,
-            port,
-            ssl,
-            path,
-            &options.reachable_hosts,
-        );
+        let mut aliases = build_aliases(&options.hosts, port, ssl, path, &options.reachable_hosts);
         if options.mesh_alias {
             aliases.push(mesh_alias(ssl, path));
         }

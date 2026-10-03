@@ -72,9 +72,15 @@ pub struct ServiceHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum HealthEvent {
-    Line { line: String },
+    Line {
+        line: String,
+    },
     /// One service's verdict is in.
-    Checked { service: String, healthy: bool, detail: String },
+    Checked {
+        service: String,
+        healthy: bool,
+        detail: String,
+    },
 }
 
 /// Runs the whole check. Never fails as such: a service that cannot be reached is a
@@ -139,7 +145,11 @@ pub async fn check(
     let db_ready = pg_isready(dir, &config.db.postgres_user).await;
     say(format!(
         "Postgres {}",
-        if db_ready { "accepts connections" } else { "is not accepting connections" }
+        if db_ready {
+            "accepts connections"
+        } else {
+            "is not accepting connections"
+        }
     ));
 
     let mut results = Vec::new();
@@ -330,7 +340,15 @@ async fn wait_for_http(client: &reqwest::Client, url: &str) -> Option<u16> {
 async fn pg_isready(dir: &Path, user: &str) -> bool {
     engine_probe::engine()
         .async_command()
-        .args(["compose", "exec", "-T", DB_COMPOSE_SERVICE, "pg_isready", "-U", user])
+        .args([
+            "compose",
+            "exec",
+            "-T",
+            DB_COMPOSE_SERVICE,
+            "pg_isready",
+            "-U",
+            user,
+        ])
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

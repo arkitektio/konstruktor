@@ -26,7 +26,11 @@ fn insert(target: &mut Value, key: &str, value: Value) {
 
 /// The bucket names a service declares, in `bucket_purposes()` order.
 fn buckets_of(id: ServiceId, service: &ServiceBlock) -> Vec<String> {
-    service.bucket_names(id).into_iter().map(|(_, name)| name).collect()
+    service
+        .bucket_names(id)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
 }
 
 /// `enabled`, then the services taken out that keep their data — whose database and
@@ -426,7 +430,11 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     // --- the services themselves ---------------------------------------------
     for id in enabled {
         let service = config.service(*id);
-        insert(&mut services, &service.host, compose_service(config, service));
+        insert(
+            &mut services,
+            &service.host,
+            compose_service(config, service),
+        );
     }
     if enabled.contains(&ServiceId::Rekuest) {
         if let (Some(takt), Some(image)) = (config.takt_host(), config.takt_image()) {
@@ -510,7 +518,9 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
             s("/dev/net/tun:/dev/net/tun"),
         ];
         if share_socket {
-            sidecar_volumes.push(s(&format!("{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}")));
+            sidecar_volumes.push(s(&format!(
+                "{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}"
+            )));
         }
 
         // A member of the sidecar's namespace has no name of its own on the network, so
@@ -596,12 +606,16 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     // profile it needs from the folder, read-only.
     if let Some(reporter) = reporter {
         let mut mounts = vec![
-            s(&format!("./{CREDENTIALS_FILENAME}:/seed/{CREDENTIALS_FILENAME}:ro")),
+            s(&format!(
+                "./{CREDENTIALS_FILENAME}:/seed/{CREDENTIALS_FILENAME}:ro"
+            )),
             s(&format!("./{PROFILE_FILENAME}:/seed/{PROFILE_FILENAME}:ro")),
             s(&format!("{}:/state", reporter.volume_name)),
         ];
         if share_socket {
-            mounts.push(s(&format!("{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}:ro")));
+            mounts.push(s(&format!(
+                "{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}:ro"
+            )));
         }
         insert(
             &mut services,

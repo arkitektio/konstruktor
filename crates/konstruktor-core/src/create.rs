@@ -235,7 +235,12 @@ pub async fn create_hub(
         ));
     }
     if answers.mesh_mode == MeshMode::Manual
-        && answers.mesh_auth_key.as_deref().map(str::trim).unwrap_or("").is_empty()
+        && answers
+            .mesh_auth_key
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
     {
         return Err(CreateError::Answers(
             "Joining a mesh with a key of your own needs the key.".into(),
@@ -802,8 +807,16 @@ pub fn validate_service_options(
     options: &BTreeMap<ServiceId, ServiceOptions>,
 ) -> Result<(), CreateError> {
     for (id, asked) in options {
-        if let Some(branch) = asked.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
-            if branch.chars().any(|c| c.is_whitespace() || "~^:?*[\\".contains(c)) {
+        if let Some(branch) = asked
+            .branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+        {
+            if branch
+                .chars()
+                .any(|c| c.is_whitespace() || "~^:?*[\\".contains(c))
+            {
                 return Err(CreateError::Answers(format!(
                     "`{branch}` is not a branch name git would accept (for {})",
                     id.as_str()

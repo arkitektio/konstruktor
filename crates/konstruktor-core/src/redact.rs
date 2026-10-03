@@ -38,8 +38,16 @@ pub struct Redaction {
 
 /// Key names that make a value a credential whatever it looks like.
 const SECRET_KEYS: [&str; 10] = [
-    "password", "secret", "token", "auth_key", "access_key", "private", "credential",
-    "passphrase", "salt", "fernet",
+    "password",
+    "secret",
+    "token",
+    "auth_key",
+    "access_key",
+    "private",
+    "credential",
+    "passphrase",
+    "salt",
+    "fernet",
 ];
 
 /// A value under a secret-sounding key is a credential at almost any length: a hub whose
@@ -88,7 +96,11 @@ fn walk(value: &Value, key: &str, found: &mut BTreeSet<Secret>) {
                 && !PLACEHOLDERS.contains(&text.to_ascii_lowercase().as_str());
             if keyed || looks_generated(text) {
                 found.insert(Secret {
-                    key: if key.is_empty() { "value".into() } else { key.into() },
+                    key: if key.is_empty() {
+                        "value".into()
+                    } else {
+                        key.into()
+                    },
                     value: text.clone(),
                 });
             }
@@ -391,8 +403,14 @@ mod tests {
     #[test]
     fn replaces_the_longest_first() {
         let secrets = vec![
-            Secret { key: "short".into(), value: "abcd1234abcd".into() },
-            Secret { key: "long".into(), value: "abcd1234abcdEFGH5678".into() },
+            Secret {
+                key: "short".into(),
+                value: "abcd1234abcd".into(),
+            },
+            Secret {
+                key: "long".into(),
+                value: "abcd1234abcdEFGH5678".into(),
+            },
         ];
         let out = redact("token=abcd1234abcdEFGH5678 end", &secrets);
         assert!(out.text.contains("[redacted: long]"));
@@ -413,7 +431,10 @@ mod tests {
 
     #[test]
     fn scrubs_a_private_key_block() {
-        let out = redact("key: -----BEGIN PRIVATE KEY-----MIIEv-----END PRIVATE KEY-----", &[]);
+        let out = redact(
+            "key: -----BEGIN PRIVATE KEY-----MIIEv-----END PRIVATE KEY-----",
+            &[],
+        );
         assert!(out.text.contains("[redacted: private key]"));
         assert!(!out.text.contains("MIIEv"));
     }
@@ -442,8 +463,14 @@ mod tests {
     /// not turn every word that contains those letters into a marker.
     #[test]
     fn matches_a_short_secret_as_a_whole_word_only() {
-        let secrets = vec![Secret { key: "password".into(), value: "admin".into() }];
-        let out = redact("Unknown command: 'ensureadmin'\nlogin as admin failed\n", &secrets);
+        let secrets = vec![Secret {
+            key: "password".into(),
+            value: "admin".into(),
+        }];
+        let out = redact(
+            "Unknown command: 'ensureadmin'\nlogin as admin failed\n",
+            &secrets,
+        );
         assert!(out.text.contains("ensureadmin"));
         assert!(out.text.contains("login as [redacted: password] failed"));
     }

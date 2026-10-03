@@ -11,8 +11,8 @@
 //! is correct on all of them, and it is what the rest of this crate already does for
 //! `compose`.
 
-use std::collections::HashMap;
 use crate::paths::canonical as canonicalize;
+use std::collections::HashMap;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
@@ -361,7 +361,9 @@ pub(crate) fn parse_cli_version(line: &str) -> Option<String> {
 /// `2.29.7`, `v2.29.7`, `2.29.7-desktop.1` and `1.47` all become comparable numbers.
 pub(crate) fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let core = text.trim().trim_start_matches('v');
-    let core = core.split(|c: char| c == '-' || c == '+' || c == ' ').next()?;
+    let core = core
+        .split(|c: char| c == '-' || c == '+' || c == ' ')
+        .next()?;
     let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
     let major = parts.next()??;
     let minor = parts.next().flatten().unwrap_or(0);
@@ -462,10 +464,17 @@ pub async fn host_socket(engine: &Engine) -> Option<String> {
         return None;
     }
     let args: &[&str] = match engine.kind {
-        EngineKind::Docker => &["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        EngineKind::Docker => &[
+            "context",
+            "inspect",
+            "--format",
+            "{{.Endpoints.docker.Host}}",
+        ],
         EngineKind::Podman => &["info", "--format", "{{.Host.RemoteSocket.Path}}"],
     };
-    let output = run(engine.async_command().args(args), DAEMON_TIMEOUT).await.ok()?;
+    let output = run(engine.async_command().args(args), DAEMON_TIMEOUT)
+        .await
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -841,8 +850,14 @@ mod tests {
             socket_path("unix:///run/user/1000/docker.sock", "/var/run/docker.sock").as_deref(),
             Some("/run/user/1000/docker.sock")
         );
-        assert_eq!(socket_path("unix:///var/run/docker.sock", "/var/run/docker.sock"), None);
-        assert_eq!(socket_path("tcp://10.0.0.2:2375", "/var/run/docker.sock"), None);
+        assert_eq!(
+            socket_path("unix:///var/run/docker.sock", "/var/run/docker.sock"),
+            None
+        );
+        assert_eq!(
+            socket_path("tcp://10.0.0.2:2375", "/var/run/docker.sock"),
+            None
+        );
         assert_eq!(socket_path("", "/var/run/docker.sock"), None);
     }
 

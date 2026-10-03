@@ -202,7 +202,8 @@ mod tests {
     use super::*;
 
     fn tmpdir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("konstruktor-profile-{}", rand::random::<u32>()));
+        let dir =
+            std::env::temp_dir().join(format!("konstruktor-profile-{}", rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -217,7 +218,11 @@ mod tests {
     #[test]
     fn a_bare_compose_file_makes_it_an_engine() {
         let dir = tmpdir();
-        std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        std::fs::write(
+            dir.join(crate::compose_file::COMPOSE_FILENAME),
+            "services: {}",
+        )
+        .unwrap();
         assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Engine));
     }
 
@@ -227,7 +232,11 @@ mod tests {
     fn a_hub_with_a_compose_file_is_still_a_hub() {
         let dir = tmpdir();
         std::fs::write(profile_path(&dir), "version: '1.0'").unwrap();
-        std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        std::fs::write(
+            dir.join(crate::compose_file::COMPOSE_FILENAME),
+            "services: {}",
+        )
+        .unwrap();
         assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Hub));
     }
 
@@ -238,7 +247,11 @@ mod tests {
         std::fs::write(dir.join(crate::coord::COORD_CONFIG_FILE), "lok: {}").unwrap();
         // It has a compose file too, as every deployment does. The marker has to win, or
         // a coordination server would resolve as a plugin engine.
-        std::fs::write(dir.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        std::fs::write(
+            dir.join(crate::compose_file::COMPOSE_FILENAME),
+            "services: {}",
+        )
+        .unwrap();
         assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Coord));
     }
 
@@ -251,7 +264,11 @@ mod tests {
         assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Engine));
 
         let legacy = tmpdir();
-        std::fs::write(legacy.join(crate::compose_file::COMPOSE_FILENAME), "services: {}").unwrap();
+        std::fs::write(
+            legacy.join(crate::compose_file::COMPOSE_FILENAME),
+            "services: {}",
+        )
+        .unwrap();
         assert_eq!(holds_a_deployment(&legacy), Some(DeploymentKind::Engine));
     }
 

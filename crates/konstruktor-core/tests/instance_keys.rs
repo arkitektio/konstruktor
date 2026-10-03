@@ -101,7 +101,12 @@ fn the_manifest_carries_each_instances_raw_public_key() {
     );
     assert!(!request.hub.instances.is_empty());
     // Every service sends its key; the object store is no service of the trust bundle.
-    for instance in request.hub.instances.iter().filter(|i| i.identifier != "S3") {
+    for instance in request
+        .hub
+        .instances
+        .iter()
+        .filter(|i| i.identifier != "S3")
+    {
         let key = instance
             .manifest
             .challenge_key
@@ -184,18 +189,36 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
         rekuest["rekuest"]["server_url"].as_str(),
         Some("http://rekuest:80/rekuest")
     );
-    let agents = rekuest["rekuest"]["service_agents"]
+    // A service and a hook agent are separate entries, in separate lists, with separate
+    // endpoints: neither refers to the other.
+    let services = rekuest["rekuest"]["services"]
         .as_sequence()
-        .expect("service agents");
-    assert!(!agents.is_empty());
-    for agent in agents {
-        assert!(agent.get("secret").is_none());
-        let service = agent["service"].as_str().unwrap();
+        .expect("services");
+    let hook_agents = rekuest["rekuest"]["hook_agents"]
+        .as_sequence()
+        .expect("hook agents");
+    assert!(!services.is_empty() && services.len() == hook_agents.len());
+    for service in services {
+        assert!(service.get("secret").is_none() && service.get("hook_url").is_none());
+        let name = service["name"].as_str().unwrap();
         assert_eq!(
-            agent["hook_url"].as_str(),
-            Some(format!("http://{service}:80/{service}/_rekuest/hook").as_str())
+            service["url"].as_str(),
+            Some(format!("http://{name}:80/{name}/_rekuest/service").as_str())
         );
     }
+    for agent in hook_agents {
+        assert!(agent.get("secret").is_none());
+        let name = agent["name"].as_str().unwrap();
+        assert_eq!(
+            agent["hook_url"].as_str(),
+            Some(format!("http://{name}:80/{name}/_rekuest/hook").as_str())
+        );
+    }
+    // Images from before the split still find the one list they read.
+    let combined = rekuest["rekuest"]["service_agents"]
+        .as_sequence()
+        .expect("service agents");
+    assert_eq!(combined.len(), hook_agents.len());
 }
 
 /// A hub the coordination server handed no `hub_keys_url` (not enrolled yet, or the e2e

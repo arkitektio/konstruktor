@@ -92,7 +92,9 @@ pub async fn bug_report(
     );
 
     let body = body(&environment, &redacted.text, log_error.as_deref(), &service);
-    let issue_url = repo.as_ref().map(|repo| issue_url(repo, &title, &environment));
+    let issue_url = repo
+        .as_ref()
+        .map(|repo| issue_url(repo, &title, &environment));
 
     Ok(BugReport {
         service,
@@ -146,7 +148,10 @@ fn environment(
         ("engine", engine),
         (
             "compose",
-            probe.compose_version.clone().unwrap_or_else(|| "unknown".into()),
+            probe
+                .compose_version
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
         ),
         ("service", service.to_string()),
         ("image", image.unwrap_or("unknown").to_string()),

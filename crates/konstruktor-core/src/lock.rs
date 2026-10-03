@@ -105,7 +105,10 @@ pub fn lock_path(dir: &Path) -> PathBuf {
 pub fn read(dir: &Path) -> Lock {
     let path = lock_path(dir);
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return Lock { version: 1, history: Vec::new() };
+        return Lock {
+            version: 1,
+            history: Vec::new(),
+        };
     };
     match serde_json::from_str::<Lock>(&text) {
         Ok(lock) => lock,
@@ -114,7 +117,10 @@ pub fn read(dir: &Path) -> Lock {
                 &path,
                 path.with_extension(format!("json{QUARANTINE_SUFFIX}")),
             );
-            Lock { version: 1, history: Vec::new() }
+            Lock {
+                version: 1,
+                history: Vec::new(),
+            }
         }
     }
 }
@@ -137,7 +143,13 @@ pub async fn snapshot(config: &HubConfig) -> BTreeMap<String, Pin> {
                 .first()
                 .and_then(|d| d.rsplit_once('@'))
                 .map(|(_, digest)| digest.to_string());
-            (state.service, Pin { image: state.image, digest })
+            (
+                state.service,
+                Pin {
+                    image: state.image,
+                    digest,
+                },
+            )
         })
         .collect()
 }
@@ -155,7 +167,10 @@ pub async fn record(
     let services = snapshot(config).await;
     let mut lock = read(dir);
     lock.version = 1;
-    if lock.current().is_some_and(|entry| entry.services == services) {
+    if lock
+        .current()
+        .is_some_and(|entry| entry.services == services)
+    {
         return Ok(false);
     }
     lock.history.push(Entry {
@@ -197,7 +212,10 @@ mod tests {
             reason: reason.into(),
             services: BTreeMap::from([(
                 "rekuest".to_string(),
-                Pin { image: image.into(), digest: Some(digest.into()) },
+                Pin {
+                    image: image.into(),
+                    digest: Some(digest.into()),
+                },
             )]),
         }
     }
@@ -223,17 +241,25 @@ mod tests {
         );
         // Never pulled: there is nothing to roll back to, and saying so is the point.
         assert_eq!(
-            Pin { image: "jhnnsrs/rekuest:next".into(), digest: None }.reference(),
+            Pin {
+                image: "jhnnsrs/rekuest:next".into(),
+                digest: None
+            }
+            .reference(),
             None
         );
     }
 
     #[test]
     fn the_previous_state_is_the_one_before_the_current_one() {
-        let mut lock = Lock { version: 1, history: Vec::new() };
+        let mut lock = Lock {
+            version: 1,
+            history: Vec::new(),
+        };
         assert!(lock.previous().is_none(), "nothing to roll back to yet");
 
-        lock.history.push(entry("before update", "r:next", "sha256:old"));
+        lock.history
+            .push(entry("before update", "r:next", "sha256:old"));
         assert!(lock.previous().is_none(), "one state is not a rollback");
 
         lock.history.push(entry("updated", "r:next", "sha256:new"));
@@ -268,13 +294,18 @@ mod tests {
     #[test]
     fn recording_the_same_images_twice_appends_once() {
         let dir = tmpdir();
-        let mut lock = Lock { version: 1, history: Vec::new() };
-        lock.history.push(entry("before update", "r:next", "sha256:old"));
+        let mut lock = Lock {
+            version: 1,
+            history: Vec::new(),
+        };
+        lock.history
+            .push(entry("before update", "r:next", "sha256:old"));
         write(&dir, &lock).expect("writing");
 
         let same = read(&dir);
         assert_eq!(same.history.len(), 1);
-        assert!(same.current().is_some_and(|e| e.services
-            == entry("x", "r:next", "sha256:old").services));
+        assert!(same
+            .current()
+            .is_some_and(|e| e.services == entry("x", "r:next", "sha256:old").services));
     }
 }

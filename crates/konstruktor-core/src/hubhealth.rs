@@ -76,7 +76,10 @@ pub enum ReportError {
 // --- state ---------------------------------------------------------------------------
 
 /// The state to use: the stored one, unless the seed is from a newer authorization.
-pub fn reconcile(seed: &HubCredentials, stored: Option<ReporterState>) -> Result<ReporterState, ReportError> {
+pub fn reconcile(
+    seed: &HubCredentials,
+    stored: Option<ReporterState>,
+) -> Result<ReporterState, ReportError> {
     let seed_client = seed.envelope.client_id.clone();
     if let Some(state) = stored.filter(|s| s.seeded_from == seed_client) {
         return Ok(state);
@@ -105,7 +108,10 @@ pub fn write_state(dir: &Path, state: &ReporterState) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let target = dir.join(STATE_FILENAME);
     let partial = dir.join(format!("{STATE_FILENAME}.partial"));
-    std::fs::write(&partial, serde_json::to_string_pretty(state).expect("serializes"))?;
+    std::fs::write(
+        &partial,
+        serde_json::to_string_pretty(state).expect("serializes"),
+    )?;
     std::fs::rename(partial, target)
 }
 
@@ -323,9 +329,7 @@ pub async fn mesh_status(socket: &Path) -> Option<MeshReport> {
         // HTTP/1.0, so the answer ends when the connection closes and no chunked decoding
         // is needed. The LocalAPI insists on this host name.
         stream
-            .write_all(
-                b"GET /localapi/v0/status HTTP/1.0\r\nHost: local-tailscaled.sock\r\n\r\n",
-            )
+            .write_all(b"GET /localapi/v0/status HTTP/1.0\r\nHost: local-tailscaled.sock\r\n\r\n")
             .await
             .ok()?;
         let mut raw = Vec::new();
@@ -433,7 +437,10 @@ pub async fn run(config: &ReporterConfig, log: &(dyn Fn(&str) + Sync)) -> Result
             }
             Err(error @ ReportError::NoRefreshToken) => return Err(error),
             Err(error) => {
-                log(&format!("report failed: {error}; retrying in {}s", RETRY_AFTER_ERROR.as_secs()));
+                log(&format!(
+                    "report failed: {error}; retrying in {}s",
+                    RETRY_AFTER_ERROR.as_secs()
+                ));
                 RETRY_AFTER_ERROR
             }
         };
@@ -472,7 +479,10 @@ async fn report_once(
     };
 
     for attempt in 0..2 {
-        let token = match access.as_ref().filter(|a| tokio::time::Instant::now() < a.renew_at) {
+        let token = match access
+            .as_ref()
+            .filter(|a| tokio::time::Instant::now() < a.renew_at)
+        {
             Some(token) => token.token.clone(),
             None => {
                 let mut state = reconcile(seed, read_state(&config.state_dir))?;
@@ -487,10 +497,15 @@ async fn report_once(
             Ok(next) => {
                 log(&format!(
                     "reported {} (mesh: {})",
-                    if report.healthy { "healthy" } else { "unhealthy" },
+                    if report.healthy {
+                        "healthy"
+                    } else {
+                        "unhealthy"
+                    },
                     match &report.mesh {
                         None => "none".to_string(),
-                        Some(m) if m.connected => m.hostname.clone().unwrap_or_else(|| "connected".into()),
+                        Some(m) if m.connected =>
+                            m.hostname.clone().unwrap_or_else(|| "connected".into()),
                         Some(_) => "not connected".to_string(),
                     }
                 ));

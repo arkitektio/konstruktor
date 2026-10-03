@@ -97,7 +97,11 @@ pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> Genera
                 id,
                 host: &block.host,
                 internal_port: block.internal_port,
-                buckets: block.bucket_names(id).into_iter().map(|(_, name)| name).collect(),
+                buckets: block
+                    .bucket_names(id)
+                    .into_iter()
+                    .map(|(_, name)| name)
+                    .collect(),
                 agent_upstream: (id == crate::catalog::ServiceId::Rekuest)
                     .then(|| config.takt_host())
                     .flatten()

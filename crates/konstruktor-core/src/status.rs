@@ -171,7 +171,10 @@ pub fn image_tag(image: &str) -> Option<String> {
 
 /// Whether the hub is reached over its mesh alone, with no port published on this machine.
 pub fn is_mesh_only(config: &crate::config::hub::HubConfig) -> bool {
-    config.mesh.as_ref().is_some_and(|m| m.enabled && m.mesh_only)
+    config
+        .mesh
+        .as_ref()
+        .is_some_and(|m| m.enabled && m.mesh_only)
 }
 
 /// The gateway's own address, as a browser would type it.
@@ -300,7 +303,11 @@ mod tests {
     use super::*;
     use crate::config::hub::{build_hub_config, HubConfigOptions};
 
-    fn config_with(ssl: bool, http: Option<u16>, https: Option<u16>) -> crate::config::hub::HubConfig {
+    fn config_with(
+        ssl: bool,
+        http: Option<u16>,
+        https: Option<u16>,
+    ) -> crate::config::hub::HubConfig {
         build_hub_config(&HubConfigOptions {
             device_id: "device".into(),
             coord_server: "go.arkitekt.live".into(),

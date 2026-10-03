@@ -113,9 +113,10 @@ pub fn load() -> RegistryFile {
             registry
         }
         Err(_) => {
-            let _ = std::fs::rename(&path, path.with_extension(
-                format!("json{QUARANTINE_SUFFIX}"),
-            ));
+            let _ = std::fs::rename(
+                &path,
+                path.with_extension(format!("json{QUARANTINE_SUFFIX}")),
+            );
             RegistryFile::empty(salvage_device_id(&text).unwrap_or_else(new_id))
         }
     }

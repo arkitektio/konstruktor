@@ -69,14 +69,26 @@ pub struct HubSelf {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub_keys_url: Option<String>,
     /// The user who accepted the grant — the token's `sub`.
-    #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "id_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sub: Option<String>,
     /// The organization it was accepted into — the token's `org`.
-    #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "id_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub organization: Option<String>,
     /// The hub's primary key on the server — not the identifier the token's `hub` claim
     /// carries.
-    #[serde(default, deserialize_with = "id_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "id_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub hub: Option<String>,
 }
 

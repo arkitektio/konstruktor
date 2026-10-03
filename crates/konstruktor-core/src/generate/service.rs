@@ -324,29 +324,54 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
                     .unwrap_or(Value::Null),
             )]),
         ));
-        let agents: Vec<Value> = HOOKED_SERVICES
+        // Two separate lists, one entry each per hooked service: the *service* (what exists
+        // there: its structures and signals, catalogued by Rekuest) and the *hook agent*
+        // (what can be done there: its actions, given to every organization). They are
+        // different things that happen to run in the same process, so neither entry
+        // refers to the other.
+        let hooked: Vec<_> = HOOKED_SERVICES
             .iter()
             .filter(|other| {
                 let block = config.service(**other);
                 block.enabled && block.image.is_some()
             })
-            .map(|other| {
-                let block = config.service(*other);
+            .map(|other| (other.as_str(), config.service(*other)))
+            .collect();
+        let endpoint = |block: &ServiceBlock, what: &str| {
+            s(&format!(
+                "http://{}:{}/{}/_rekuest/{what}",
+                block.host, block.internal_port, block.host
+            ))
+        };
+        let services: Vec<Value> = hooked
+            .iter()
+            .map(|(name, block)| map(vec![("name", s(name)), ("url", endpoint(block, "service"))]))
+            .collect();
+        let hook_agents: Vec<Value> = hooked
+            .iter()
+            .map(|(name, block)| {
                 map(vec![
-                    ("service", s(other.as_str())),
-                    (
-                        "hook_url",
-                        s(&format!(
-                            "http://{}:{}/{}/_rekuest/hook",
-                            block.host, block.internal_port, block.host
-                        )),
-                    ),
+                    ("name", s(name)),
+                    ("hook_url", endpoint(block, "hook")),
+                ])
+            })
+            .collect();
+        // Rekuest images from before the split read one combined list. Written beside the
+        // two so either generation of image finds what it reads; newer ones ignore it.
+        let agents: Vec<Value> = hooked
+            .iter()
+            .map(|(name, block)| {
+                map(vec![
+                    ("service", s(name)),
+                    ("hook_url", endpoint(block, "hook")),
                 ])
             })
             .collect();
         // The pair finds each other by these two: Rekuest signs its internal requests to
         // takt, takt asks Rekuest for its upkeep jobs. Both read this one file.
         let mut block = vec![
+            ("services", list(services)),
+            ("hook_agents", list(hook_agents)),
             ("service_agents", list(agents)),
             (
                 "server_url",

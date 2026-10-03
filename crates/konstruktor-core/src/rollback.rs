@@ -25,9 +25,11 @@ use crate::profile::read_profile;
 pub enum RollbackError {
     #[error("{0}")]
     Profile(String),
-    #[error("there is no record of what this hub was running before — `hub_lock.json` is \
+    #[error(
+        "there is no record of what this hub was running before — `hub_lock.json` is \
              written by `konstruktor update`, so a hub that has not been updated since \
-             this existed has nothing to go back to")]
+             this existed has nothing to go back to"
+    )]
     NoHistory,
     #[error("every service is already on the image it would be rolled back to")]
     NothingToDo,
@@ -83,7 +85,11 @@ pub fn plan(dir: &Path) -> Result<RollbackPlan, RollbackError> {
         warnings.push(format!(
             "no earlier image was recorded for {} — {} left as {} {}",
             unrollable.join(", "),
-            if unrollable.len() == 1 { "it is" } else { "they are" },
+            if unrollable.len() == 1 {
+                "it is"
+            } else {
+                "they are"
+            },
             if unrollable.len() == 1 { "it" } else { "they" },
             if unrollable.len() == 1 { "is" } else { "are" },
         ));

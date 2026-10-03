@@ -28,7 +28,9 @@ async fn notices_a_sidecar_that_lost_a_network() {
         .args(["compose", "version"])
         .output()
         .is_ok_and(|o| o.status.success())
-        && docker(&["image", "inspect", MESH_IMAGE], &here).status.success();
+        && docker(&["image", "inspect", MESH_IMAGE], &here)
+            .status
+            .success();
     if !available {
         eprintln!("skipping: no docker compose, or no {MESH_IMAGE} on this machine");
         return;
@@ -49,7 +51,11 @@ async fn notices_a_sidecar_that_lost_a_network() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     write_profile(&dir, &hub_profile(config.clone())).unwrap();
-    write_generated_files(&dir, &generate_hub_files(&config, &IssuedIdentity::default())).unwrap();
+    write_generated_files(
+        &dir,
+        &generate_hub_files(&config, &IssuedIdentity::default()),
+    )
+    .unwrap();
 
     struct Down(PathBuf);
     impl Drop for Down {
@@ -74,10 +80,15 @@ async fn notices_a_sidecar_that_lost_a_network() {
     assert_eq!(sidecar_missing_a_network(&dir, &config).await, None);
 
     // Take one away, as an aborted `up` left it for us.
-    let id = String::from_utf8_lossy(&docker(&["compose", "ps", "--all", "--quiet", "tailscale"], &dir).stdout)
-        .trim()
-        .to_string();
-    let disconnected = docker(&["network", "disconnect", &config.internal_network, &id], &dir);
+    let id = String::from_utf8_lossy(
+        &docker(&["compose", "ps", "--all", "--quiet", "tailscale"], &dir).stdout,
+    )
+    .trim()
+    .to_string();
+    let disconnected = docker(
+        &["network", "disconnect", &config.internal_network, &id],
+        &dir,
+    );
     assert!(
         disconnected.status.success(),
         "network disconnect failed: {}",

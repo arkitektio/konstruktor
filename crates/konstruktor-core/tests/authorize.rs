@@ -213,7 +213,10 @@ async fn returns_the_envelope_and_any_mesh_key_with_it() {
     .await
     .expect("granted");
 
-    assert_eq!(envelope.jwks_url(), Some("https://coord.example.org/lok/o/jwks/"));
+    assert_eq!(
+        envelope.jwks_url(),
+        Some("https://coord.example.org/lok/o/jwks/")
+    );
     assert_eq!(
         envelope.mesh_grant().ionscale_auth_key.as_deref(),
         Some("tskey-auth-minted")

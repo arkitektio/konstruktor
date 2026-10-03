@@ -209,8 +209,8 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
     assert_eq!(credentials.advertised_hosts[0].host, "lab.example.org");
 
     // On disk, not merely returned.
-    let written = konstruktor_core::credentials::read_credentials(&dir)
-        .expect("the credentials are on disk");
+    let written =
+        konstruktor_core::credentials::read_credentials(&dir).expect("the credentials are on disk");
     assert_eq!(written.identifier, "lab-hub");
     assert_eq!(written.issuer.as_deref(), Some("https://coord.example.org"));
 
@@ -224,7 +224,10 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
 
     let seen = events.lock().expect("the log").clone();
     for expected in ["building", "staged", "granted", "writing", "done"] {
-        assert!(seen.contains(&expected.to_string()), "missing {expected} in {seen:?}");
+        assert!(
+            seen.contains(&expected.to_string()),
+            "missing {expected} in {seen:?}"
+        );
     }
 
     std::fs::remove_dir_all(&dir).ok();
@@ -260,7 +263,10 @@ async fn a_hub_off_the_mesh_asks_for_a_key_and_keeps_it() {
     // The key belongs to the login that was granted; the node's state is kept under it.
     assert_eq!(mesh.login.as_deref(), Some("2-3-50"));
     // The grant carried a refresh token, so the hub can report its own health now.
-    assert!(profile.config.reporter.is_some(), "no reporter after authorization");
+    assert!(
+        profile.config.reporter.is_some(),
+        "no reporter after authorization"
+    );
 
     // And asked again next time: which login that grant is only shows once accepted.
     let server = coordination_server(accepted(json!({
@@ -321,7 +327,8 @@ async fn a_mesh_only_hub_advertises_no_host_and_stays_mesh_only() {
     profile.config.mesh = Some(block);
     write_profile(&dir, &profile).unwrap();
 
-    let server = coordination_server(accepted(json!({ "ionscale_auth_key": "tskey-auth-fresh" }))).await;
+    let server =
+        coordination_server(accepted(json!({ "ionscale_auth_key": "tskey-auth-fresh" }))).await;
     let mut wanted = answers(&dir, &server);
     wanted.mesh_key = MeshKeyRequest::Fresh;
 
@@ -329,8 +336,16 @@ async fn a_mesh_only_hub_advertises_no_host_and_stays_mesh_only() {
         .await
         .expect("the hub is authorized");
 
-    assert!(done.credentials.advertised_hosts.is_empty(), "{:?}", done.credentials.advertised_hosts);
-    let mesh = profile::read_profile(&dir).unwrap().config.mesh.expect("a mesh block");
+    assert!(
+        done.credentials.advertised_hosts.is_empty(),
+        "{:?}",
+        done.credentials.advertised_hosts
+    );
+    let mesh = profile::read_profile(&dir)
+        .unwrap()
+        .config
+        .mesh
+        .expect("a mesh block");
     assert_eq!(mesh.auth_key, "tskey-auth-fresh");
     assert!(mesh.mesh_only, "a fresh key must not undo mesh-only");
 

@@ -90,9 +90,13 @@ pub fn read_backup(dir: &Path) -> Result<Option<String>, ComposeFileError> {
 pub fn write(dir: &Path, contents: &str) -> Result<(), ComposeFileError> {
     let path = compose_path(dir)?;
 
-    let parsed: serde_norway::Value = serde_norway::from_str(contents)
-        .map_err(|e| ComposeFileError::NotYaml(e.to_string()))?;
-    if parsed.get("services").and_then(|s| s.as_mapping()).is_none() {
+    let parsed: serde_norway::Value =
+        serde_norway::from_str(contents).map_err(|e| ComposeFileError::NotYaml(e.to_string()))?;
+    if parsed
+        .get("services")
+        .and_then(|s| s.as_mapping())
+        .is_none()
+    {
         return Err(ComposeFileError::NotYaml(
             "a compose file needs a `services:` mapping at the top level".into(),
         ));
@@ -175,7 +179,8 @@ pub fn predates_takt(dir: &Path, config: &HubConfig) -> Option<String> {
 /// Not written anywhere: a front end shows it, or offers it as the thing to reset to,
 /// and only [`write`] puts anything on disk.
 pub fn regenerate(dir: &Path) -> Result<String, ComposeFileError> {
-    let profile = profile::read_profile(dir).map_err(|e| ComposeFileError::Profile(e.to_string()))?;
+    let profile =
+        profile::read_profile(dir).map_err(|e| ComposeFileError::Profile(e.to_string()))?;
     Ok(regenerate_from(&profile.config))
 }
 
@@ -233,7 +238,10 @@ mod tests {
         std::fs::write(dir.join(COMPOSE_FILENAME), "services: {}\n").unwrap();
 
         write(&dir, "services:\n  db:\n    image: postgres\n").unwrap();
-        assert_eq!(read_backup(&dir).unwrap().as_deref(), Some("services: {}\n"));
+        assert_eq!(
+            read_backup(&dir).unwrap().as_deref(),
+            Some("services: {}\n")
+        );
         assert!(read(&dir).unwrap().contains("postgres"));
 
         // Neither of these may touch the file.

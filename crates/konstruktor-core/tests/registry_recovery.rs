@@ -37,8 +37,7 @@ fn isolate() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     let root = ROOT
         .get_or_init(|| {
-            let root =
-                std::env::temp_dir().join(format!("konstruktor-reg-{}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("konstruktor-reg-{}", std::process::id()));
             std::fs::create_dir_all(&root).expect("a scratch data directory");
             std::env::set_var(registry::DATA_DIR_ENV, &root);
             root
@@ -135,7 +134,10 @@ fn forgetting_drops_one_record_whatever_is_on_disk() {
     let _guard = exclusive();
     let _ = write_registry(GOOD);
 
-    assert!(registry::forget("a1").expect("saved"), "the record was there");
+    assert!(
+        registry::forget("a1").expect("saved"),
+        "the record was there"
+    );
     assert!(registry::load().deployments.is_empty());
     // Nothing left to forget is an answer, not an error.
     assert!(!registry::forget("a1").expect("nothing to save"));
@@ -157,6 +159,12 @@ fn a_missing_registry_is_not_treated_as_corruption() {
 
     let loaded = registry::load();
     assert!(loaded.deployments.is_empty());
-    assert!(!loaded.device_id.is_empty(), "a first run still needs an id");
-    assert!(!quarantined.exists(), "nothing should have been quarantined");
+    assert!(
+        !loaded.device_id.is_empty(),
+        "a first run still needs an id"
+    );
+    assert!(
+        !quarantined.exists(),
+        "nothing should have been quarantined"
+    );
 }

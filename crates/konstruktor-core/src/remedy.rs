@@ -83,7 +83,10 @@ pub enum Step {
     /// ourselves. Linux installs need `sudo`; that stays the user's.
     CopyCommand { label: String, command: String },
     /// A fixed installer the app runs, streaming its output.
-    RunInstaller { label: String, installer: InstallerId },
+    RunInstaller {
+        label: String,
+        installer: InstallerId,
+    },
     /// A product the app launches.
     StartEngine { label: String, target: StartTarget },
     /// Something to know, with nothing to click.
@@ -244,8 +247,12 @@ impl StartTarget {
                 Some(("colima".into(), s(&["start"])))
             }
             (StartTarget::PodmanMachine, _) => Some(("podman".into(), s(&["machine", "start"]))),
-            (StartTarget::DockerDesktop, Platform::Macos) => Some(("open".into(), s(&["-a", "Docker"]))),
-            (StartTarget::OrbStack, Platform::Macos) => Some(("open".into(), s(&["-a", "OrbStack"]))),
+            (StartTarget::DockerDesktop, Platform::Macos) => {
+                Some(("open".into(), s(&["-a", "Docker"])))
+            }
+            (StartTarget::OrbStack, Platform::Macos) => {
+                Some(("open".into(), s(&["-a", "OrbStack"])))
+            }
             (StartTarget::RancherDesktop, Platform::Macos) => {
                 Some(("open".into(), s(&["-a", "Rancher Desktop"])))
             }
@@ -270,12 +277,18 @@ fn windows_app(local: &[&str], program_files: &[&str]) -> Option<(String, Vec<St
         paths.extend(local.iter().map(|rel| PathBuf::from(&base).join(rel)));
     }
     if let Ok(base) = std::env::var("ProgramFiles") {
-        paths.extend(program_files.iter().map(|rel| PathBuf::from(&base).join(rel)));
+        paths.extend(
+            program_files
+                .iter()
+                .map(|rel| PathBuf::from(&base).join(rel)),
+        );
     }
-    paths
-        .into_iter()
-        .find(|p| p.exists())
-        .map(|p| ("explorer.exe".to_string(), vec![p.to_string_lossy().into_owned()]))
+    paths.into_iter().find(|p| p.exists()).map(|p| {
+        (
+            "explorer.exe".to_string(),
+            vec![p.to_string_lossy().into_owned()],
+        )
+    })
 }
 
 // --- the remedies themselves ------------------------------------------------------------
@@ -650,7 +663,9 @@ pub fn describe(probe: &DockerProbe) -> String {
         for step in &primary.steps {
             match step {
                 Step::OpenUrl { label, url } => text.push_str(&format!("\n  {label}: {url}")),
-                Step::CopyCommand { label, command } => text.push_str(&format!("\n  {label}:\n    {command}")),
+                Step::CopyCommand { label, command } => {
+                    text.push_str(&format!("\n  {label}:\n    {command}"))
+                }
                 Step::RunInstaller { installer, .. } => {
                     text.push_str(&format!("\n  Install:\n    {}", installer.command()))
                 }
@@ -688,10 +703,22 @@ mod tests {
             rancher_desktop: true,
             ..with_winget()
         };
-        let win = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Windows, &prereqs);
+        let win = remedies(
+            DockerState::Missing,
+            EngineBrand::Unknown,
+            None,
+            Platform::Windows,
+            &prereqs,
+        );
         assert_eq!(win[0].title, "Finish setting up Rancher Desktop");
         assert!(!has_installer(&win[0], InstallerId::WingetRancherDesktop));
-        assert!(win[0].steps.iter().any(|s| matches!(s, Step::StartEngine { target: StartTarget::RancherDesktop, .. })));
+        assert!(win[0].steps.iter().any(|s| matches!(
+            s,
+            Step::StartEngine {
+                target: StartTarget::RancherDesktop,
+                ..
+            }
+        )));
     }
 
     fn has_installer(remedy: &Remedy, id: InstallerId) -> bool {
@@ -705,16 +732,34 @@ mod tests {
     /// and Docker Desktop is never the first card.
     #[test]
     fn recommends_open_source_first() {
-        let mac = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Macos, &with_brew());
+        let mac = remedies(
+            DockerState::Missing,
+            EngineBrand::Unknown,
+            None,
+            Platform::Macos,
+            &with_brew(),
+        );
         assert_eq!(mac[0].title, "Colima");
         assert!(mac[0].primary);
         assert!(has_installer(&mac[0], InstallerId::BrewColima));
 
-        let win = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Windows, &with_winget());
+        let win = remedies(
+            DockerState::Missing,
+            EngineBrand::Unknown,
+            None,
+            Platform::Windows,
+            &with_winget(),
+        );
         assert_eq!(win[0].title, "Rancher Desktop");
         assert!(has_installer(&win[0], InstallerId::WingetRancherDesktop));
 
-        let linux = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Linux, &Prereqs::default());
+        let linux = remedies(
+            DockerState::Missing,
+            EngineBrand::Unknown,
+            None,
+            Platform::Linux,
+            &Prereqs::default(),
+        );
         assert_eq!(linux[0].title, "Docker Engine");
 
         for set in [&mac, &win, &linux] {
@@ -727,22 +772,57 @@ mod tests {
     /// offered, and the Homebrew install must be.
     #[test]
     fn falls_back_to_copyable_commands_without_a_package_manager() {
-        let mac = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Macos, &Prereqs::default());
+        let mac = remedies(
+            DockerState::Missing,
+            EngineBrand::Unknown,
+            None,
+            Platform::Macos,
+            &Prereqs::default(),
+        );
         assert!(!has_installer(&mac[0], InstallerId::BrewColima));
         assert!(mac[0].steps.iter().any(|s| matches!(s, Step::CopyCommand { command, .. } if command.contains("brew.sh") || command.contains("Homebrew"))));
 
-        let win = remedies(DockerState::Missing, EngineBrand::Unknown, None, Platform::Windows, &Prereqs::default());
+        let win = remedies(
+            DockerState::Missing,
+            EngineBrand::Unknown,
+            None,
+            Platform::Windows,
+            &Prereqs::default(),
+        );
         assert!(!has_installer(&win[0], InstallerId::WingetRancherDesktop));
-        assert!(win[0].steps.iter().any(|s| matches!(s, Step::CopyCommand { .. })));
+        assert!(win[0]
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::CopyCommand { .. })));
     }
 
     /// Linux never gets a button that runs `sudo` for the user.
     #[test]
     fn never_runs_an_installer_on_linux() {
-        for state in [DockerState::Missing, DockerState::NoCompose, DockerState::NoDaemon, DockerState::TooOld] {
-            for brand in [EngineBrand::Native, EngineBrand::Unknown, EngineBrand::DockerDesktop] {
-                let set = remedies(state, brand, Some(EngineKind::Docker), Platform::Linux, &Prereqs::default());
-                assert!(set.iter().flat_map(|r| &r.steps).all(|s| !matches!(s, Step::RunInstaller { .. })), "{state:?} {brand:?}");
+        for state in [
+            DockerState::Missing,
+            DockerState::NoCompose,
+            DockerState::NoDaemon,
+            DockerState::TooOld,
+        ] {
+            for brand in [
+                EngineBrand::Native,
+                EngineBrand::Unknown,
+                EngineBrand::DockerDesktop,
+            ] {
+                let set = remedies(
+                    state,
+                    brand,
+                    Some(EngineKind::Docker),
+                    Platform::Linux,
+                    &Prereqs::default(),
+                );
+                assert!(
+                    set.iter()
+                        .flat_map(|r| &r.steps)
+                        .all(|s| !matches!(s, Step::RunInstaller { .. })),
+                    "{state:?} {brand:?}"
+                );
             }
         }
     }
@@ -750,26 +830,63 @@ mod tests {
     /// A stopped daemon names the product that has to be started, not "Docker".
     #[test]
     fn a_silent_daemon_names_its_product() {
-        let colima = remedies(DockerState::NoDaemon, EngineBrand::Colima, Some(EngineKind::Docker), Platform::Macos, &with_brew());
+        let colima = remedies(
+            DockerState::NoDaemon,
+            EngineBrand::Colima,
+            Some(EngineKind::Docker),
+            Platform::Macos,
+            &with_brew(),
+        );
         assert_eq!(colima[0].title, "Start Colima");
-        assert!(colima[0].steps.iter().any(|s| matches!(s, Step::StartEngine { target: StartTarget::Colima, .. })));
+        assert!(colima[0].steps.iter().any(|s| matches!(
+            s,
+            Step::StartEngine {
+                target: StartTarget::Colima,
+                ..
+            }
+        )));
 
-        let orb = remedies(DockerState::NoDaemon, EngineBrand::OrbStack, Some(EngineKind::Docker), Platform::Macos, &with_brew());
+        let orb = remedies(
+            DockerState::NoDaemon,
+            EngineBrand::OrbStack,
+            Some(EngineKind::Docker),
+            Platform::Macos,
+            &with_brew(),
+        );
         assert_eq!(orb[0].title, "Start OrbStack");
 
-        let native = remedies(DockerState::NoDaemon, EngineBrand::Native, Some(EngineKind::Docker), Platform::Linux, &Prereqs::default());
-        assert!(native[0].steps.iter().any(|s| matches!(s, Step::CopyCommand { command, .. } if command.contains("systemctl"))));
+        let native = remedies(
+            DockerState::NoDaemon,
+            EngineBrand::Native,
+            Some(EngineKind::Docker),
+            Platform::Linux,
+            &Prereqs::default(),
+        );
+        assert!(native[0].steps.iter().any(
+            |s| matches!(s, Step::CopyCommand { command, .. } if command.contains("systemctl"))
+        ));
     }
 
     #[test]
     fn ready_needs_no_remedy() {
-        assert!(remedies(DockerState::Ready, EngineBrand::Colima, Some(EngineKind::Docker), Platform::Macos, &with_brew()).is_empty());
+        assert!(remedies(
+            DockerState::Ready,
+            EngineBrand::Colima,
+            Some(EngineKind::Docker),
+            Platform::Macos,
+            &with_brew()
+        )
+        .is_empty());
     }
 
     /// Nothing an installer runs may come from anywhere but this file.
     #[test]
     fn every_installer_plan_is_literal() {
-        for id in [InstallerId::BrewColima, InstallerId::BrewComposePlugin, InstallerId::WingetRancherDesktop] {
+        for id in [
+            InstallerId::BrewColima,
+            InstallerId::BrewComposePlugin,
+            InstallerId::WingetRancherDesktop,
+        ] {
             let plan = id.plan();
             assert!(!plan.is_empty());
             assert!(matches!(plan[0], InstallAction::Run { .. }));
@@ -856,7 +973,9 @@ pub async fn install(
 ) -> Result<InstallOutcome, String> {
     let platform = Platform::current();
     if installer.platform() != platform {
-        return Err(format!("{installer:?} is not an installer for this platform"));
+        return Err(format!(
+            "{installer:?} is not an installer for this platform"
+        ));
     }
     run_plan(installer.plan(), platform, cancel, on_line).await
 }
@@ -887,7 +1006,15 @@ pub async fn restart_computer() -> Result<(), String> {
     }
     // `p:4:2`: planned, application installation — what the event log files it under.
     let status = crate::process::async_command("shutdown.exe")
-        .args(["/r", "/t", "5", "/d", "p:4:2", "/c", "Konstruktor: finishing the container engine install"])
+        .args([
+            "/r",
+            "/t",
+            "5",
+            "/d",
+            "p:4:2",
+            "/c",
+            "Konstruktor: finishing the container engine install",
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -897,7 +1024,10 @@ pub async fn restart_computer() -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("Windows refused to restart (exit code {})", status.code().unwrap_or(-1)))
+        Err(format!(
+            "Windows refused to restart (exit code {})",
+            status.code().unwrap_or(-1)
+        ))
     }
 }
 
@@ -940,7 +1070,9 @@ async fn run_plan(
                 let mut elevated = false;
                 if cfg!(windows)
                     && elevate_if_denied
-                    && status.is_some_and(|s| !s.success() && needs_admin(s.code().unwrap_or(-1), &output))
+                    && status.is_some_and(|s| {
+                        !s.success() && needs_admin(s.code().unwrap_or(-1), &output)
+                    })
                 {
                     stage("Asking Windows for administrator rights");
                     (status, output) = stream_elevated(&program, &args, token, on_line).await?;
@@ -1131,7 +1263,9 @@ async fn stream_elevated(
     on_line: &(dyn Fn(InstallLine) + Sync),
 ) -> Result<(Option<std::process::ExitStatus>, String), String> {
     let log = std::env::temp_dir().join(format!("konstruktor-elevated-{}.log", std::process::id()));
-    tokio::fs::write(&log, b"").await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&log, b"")
+        .await
+        .map_err(|e| e.to_string())?;
     // `/s` strips the outer pair of quotes and leaves the rest as written; every piece
     // is a literal from `plan()` or a path we resolved, and no Windows path holds a `"`.
     let command_line = format!(
@@ -1158,7 +1292,11 @@ async fn stream_elevated(
         if !line.trim().is_empty() {
             collected.push_str(&line);
             collected.push('\n');
-            on_line(InstallLine { line, stderr: false, stage: false });
+            on_line(InstallLine {
+                line,
+                stderr: false,
+                stage: false,
+            });
         }
     };
 
