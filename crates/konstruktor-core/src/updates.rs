@@ -711,11 +711,35 @@ pub async fn apply(
             crate::generations::path(dir, name).to_string_lossy()
         ));
     }
-    let images: Vec<(String, String)> = request
+    let mut images: Vec<(String, String)> = request
         .advances
         .iter()
         .map(|a| (a.service.clone(), a.to.clone()))
         .collect();
+    if !pending.is_empty() {
+        // The files are written for one major of each service; a service still on what an
+        // earlier Konstruktor seeded follows them there.
+        let runs = |service: &str| {
+            config
+                .enabled_services()
+                .into_iter()
+                .any(|id| config.service(id).host == service)
+        };
+        for (service, image) in crate::migrate::caught_up_images(&config) {
+            // A service that is switched off moves too, unsaid: it starts there if added.
+            if runs(&service) {
+                step(format!("{service} follows {image}"));
+            }
+            images.push((service, image));
+        }
+        for (service, image) in crate::migrate::unsupported_images(&config) {
+            warn(format!(
+                "`{service}` runs {image}, which somebody chose and this Konstruktor was \
+                 not written for — it is left on it, and whether it reads the rewritten \
+                 files is not known"
+            ));
+        }
+    }
     let read = |name: &str| std::fs::read(dir.join(name)).ok();
     let configs_before = crate::services::snapshot_configs(dir);
     let compose_before = read(crate::compose_file::COMPOSE_FILENAME);
@@ -723,12 +747,13 @@ pub async fn apply(
         put_back("The files could not be generated");
         return Err(error.into());
     }
-    if !images.is_empty() {
+    if !request.advances.is_empty() {
         step(format!(
             "Profile moved to {}",
-            images
+            request
+                .advances
                 .iter()
-                .map(|(_, to)| to.as_str())
+                .map(|a| a.to.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         ));

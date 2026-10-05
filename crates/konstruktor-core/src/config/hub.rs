@@ -824,6 +824,47 @@ impl HubConfig {
     }
 }
 
+/// Where a service image this build seeded would have to be for the files generated now to
+/// be the ones it reads, if it is not there already.
+///
+/// A service is seeded on a **major** (`jhnnsrs/rekuest:6`), not on `latest`: within a
+/// major a service reads the config it always read, so a hub follows the tag freely, and a
+/// release that reads something else is a new major, which only arrives with a Konstruktor
+/// that generates for it. That is the whole contract between the two, and [`seed`] is
+/// where it is written down — raising a major there goes with a new layout
+/// ([`crate::migrate::CURRENT_LAYOUT`]), since older hubs then have to move.
+///
+/// Behind is the seeded repository at `latest` (what earlier Konstruktors seeded) or at an
+/// older major, with or without a digest pinned beside it. Anything else was chosen by
+/// somebody — an exact version, another repository, a local build — and is left alone.
+pub fn caught_up_image(id: ServiceId, image: &str) -> Option<String> {
+    let supported = seed(id).image?;
+    let (repository, major) = supported.rsplit_once(':')?;
+    let named = image.split('@').next().unwrap_or(image);
+    let (found, tag) = named.rsplit_once(':')?;
+    if found != repository {
+        return None;
+    }
+    let behind = tag == "latest"
+        || matches!(
+            (tag.parse::<u32>(), major.parse::<u32>()),
+            (Ok(tag), Ok(major)) if tag < major
+        );
+    behind.then(|| supported.to_string())
+}
+
+/// Whether `image` is the one this build generates for: the seeded repository on the
+/// seeded major, or an exact version of that major.
+pub fn is_supported_image(id: ServiceId, image: &str) -> bool {
+    let Some((repository, major)) = seed(id).image.and_then(|s| s.rsplit_once(':')) else {
+        return true;
+    };
+    let named = image.split('@').next().unwrap_or(image);
+    named
+        .rsplit_once(':')
+        .is_some_and(|(found, tag)| found == repository && tag.split('.').next() == Some(major))
+}
+
 /// Everything a service block needs beyond the shared defaults.
 struct ServiceSeed {
     enabled: bool,
@@ -836,43 +877,43 @@ fn seed(id: ServiceId) -> ServiceSeed {
     match id {
         ServiceId::Rekuest => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/rekuest:latest"),
+            image: Some("jhnnsrs/rekuest:6"),
             db: "rekuest",
             github_repo: "https://github.com/arkitektio/rekuest-server-next",
         },
         ServiceId::Mikro => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/mikro:latest"),
+            image: Some("jhnnsrs/mikro:5"),
             db: "mikro",
             github_repo: "https://github.com/arkitektio/mikro-server-next",
         },
         ServiceId::Fluss => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/fluss:latest"),
+            image: Some("jhnnsrs/fluss:2"),
             db: "fluss",
             github_repo: "https://github.com/arkitektio/fluss-server-next",
         },
         ServiceId::Kabinet => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/kabinet:latest"),
+            image: Some("jhnnsrs/kabinet:4"),
             db: "kabinet",
             github_repo: "https://github.com/arkitektio/kabinet-server",
         },
         ServiceId::Kraph => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/kraph:latest"),
+            image: Some("jhnnsrs/kraph:1"),
             db: "kraph",
             github_repo: "https://github.com/arkitektio/kraph-server",
         },
         ServiceId::Elektro => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/elektro:latest"),
+            image: Some("jhnnsrs/elektro:3"),
             db: "elektro",
             github_repo: "https://github.com/arkitektio/elektro-server",
         },
         ServiceId::Alpaka => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/alpaka:latest"),
+            image: Some("jhnnsrs/alpaka:3"),
             db: "alpaka",
             github_repo: "https://github.com/arkitektio/alpaka-server",
         },
@@ -880,32 +921,32 @@ fn seed(id: ServiceId) -> ServiceSeed {
         // an image, which is what older profiles say; see `ServiceBlock::runs`.
         ServiceId::Lovekit => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/lovekit:latest"),
+            image: Some("jhnnsrs/lovekit:2"),
             db: "lovekit",
             github_repo: "https://github.com/arkitektio/lovekit-server",
         },
         // Experimental: offered, never switched on unless asked for.
         ServiceId::Bank => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/bank:latest"),
+            image: Some("jhnnsrs/bank:2"),
             db: "bank",
             github_repo: "https://github.com/jhnnsrs/bank",
         },
         ServiceId::Kuvert => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/kuvert:latest"),
+            image: Some("jhnnsrs/kuvert:2"),
             db: "kuvert",
             github_repo: "https://github.com/jhnnsrs/kuvert",
         },
         ServiceId::Dokuments => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/dokuments:latest"),
+            image: Some("jhnnsrs/dokuments:1"),
             db: "dokuments",
             github_repo: "https://github.com/jhnnsrs/dokuments-server",
         },
         ServiceId::Lokate => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/lokate:latest"),
+            image: Some("jhnnsrs/lokate:2"),
             db: "lokate",
             github_repo: "https://github.com/arkitektio/lokate-server",
         },

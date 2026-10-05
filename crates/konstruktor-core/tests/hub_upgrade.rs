@@ -269,7 +269,7 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
 
     // --- the update ---------------------------------------------------------------------
     let report = update(&dir).await.expect("the update runs");
-    assert_eq!(report.migrated.len(), 1, "{:?}", report.migrated);
+    assert_eq!(report.migrated.len(), 2, "{:?}", report.migrated);
     assert!(report.refused.is_empty(), "{:?}", report.refused);
     for service in ["rekuest", "mikro", "fluss", "kabinet", "kraph"] {
         assert!(
@@ -280,8 +280,15 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     }
     assert_eq!(migrate::layout(&dir, &config), migrate::CURRENT_LAYOUT);
     let after = running_images(&dir);
-    assert_eq!(after["rekuest"], "jhnnsrs/rekuest:latest");
-    assert_eq!(after["rekuest-takt"], "jhnnsrs/rekuest-takt:latest");
+    // On the major the files were written for, not on wherever `latest` goes next.
+    let seeded = konstruktor_core::config::hub::build_hub_config(&Default::default());
+    assert_eq!(Some(&after["rekuest"]), seeded.rekuest.image.as_ref());
+    assert_eq!(Some(&after["rekuest-takt"]), seeded.takt_image().as_ref());
+    assert_eq!(Some(&after["mikro"]), seeded.mikro.image.as_ref());
+    assert_eq!(
+        read_profile(&dir).unwrap().config.rekuest.image,
+        seeded.rekuest.image
+    );
 
     let results = healthy(&dir).await;
     let takt = results

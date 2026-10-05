@@ -219,11 +219,8 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
             Some(format!("http://{name}:80/{name}/_rekuest/hook").as_str())
         );
     }
-    // Images from before the split still find the one list they read.
-    let combined = rekuest["rekuest"]["service_agents"]
-        .as_sequence()
-        .expect("service agents");
-    assert_eq!(combined.len(), hook_agents.len());
+    // Written for one major of Rekuest: the list its earlier releases read is not there.
+    assert!(rekuest["rekuest"].get("service_agents").is_none());
 }
 
 /// A hub the coordination server handed no `hub_keys_url` (not enrolled yet, or the e2e

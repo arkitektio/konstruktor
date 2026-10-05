@@ -356,24 +356,11 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
                 ])
             })
             .collect();
-        // Rekuest images from before the split read one combined list. Written beside the
-        // two so either generation of image finds what it reads; newer ones ignore it.
-        let agents: Vec<Value> = hooked
-            .iter()
-            .map(|(name, block)| {
-                map(vec![
-                    ("service", s(name)),
-                    ("hook_url", endpoint(block, "hook")),
-                ])
-            })
-            .collect();
         // The pair finds each other by these: Rekuest asks takt through the socket the two
-        // mount (an image from before it ignores the key and uses `takt_url`), takt asks
-        // Rekuest for its upkeep jobs. Both read this one file.
+        // mount, takt asks Rekuest for its upkeep jobs. Both read this one file.
         let mut block = vec![
             ("services", list(services)),
             ("hook_agents", list(hook_agents)),
-            ("service_agents", list(agents)),
             (
                 "server_url",
                 s(&format!(

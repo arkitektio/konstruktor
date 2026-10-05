@@ -28,7 +28,9 @@ use crate::lock;
 /// 1. Rekuest with a reaper, serving its agents itself.
 /// 2. takt beside Rekuest, on the port agents reach.
 /// 3. Rekuest and takt share a socket; Rekuest reads `services` and `hook_agents`.
-pub const CURRENT_LAYOUT: u32 = 3;
+/// 4. Services follow the major they were generated for, not `latest`: Rekuest 6, Mikro 5,
+///    Kabinet 4, Elektro 3, Alpaka 3, Fluss 2, Lovekit 2, Kraph 1.
+pub const CURRENT_LAYOUT: u32 = 4;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
 /// taken for unless its files say otherwise.
@@ -47,6 +49,7 @@ fn title(to: u32) -> &'static str {
         3 => {
             "Rekuest and takt share a socket, and Rekuest knows its services and hook agents apart"
         }
+        4 => "every service follows the major release these files are written for, not `latest`",
         _ => "the files this Konstruktor generates",
     }
 }
@@ -64,13 +67,14 @@ pub fn layout_of(files: &Path, recorded: Option<u32>, config: &HubConfig) -> u32
 }
 
 fn unrecorded(dir: &Path, config: &HubConfig) -> u32 {
+    // Nothing generated yet is nothing to be behind with.
+    let Ok(text) = std::fs::read_to_string(dir.join(COMPOSE_FILENAME)) else {
+        return CURRENT_LAYOUT;
+    };
     let Some(takt) = config.takt_host() else {
         return LAST_UNRECORDED;
     };
-    let Some(compose) = std::fs::read_to_string(dir.join(COMPOSE_FILENAME))
-        .ok()
-        .and_then(|text| serde_norway::from_str::<serde_norway::Value>(&text).ok())
-    else {
+    let Ok(compose) = serde_norway::from_str::<serde_norway::Value>(&text) else {
         return LAST_UNRECORDED;
     };
     let service = |name: &str| compose.get("services").and_then(|s| s.get(name));
@@ -119,6 +123,37 @@ pub fn behind(dir: &Path, config: &HubConfig) -> Option<String> {
             .collect::<Vec<_>>()
             .join("; ")
     ))
+}
+
+/// The images a move brings along: every service still on what an earlier Konstruktor
+/// seeded, to the major this one generates for. As `(compose service, image)`.
+///
+/// The ones switched off too: a service added later starts from the image its block names.
+pub fn caught_up_images(config: &HubConfig) -> Vec<(String, String)> {
+    crate::catalog::HUB_SERVICE_ORDER
+        .into_iter()
+        .filter_map(|id| {
+            let block = config.service(id);
+            let image = crate::config::hub::caught_up_image(id, block.image.as_deref()?)?;
+            Some((block.host.clone(), image))
+        })
+        .collect()
+}
+
+/// The services a move cannot bring along, with the image each runs: somebody chose it, and
+/// whether it reads the files generated now is theirs to know.
+pub fn unsupported_images(config: &HubConfig) -> Vec<(String, String)> {
+    config
+        .enabled_services()
+        .into_iter()
+        .filter_map(|id| {
+            let block = config.service(id);
+            let image = block.image.clone()?;
+            (!crate::config::hub::is_supported_image(id, &image)
+                && crate::config::hub::caught_up_image(id, &image).is_none())
+            .then(|| (block.host.clone(), image))
+        })
+        .collect()
 }
 
 /// The generated files that differ from what was last written: edited by hand since.
@@ -173,7 +208,7 @@ mod tests {
 
         write("services:\n  rekuest: {}\n  rekuest-reaper: {}\n");
         assert_eq!(layout(&dir, &config), 1);
-        assert_eq!(pending(&dir, &config).len(), 2);
+        assert_eq!(pending(&dir, &config).len(), 3);
         assert!(behind(&dir, &config)
             .unwrap()
             .contains("konstruktor update"));
@@ -185,7 +220,7 @@ mod tests {
             "services:\n  rekuest: {}\n  rekuest-takt:\n    environment:\n      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock\n",
         );
         assert_eq!(layout(&dir, &config), 3);
-        assert_eq!(behind(&dir, &config), None);
+        assert_eq!(pending(&dir, &config).len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -211,5 +246,43 @@ mod tests {
             Some(env!("CARGO_PKG_VERSION"))
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// What an earlier Konstruktor seeded follows the files; what somebody chose does not.
+    #[test]
+    fn a_move_brings_seeded_images_to_their_major_and_leaves_chosen_ones() {
+        use crate::catalog::ServiceId::Rekuest;
+        use crate::config::hub::{caught_up_image, is_supported_image};
+
+        let seeded = config().rekuest.image.unwrap();
+        for behind in [
+            "jhnnsrs/rekuest:latest",
+            "jhnnsrs/rekuest:latest@sha256:abc",
+            "jhnnsrs/rekuest:5",
+        ] {
+            assert_eq!(caught_up_image(Rekuest, behind).as_ref(), Some(&seeded));
+            assert!(!is_supported_image(Rekuest, behind));
+        }
+        for chosen in [
+            "jhnnsrs/rekuest:5.2.0",
+            "jhnnsrs/rekuest:next",
+            "registry.lab/rekuest:latest",
+            "next-rekuest",
+        ] {
+            assert_eq!(caught_up_image(Rekuest, chosen), None, "{chosen}");
+            assert!(!is_supported_image(Rekuest, chosen), "{chosen}");
+        }
+        assert_eq!(caught_up_image(Rekuest, &seeded), None);
+        assert!(is_supported_image(Rekuest, &seeded));
+        assert!(is_supported_image(Rekuest, &format!("{seeded}.0.1")));
+
+        let mut config = config();
+        config.rekuest.image = Some("jhnnsrs/rekuest:latest".into());
+        config.mikro.image = Some("jhnnsrs/mikro:next".into());
+        assert_eq!(caught_up_images(&config), [("rekuest".to_string(), seeded)]);
+        assert_eq!(
+            unsupported_images(&config),
+            [("mikro".to_string(), "jhnnsrs/mikro:next".to_string())]
+        );
     }
 }
