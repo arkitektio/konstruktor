@@ -250,6 +250,14 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
     .expect("files are written");
 
     let _teardown = Teardown(dir.clone());
+    // Fetched first: `up` runs whatever a tag last resolved to on this machine, and a run
+    // against last week's `latest` proves nothing about today's.
+    let pull = compose(&dir, &["pull", "--quiet"]);
+    assert!(
+        pull.status.success(),
+        "docker compose pull failed:\n{}",
+        String::from_utf8_lossy(&pull.stderr)
+    );
     let up = compose(&dir, &["up", "-d"]);
     assert!(
         up.status.success(),

@@ -453,36 +453,6 @@ pub async fn guard(dir: &std::path::Path, config: &HubConfig, service: &str) -> 
     }
 }
 
-/// Why Rekuest (or takt) cannot be moved on this hub as its files stand, if it cannot.
-///
-/// A Rekuest image from the release that introduced takt has no reaper to run and serves no
-/// agents itself: beside a compose file that still runs the reaper and no takt, it would
-/// come up with no agent able to connect, nothing scheduled, and a failing health check.
-/// Asked before anything is pulled, so a refused hub keeps the image it runs. See
-/// [`crate::compose_file::predates_takt`].
-pub fn predates_takt(dir: &std::path::Path, config: &HubConfig, service: &str) -> Option<String> {
-    let takt = config.takt_host()?;
-    if service != config.rekuest.host.as_str() && service != takt.as_str() {
-        return None;
-    }
-    crate::compose_file::predates_takt(dir, config)
-}
-
-/// Why Rekuest (or takt) cannot be moved on this hub as its files stand, though it runs
-/// takt: its files are from before the two shared a socket. See
-/// [`crate::compose_file::predates_takt_socket`].
-pub fn predates_takt_socket(
-    dir: &std::path::Path,
-    config: &HubConfig,
-    service: &str,
-) -> Option<String> {
-    let takt = config.takt_host()?;
-    if service != config.rekuest.host.as_str() && service != takt.as_str() {
-        return None;
-    }
-    crate::compose_file::predates_takt_socket(dir, config)
-}
-
 /// Where a backup taken before an update goes unless somebody says otherwise: a
 /// `konstruktor-backups` folder beside the deployment, so it survives the deployment.
 pub fn default_backup_folder(dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -575,6 +545,10 @@ pub struct UpdateReport {
     pub backup: Option<String>,
     pub updated: Vec<String>,
     pub refused: Vec<(String, String)>,
+    /// The layout moves this update took the hub's files through.
+    pub migrated: Vec<crate::migrate::Step>,
+    /// The generated files whose contents changed.
+    pub rewritten: Vec<String>,
     /// Present when a health check was asked for.
     pub health: Option<Vec<crate::health::ServiceHealth>>,
 }
@@ -603,11 +577,36 @@ pub enum UpdateError {
     Health(String),
 }
 
-/// Applies an update: back up, record what is running, move pins, then pull, guard and
-/// recreate each service, record again, and check it all came back.
+/// Whether any container of the hub in `dir` is running.
+async fn running(dir: &std::path::Path) -> bool {
+    crate::engine_probe::engine()
+        .async_command()
+        .args(["compose", "ps", "--status", "running", "-q"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// Applies an update: back up, record what is running and keep a copy of the files,
+/// rewrite the files, fetch every image, and only then recreate the services, record
+/// again, and check it all came back.
 ///
 /// The one sequence both front ends run — it used to be written twice, and the dashboard's
 /// copy took no backup and never asked whether the services survived.
+///
+/// **The files move with the images.** They are regenerated from the profile on every
+/// update, so what a release of a service reads is written before its image runs. A hub
+/// whose files are of an older layout ([`crate::migrate`]) has every service moved, asked
+/// for or not: files of one layout and images of another are the hub that answers its
+/// health checks and does nothing.
+///
+/// **Nothing is replaced until everything has arrived.** Until the first container is
+/// recreated a failure — a profile that will not generate, an image that will not pull —
+/// puts the files back as they were and leaves the hub as it found it. After that an
+/// update is not undone by itself: the services have migrated their databases, and
+/// `rollback` (which puts the files back too) says what that means.
 ///
 /// A refused service is reported and skipped, not an error: the rest still move. The
 /// caller decides what a partial update means for its exit code.
@@ -651,26 +650,80 @@ pub async fn apply(
         report.backup = Some(backup.path);
     }
 
-    // --- what is running now -------------------------------------------------------
+    // --- what is running now, and on which files -------------------------------------
     // What `rollback` reads. Not fatal: an unwritable lock costs the way back, which is
     // worth saying, and is no reason to refuse an update somebody asked for.
     let config = crate::profile::read_profile(dir)?.config;
-    if let Err(error) = lock::record(dir, &config, "before update", lock::now()).await {
+    let at = lock::now();
+    if let Err(error) = lock::record(dir, &config, "before update", at).await {
         warn(format!(
             "could not record what this hub is running ({error}) — rollback will have \
              nothing to go back to"
         ));
     }
+    let kept = match crate::generations::take(dir, at) {
+        Ok(name) => {
+            let _ = lock::attach_files(dir, &name);
+            Some(name)
+        }
+        Err(error) => {
+            warn(format!(
+                "could not keep a copy of this hub's files ({error}) — a failed update \
+                 will not be able to put them back"
+            ));
+            None
+        }
+    };
+    // Puts the files back as they were: for a failure before anything was recreated.
+    let put_back = |why: &str| {
+        if let Some(name) = &kept {
+            match crate::generations::restore(dir, name) {
+                Ok(()) => warn(format!("{why}; this hub's files are as they were")),
+                Err(error) => warn(format!(
+                    "{why}, and the files could not be put back ({error}) — they are in {}",
+                    crate::generations::path(dir, name).to_string_lossy()
+                )),
+            }
+        }
+    };
 
-    // --- pins ----------------------------------------------------------------------
+    // --- the files -------------------------------------------------------------------
     let mut services = request.services.clone();
-    if !request.advances.is_empty() {
-        let images: Vec<(String, String)> = request
-            .advances
-            .iter()
-            .map(|a| (a.service.clone(), a.to.clone()))
-            .collect();
-        crate::profile::rewrite_images(dir, &images)?;
+    let pending = crate::migrate::pending(dir, &config);
+    for moved in &pending {
+        step(format!("Moving this hub's files: {}", moved.title));
+    }
+    if !pending.is_empty() {
+        // Every service reads the new files, so every service is of the release they
+        // were written for. The infrastructure is not: its images are held back as ever.
+        for (service, _) in config.stack_images() {
+            if !is_infrastructure(&config, &service) && !services.contains(&service) {
+                services.push(service);
+            }
+        }
+    }
+    let edited = crate::migrate::hand_edited(dir);
+    if let (false, Some(name)) = (edited.is_empty(), &kept) {
+        warn(format!(
+            "{} changed by hand since generated; the files are written again, and yours \
+             are kept in {}",
+            edited.join(", "),
+            crate::generations::path(dir, name).to_string_lossy()
+        ));
+    }
+    let images: Vec<(String, String)> = request
+        .advances
+        .iter()
+        .map(|a| (a.service.clone(), a.to.clone()))
+        .collect();
+    let read = |name: &str| std::fs::read(dir.join(name)).ok();
+    let configs_before = crate::services::snapshot_configs(dir);
+    let compose_before = read(crate::compose_file::COMPOSE_FILENAME);
+    if let Err(error) = crate::profile::rewrite(dir, config, &images) {
+        put_back("The files could not be generated");
+        return Err(error.into());
+    }
+    if !images.is_empty() {
         step(format!(
             "Profile moved to {}",
             images
@@ -688,26 +741,30 @@ pub async fn apply(
         }
     }
     let config = crate::profile::read_profile(dir)?.config;
+    let changed =
+        crate::services::changed_configs(&configs_before, &crate::services::snapshot_configs(dir));
+    let compose_changed = compose_before != read(crate::compose_file::COMPOSE_FILENAME);
+    report.migrated = pending;
+    report.rewritten = changed
+        .iter()
+        .map(|name| format!("configs/{name}"))
+        .collect();
+    if compose_changed {
+        report
+            .rewritten
+            .push(crate::compose_file::COMPOSE_FILENAME.to_string());
+    }
+    if !report.rewritten.is_empty() {
+        step(format!("Rewrote {}", report.rewritten.join(", ")));
+    }
 
-    // --- pull, guard, recreate -------------------------------------------------------
+    // --- fetch and ask, before anything is replaced ---------------------------------
+    let mut moving: Vec<(String, Vec<String>)> = Vec::new();
     for service in &services {
         // takt moves with Rekuest, below; asked for beside it, it is not moved twice.
         if crate::generate::compose::companion_of(&config, service)
             .is_some_and(|of| services.contains(&of))
         {
-            continue;
-        }
-        step(format!("Updating {service}"));
-        // Before anything is pulled: a hub that cannot run the new image is left exactly
-        // as it is, old image included.
-        if let Some(reason) = predates_takt(dir, &config, service)
-            .or_else(|| predates_takt_socket(dir, &config, service))
-        {
-            on_event(UpdateEvent::Refused {
-                service: service.clone(),
-                reason: reason.clone(),
-            });
-            report.refused.push((service.clone(), reason));
             continue;
         }
         let companions: Vec<String> = crate::generate::compose::companions(&config, service)
@@ -718,10 +775,15 @@ pub async fn apply(
         // what the *new* image declares. takt has an image of its own, released with
         // Rekuest's under the same tag, so it is pulled with it.
         if request.pull {
+            step(format!("Fetching {service}"));
             for name in std::iter::once(service).chain(&companions) {
-                crate::compose::run_streamed(dir, crate::compose::pull_service(name), &line)
-                    .await
-                    .map_err(UpdateError::Compose)?;
+                if let Err(error) =
+                    crate::compose::run_streamed(dir, crate::compose::pull_service(name), &line)
+                        .await
+                {
+                    put_back(&format!("`{name}` could not be fetched"));
+                    return Err(UpdateError::Compose(error));
+                }
             }
         }
         match guard(dir, &config, service).await {
@@ -736,13 +798,22 @@ pub async fn apply(
             Guard::Warn(detail) => warn(detail),
             Guard::Clear => {}
         }
+        moving.push((service.clone(), companions));
+    }
+
+    // --- recreate --------------------------------------------------------------------
+    // Asked before anything is recreated: afterwards the answer is always yes.
+    let was_running = running(dir).await;
+    let mut recreated: Vec<String> = Vec::new();
+    for (service, companions) in &moving {
+        step(format!("Updating {service}"));
         // `--no-deps`: updating one service on a stopped stack must not boot the rest.
         crate::compose::run_streamed(dir, crate::compose::up_service(service), &line)
             .await
             .map_err(UpdateError::Compose)?;
         // After Rekuest, which migrates the schema takt waits for; `--no-deps` would
         // otherwise leave takt on the old image.
-        for companion in &companions {
+        for companion in companions {
             crate::compose::run_streamed(dir, crate::compose::up_service(companion), &line)
                 .await
                 .map_err(UpdateError::Compose)?;
@@ -751,9 +822,30 @@ pub async fn apply(
             service: service.clone(),
         });
         report.updated.push(service.clone());
+        recreated.push(service.clone());
+        recreated.extend(companions.iter().cloned());
     }
 
-    if !report.updated.is_empty() {
+    // --- everything else that reads a file that changed -------------------------------
+    // A running hub only: a stopped one reads its files when it is started. `up` creates
+    // what the files gained and removes what they lost; a container whose mounted config
+    // changed under it is restarted, unless it was just recreated.
+    if !report.rewritten.is_empty() && was_running {
+        step("Bringing the rest of the hub to the rewritten files".into());
+        let restart: Vec<String> = crate::services::services_to_restart(
+            &config,
+            &changed,
+            &crate::services::ServicePlan::default(),
+        )
+        .into_iter()
+        .filter(|name| !recreated.contains(name))
+        .collect();
+        crate::services::apply_services(dir, &restart, &line)
+            .await
+            .map_err(|error| UpdateError::Compose(error.to_string()))?;
+    }
+
+    if !report.updated.is_empty() || !report.rewritten.is_empty() {
         let _ = lock::record(dir, &config, "updated", lock::now()).await;
     }
 

@@ -65,12 +65,28 @@ pub struct Entry {
     pub reason: String,
     /// Compose service name to what it was running.
     pub services: BTreeMap<String, Pin>,
+    /// The copy of the hub's generated files taken at this moment, by its name under
+    /// [`crate::generations::GENERATIONS_DIR`] — what the images of this entry ran on.
+    /// Only an entry written before an update has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
 }
 
 /// The file itself. Oldest first; the last entry is what the hub is on now.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Lock {
     pub version: u32,
+    /// Which layout the generated files on disk have: see [`crate::migrate`]. Absent on a
+    /// hub written before layouts were recorded, where it is read off the files once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<u32>,
+    /// The konstruktor that last generated the files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<String>,
+    /// Every generated file as it was last written, by path, as its SHA-256. A file that
+    /// differs was edited by hand since; one listed here and no longer generated is stale.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
     #[serde(default)]
     pub history: Vec<Entry>,
 }
@@ -107,7 +123,7 @@ pub fn read(dir: &Path) -> Lock {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Lock {
             version: 1,
-            history: Vec::new(),
+            ..Lock::default()
         };
     };
     match serde_json::from_str::<Lock>(&text) {
@@ -119,7 +135,7 @@ pub fn read(dir: &Path) -> Lock {
             );
             Lock {
                 version: 1,
-                history: Vec::new(),
+                ..Lock::default()
             }
         }
     }
@@ -177,6 +193,7 @@ pub async fn record(
         at: now,
         reason: reason.to_string(),
         services,
+        files: None,
     });
     // A long-lived hub updated weekly would otherwise grow this file forever. Twenty is
     // more history than any rollback reaches back through.
@@ -186,6 +203,50 @@ pub async fn record(
     }
     write(dir, &lock)?;
     Ok(true)
+}
+
+/// The SHA-256 of a generated file's contents, as [`Lock::files`] holds it.
+pub fn digest(contents: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(contents)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Writes down that the generated files are now `files`, of `layout`, written by this
+/// build. Returns the paths the record held before and `files` no longer has.
+pub fn stamp(
+    dir: &Path,
+    layout: u32,
+    files: &BTreeMap<String, String>,
+) -> std::io::Result<Vec<String>> {
+    let mut lock = read(dir);
+    lock.version = 1;
+    let stale = lock
+        .files
+        .keys()
+        .filter(|path| !files.contains_key(*path))
+        .cloned()
+        .collect();
+    lock.layout = Some(layout);
+    lock.generated_by = Some(env!("CARGO_PKG_VERSION").to_string());
+    lock.files = files
+        .iter()
+        .map(|(path, contents)| (path.clone(), digest(contents.as_bytes())))
+        .collect();
+    write(dir, &lock)?;
+    Ok(stale)
+}
+
+/// Names the copy of the files that belongs to what the hub is running now.
+pub fn attach_files(dir: &Path, generation: &str) -> std::io::Result<()> {
+    let mut lock = read(dir);
+    if let Some(entry) = lock.history.last_mut() {
+        entry.files = Some(generation.to_string());
+        write(dir, &lock)?;
+    }
+    Ok(())
 }
 
 /// Seconds since the epoch, for callers that have no clock of their own.
@@ -217,6 +278,7 @@ mod tests {
                     digest: Some(digest.into()),
                 },
             )]),
+            files: None,
         }
     }
 
@@ -254,7 +316,7 @@ mod tests {
     fn the_previous_state_is_the_one_before_the_current_one() {
         let mut lock = Lock {
             version: 1,
-            history: Vec::new(),
+            ..Lock::default()
         };
         assert!(lock.previous().is_none(), "nothing to roll back to yet");
 
@@ -275,6 +337,7 @@ mod tests {
         let lock = Lock {
             version: 1,
             history: vec![entry("updated", "r:next", "sha256:new")],
+            ..Lock::default()
         };
         write(&dir, &lock).expect("writing");
         assert_eq!(read(&dir).history, lock.history);
@@ -296,7 +359,7 @@ mod tests {
         let dir = tmpdir();
         let mut lock = Lock {
             version: 1,
-            history: Vec::new(),
+            ..Lock::default()
         };
         lock.history
             .push(entry("before update", "r:next", "sha256:old"));

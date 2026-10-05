@@ -13,7 +13,6 @@ use crate::connect::authorize::{self, HubAuthorizationError};
 use crate::connect::manifest::{build_hub_request, AdvertisedHost, HubManifestOptions};
 use crate::credentials::{write_credentials, HubCredentials};
 use crate::generate::generate_hub_files;
-use crate::generate::write::write_generated_files;
 use crate::profile::{hub_profile, write_profile};
 use crate::{compose, docker, git, registry};
 
@@ -406,7 +405,7 @@ pub async fn create_hub(
     write_profile(&dir, &hub_profile(config.clone()))
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
     write_credentials(&dir, &credentials)?;
-    write_generated_files(&dir, &files)?;
+    crate::migrate::write_hub(&dir, &files)?;
 
     // --- register, so the desktop app sees it -------------------------------
     registry::register(
@@ -922,9 +921,9 @@ pub async fn reauthorize(
     let profile = crate::profile::read_profile(&answers.dir)
         .map_err(|e| CreateError::Folder(e.to_string()))?;
     let mut config = profile.config;
-    // It ends by rewriting every generated file, which a hub from before takt must not
-    // have done to it in passing.
-    if let Some(reason) = crate::compose_file::predates_takt(&answers.dir, &config) {
+    // It ends by rewriting every generated file, which a hub of an older layout must not
+    // have done to it in passing: its images would stay where they are.
+    if let Some(reason) = crate::migrate::behind(&answers.dir, &config) {
         return Err(CreateError::Folder(reason));
     }
     // A service change is refused here, before anybody is sent to a browser, and applied
@@ -1050,7 +1049,7 @@ pub async fn reauthorize(
     write_profile(&answers.dir, &hub_profile(config))
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
     write_credentials(&answers.dir, &credentials)?;
-    write_generated_files(&answers.dir, &files)?;
+    crate::migrate::write_hub(&answers.dir, &files)?;
 
     // The registry record now describes the wrong hub: the identifier is editable on the
     // authorize screen, the coordination server can differ, and `last_generated_at` has to

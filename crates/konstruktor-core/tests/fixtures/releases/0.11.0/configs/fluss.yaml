@@ -1,0 +1,89 @@
+django:
+  admin:
+    email: null
+    password: koltsa1spo9j757mkv169v16f4nr36rd6ni7664s
+    username: admin
+  csrf_trusted_origins:
+  - http://localhost
+  - https://localhost
+  debug: false
+  force_script_name: fluss
+  hosts:
+  - '*'
+  secret_key: rgww23y%h4rkd8u@szlj0y_dv9zi)!0vdx(s@!rh0z3=^8-%^$
+postgres:
+  db_name: fluss
+  engine: django.db.backends.postgresql
+  host: db
+  password: zh70548ss2zeka30lywryzkkwikoinntebqoz7k4
+  port: 5432
+  username: brave-shadow
+redis:
+  host: redis
+  port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: go.arkitekt.live
+    jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
+    kind: jwks_uri
+  static_tokens: {}
+  provenance:
+    audience: '*'
+    issuers:
+    - iss: rekuest
+      jwks:
+        keys:
+        - alg: Ed25519
+          crv: Ed25519
+          kid: Z4YDuzrNcQq8IsKU0aaM7o18kukOYjI535uC6uLjjtY
+          kty: OKP
+          service: live.arkitekt.rekuest
+          use: sig
+          x: zuI15abnigIECjRqwgMQylBghjJJy6P0_eAmiGw7OSI
+      kind: jwks_dict
+instance:
+  private_key: |
+    -----BEGIN PRIVATE KEY-----
+    MC4CAQAwBQYDK2VwBCIEIHZ8qokVr+UnRK1Mt5TX5X7votZRwuFsyBQFQ9RqX9Qa
+    -----END PRIVATE KEY-----
+  trust:
+    jwks:
+      keys:
+      - alg: Ed25519
+        crv: Ed25519
+        kid: Z4YDuzrNcQq8IsKU0aaM7o18kukOYjI535uC6uLjjtY
+        kty: OKP
+        service: live.arkitekt.rekuest
+        use: sig
+        x: zuI15abnigIECjRqwgMQylBghjJJy6P0_eAmiGw7OSI
+      - alg: Ed25519
+        crv: Ed25519
+        kid: IUMHpEPrYVXDPEqXiEw1EXBCKFeuxtq0mcMJn61cAaQ
+        kty: OKP
+        service: live.arkitekt.kabinet
+        use: sig
+        x: BVrPYAzleExAwzgb1ugv5ls-dO1SZ16pjGhynJUPIKI
+      - alg: Ed25519
+        crv: Ed25519
+        kid: jUlDpuGBiEx0QikeUXoR1vTtjxHBwyD3kPLl_mcGEII
+        kty: OKP
+        service: live.arkitekt.mikro
+        use: sig
+        x: pk7FaV1XZhibAYy3fQuaUOCzJYltJG6fUTJUCx1BqT4
+      - alg: Ed25519
+        crv: Ed25519
+        kid: HfSL6H4yjXJ4GD7T-DZon4HREu_Sc56pvVTDLrLF_o0
+        kty: OKP
+        service: live.arkitekt.fluss
+        use: sig
+        x: _DUzRejLemiLfkXys43ElVRd1q8jTNrC0BtnKmyGjb8
+      - alg: Ed25519
+        crv: Ed25519
+        kid: exyU_BhqKKQpng8udCqh8zZtPmWi5i-eJ4IHo2-CzUU
+        kty: OKP
+        service: live.arkitekt.kraph
+        use: sig
+        x: 8RLKilwZJucN3EXjKuuvLviMdtb317weepYynWXbRio
+rekuest_hook:
+  rekuest_url: http://rekuest:80/rekuest

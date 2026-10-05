@@ -1,0 +1,119 @@
+http:// {
+	header {
+		-Server
+		X-Forwarded-Proto {scheme}
+		X-Forwarded-For {remote}
+		X-Forwarded-Port {server_port}
+		X-Forwarded-Host {host}
+		>Access-Control-Allow-Origin "{header.Origin}"
+		>Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		>Access-Control-Allow-Headers "Origin, Content-Type, Accept, Authorization, X-Requested-With, Range, x-host-override, x-amz-content-sha256, x-amz-date, x-amz-user-agent, x-amz-request-id, x-amz-security-token, x-amz-acl"
+		>Access-Control-Expose-Headers "ETag, Content-Length, Content-Range, Accept-Ranges, x-amz-meta-dir, x-amz-request-id, x-amz-id-2"
+		>Access-Control-Max-Age "86400"
+		Timing-Allow-Origin "*"
+	}
+
+	@options {
+		method OPTIONS
+	}
+	handle @options {
+		respond 204
+	}
+
+	@rekuest path /rekuest*
+	handle @rekuest { 
+		reverse_proxy rekuest:80
+	}
+
+	@kabinet path /kabinet*
+	handle @kabinet { 
+		reverse_proxy kabinet:80
+	}
+
+	@mikro path /mikro*
+	handle @mikro { 
+		reverse_proxy mikro:80
+	}
+
+	@fluss path /fluss*
+	handle @fluss { 
+		reverse_proxy fluss:80
+	}
+
+	@kraph path /kraph*
+	handle @kraph { 
+		reverse_proxy kraph:80
+	}
+
+	@rekuestmedia path /rekuestmedia*
+	handle @rekuestmedia { 
+		reverse_proxy rustfs:9000
+	}
+
+	@kabinetmedia path /kabinetmedia*
+	handle @kabinetmedia { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikromedia path /mikromedia*
+	handle @mikromedia { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikrozarr path /mikrozarr*
+	handle @mikrozarr { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikroparquet path /mikroparquet*
+	handle @mikroparquet { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikrobigfile path /mikrobigfile*
+	handle @mikrobigfile { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikrofabriks path /mikrofabriks*
+	handle @mikrofabriks { 
+		reverse_proxy rustfs:9000
+	}
+
+	@mikrokonnektion path /mikrokonnektion*
+	handle @mikrokonnektion { 
+		reverse_proxy rustfs:9000
+	}
+
+	@flussmedia path /flussmedia*
+	handle @flussmedia { 
+		reverse_proxy rustfs:9000
+	}
+
+	@kraphmedia path /kraphmedia*
+	handle @kraphmedia { 
+		reverse_proxy rustfs:9000
+	}
+
+	@kraphzarr path /kraphzarr*
+	handle @kraphzarr { 
+		reverse_proxy rustfs:9000
+	}
+
+	@kraphbigfile path /kraphbigfile*
+	handle @kraphbigfile { 
+		reverse_proxy rustfs:9000
+	}
+
+	@minio path /minio/*
+	handle @minio {
+		reverse_proxy rustfs:9000
+	}
+
+	@rustfs path /rustfs/*
+	handle @rustfs {
+		uri strip_prefix /rustfs
+		reverse_proxy rustfs:9000
+	}
+
+}

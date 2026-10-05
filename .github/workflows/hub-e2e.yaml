@@ -36,3 +36,27 @@ jobs:
       - name: containers at failure
         if: failure()
         run: docker ps -a
+
+  # The hubs that already exist: what an earlier release wrote, on the images of its
+  # time, has to be carried to today's by one update.
+  hub-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: start a hub an earlier release generated and update it
+        env:
+          KONSTRUKTOR_E2E: "1"
+          KONSTRUKTOR_E2E_SETTLE_SECS: ${{ inputs.settle_secs || '60' }}
+        run: cargo test -p konstruktor-core --test hub_upgrade -- --ignored --nocapture
+      - name: containers at failure
+        if: failure()
+        run: docker ps -a

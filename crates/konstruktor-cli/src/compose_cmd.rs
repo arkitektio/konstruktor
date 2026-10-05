@@ -106,12 +106,16 @@ pub async fn run(command: ComposeCommand) -> Result<()> {
 
 /// `hub regenerate`: every generated file again, from the profile as it stands.
 ///
-/// The profile is not touched, so the hub keeps its keys, secrets and images. What changes
-/// is what the generator has learnt since the files were written — a hub from before takt
-/// gets takt, its routes and the configs that name it, and loses Rekuest's reaper.
+/// The profile is not touched, so the hub keeps its keys, secrets and images. It undoes
+/// hand edits and picks up what the generator writes differently for the layout the hub
+/// already has; a hub whose files are of an older layout is refused and sent to `update`,
+/// which moves its services with its files.
 pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
     let dir = args.target.resolve()?;
     let config = konstruktor_core::profile::read_profile(&dir)?.config;
+    if let Some(reason) = konstruktor_core::migrate::behind(&dir, &config) {
+        anyhow::bail!("{reason}");
+    }
     confirm(
         args.yes,
         "Write this hub's generated files again (compose file, gateway, service configs)? \
@@ -119,40 +123,9 @@ pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
          version.",
     )?;
 
-    // A service the generator no longer writes has to go while the file on disk still
-    // names it: afterwards compose would not know the container as one of its own.
-    let reaper = konstruktor_core::generate::compose::legacy_reaper_host(&config);
-    if compose_file::declares_service(&dir, &reaper) {
-        let removed = konstruktor_core::compose::run_streamed(
-            &dir,
-            vec![
-                "compose".into(),
-                "rm".into(),
-                "--stop".into(),
-                "--force".into(),
-                reaper.clone(),
-            ],
-            &|_| {},
-        )
-        .await;
-        match removed {
-            Ok(_) => ui::ok(&format!("Removed `{reaper}`: takt does its work now.")),
-            Err(error) => ui::warn(&format!(
-                "could not remove `{reaper}` ({error}) — remove its container by hand once \
-                 the hub is up"
-            )),
-        }
-    }
-
     konstruktor_core::profile::regenerate(&dir)?;
     ui::ok("The hub's files are what this Konstruktor generates.");
-    // In this order: `up` alone would start takt beside a Rekuest from before it, and takt
-    // waits for migrations only the new Rekuest has.
-    ui::say(
-        "Nothing running has changed yet. `konstruktor update` moves Rekuest and takt to the \
-         release these files expect; `konstruktor restart` then makes the gateway and the \
-         services read them.",
-    );
+    ui::say("Nothing running has changed yet: `konstruktor restart` makes the hub read them.");
     validate(&dir).await
 }
 

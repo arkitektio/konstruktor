@@ -12,6 +12,11 @@
 //! only way to put a container back on an older image is to write that image into the
 //! profile and regenerate — the same sequence `create::reauthorize` performs, for the same
 //! reason.
+//!
+//! Unless the update being undone moved the hub's files to another layout
+//! ([`crate::migrate`]): then what is generated today is not what the older images read,
+//! and the files go back too — from the copy `update` kept of them
+//! ([`crate::generations`]), with the older images written into that.
 
 use std::path::Path;
 
@@ -60,6 +65,9 @@ pub struct RollbackPlan {
     pub unrollable: Vec<String>,
     /// Said whatever the plan holds — see this module's own warning about migrations.
     pub warnings: Vec<String>,
+    /// The kept copy of the hub's files that goes back with the images: set when the
+    /// state returned to ran on files of another layout than the ones on disk.
+    pub files: Option<String>,
 }
 
 /// The previous state, and what returning to it would change.
@@ -95,12 +103,24 @@ pub fn plan(dir: &Path) -> Result<RollbackPlan, RollbackError> {
         ));
     }
 
+    let files = previous.files.clone().filter(|name| {
+        crate::generations::layout(dir, name, &config)
+            .is_some_and(|kept| kept != crate::migrate::layout(dir, &config))
+    });
+    if files.is_some() {
+        warnings.push(
+            "the update being undone rewrote this hub's files for the newer releases; the              files it kept from before are put back with the images"
+                .to_string(),
+        );
+    }
+
     Ok(RollbackPlan {
         recorded_at: previous.at,
         reason: previous.reason.clone(),
         changes,
         unrollable,
         warnings,
+        files,
     })
 }
 
@@ -132,7 +152,9 @@ fn changes_against(config: &HubConfig, previous: &Entry) -> (Vec<Change>, Vec<St
     (changes, unrollable)
 }
 
-/// Writes the older images into the profile and regenerates the deployment from it.
+/// Writes the older images into the profile and regenerates the deployment from it — or,
+/// when the plan names a kept copy of the files, puts that back and writes the images into
+/// it.
 ///
 /// Recreating the containers is the caller's — nothing here starts or stops anything. The
 /// write itself is [`crate::profile::rewrite_images`], shared with `update --infra`, which
@@ -143,7 +165,47 @@ pub fn apply(dir: &Path, plan: &RollbackPlan) -> Result<(), RollbackError> {
         .iter()
         .map(|change| (change.service.clone(), change.to.clone()))
         .collect();
-    crate::profile::rewrite_images(dir, &images).map_err(|e| RollbackError::Profile(e.to_string()))
+    match &plan.files {
+        Some(name) => restore_files(dir, name, &images),
+        None => crate::profile::rewrite_images(dir, &images)
+            .map_err(|e| RollbackError::Profile(e.to_string())),
+    }
+}
+
+/// Puts a kept copy of the files back and points it at `images`. Nothing is generated: the
+/// files are of a layout this build no longer writes, so the images go into the profile
+/// and into the compose file as they stand.
+fn restore_files(dir: &Path, name: &str, images: &[(String, String)]) -> Result<(), RollbackError> {
+    crate::generations::restore(dir, name)?;
+    let mut profile = read_profile(dir).map_err(|e| RollbackError::Profile(e.to_string()))?;
+    for (service, image) in images {
+        profile.config.set_service_image(service, image);
+    }
+
+    let text = crate::compose_file::read(dir).map_err(|e| RollbackError::Profile(e.to_string()))?;
+    let mut compose: serde_norway::Value =
+        serde_norway::from_str(&text).map_err(|e| RollbackError::Profile(e.to_string()))?;
+    // The reaper of a hub from before takt runs Rekuest's image.
+    let reaper = crate::generate::compose::legacy_reaper_host(&profile.config);
+    let rekuest = profile.config.rekuest.host.clone();
+    if let Some(services) = compose
+        .get_mut("services")
+        .and_then(|services| services.as_mapping_mut())
+    {
+        for (service, image) in images {
+            let follows = (service == &rekuest).then_some(reaper.as_str());
+            for name in std::iter::once(service.as_str()).chain(follows) {
+                if let Some(entry) = services.get_mut(name).and_then(|s| s.as_mapping_mut()) {
+                    entry.insert("image".into(), image.as_str().into());
+                }
+            }
+        }
+    }
+    let text = serde_norway::to_string(&compose).expect("a compose file always serializes");
+
+    crate::profile::write_profile(dir, &profile)
+        .map_err(|e| RollbackError::Profile(e.to_string()))?;
+    crate::compose_file::write(dir, &text).map_err(|e| RollbackError::Profile(e.to_string()))
 }
 
 /// Records the state a rollback landed on, so the file keeps describing what is running.
@@ -165,7 +227,10 @@ pub async fn run(
 ) -> Result<(), RollbackError> {
     apply(dir, plan)?;
     let config = crate::profile::read_profile(dir).ok().map(|p| p.config);
-    for change in &plan.changes {
+    // Of the files as they are now: a restored copy may not name a service the plan moves
+    // (takt, on a hub going back to before it).
+    let declared = |service: &str| crate::compose_file::declares_service(dir, service);
+    for change in plan.changes.iter().filter(|c| declared(&c.service)) {
         // takt moves back with Rekuest. Its own image is a change of its own in the plan
         // when it moved; recreating it here as well keeps the pair on one release even
         // when only Rekuest's did.
@@ -178,22 +243,28 @@ pub async fn run(
             crate::compose::up_service(&change.service),
         ]
         .into_iter()
-        .chain(
-            companions
-                .iter()
-                .filter(|c| crate::compose_file::declares_service(dir, c))
-                .flat_map(|c| {
-                    [
-                        crate::compose::pull_service(c),
-                        crate::compose::up_service(c),
-                    ]
-                }),
-        );
+        .chain(companions.iter().filter(|c| declared(c)).flat_map(|c| {
+            [
+                crate::compose::pull_service(c),
+                crate::compose::up_service(c),
+            ]
+        }));
         for argv in argvs {
             crate::compose::run_streamed(dir, argv, on_line)
                 .await
                 .map_err(RollbackError::Compose)?;
         }
+    }
+    // Files that went back changed more than images: a service they no longer name has to
+    // go, one they name again has to start, and everything reads its config anew.
+    if let (Some(_), Some(config)) = (&plan.files, &config) {
+        crate::services::apply_services(
+            dir,
+            &crate::services::every_config_reader(config),
+            on_line,
+        )
+        .await
+        .map_err(|error| RollbackError::Compose(error.to_string()))?;
     }
     record_applied(dir).await
 }
@@ -229,6 +300,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            files: None,
         }
     }
 
@@ -281,8 +353,69 @@ mod tests {
                 at: 1,
                 reason: "updated".into(),
                 services: BTreeMap::new(),
+                files: None,
             }],
+            ..Default::default()
         };
         assert!(lock.previous().is_none());
+    }
+
+    /// An update that moved the files to another layout is undone with the files it kept:
+    /// what is generated today is not what the older images read.
+    #[test]
+    fn files_of_another_layout_go_back_with_the_images() {
+        let dir = std::env::temp_dir().join(format!(
+            "konstruktor-rollback-files-{}-{}",
+            std::process::id(),
+            lock::now()
+        ));
+        std::fs::create_dir_all(dir.join("configs")).unwrap();
+        let config = config();
+        crate::profile::write_profile(&dir, &crate::profile::hub_profile(config.clone())).unwrap();
+        // A hub from before takt, as it was when its update began.
+        let then = "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-reaper:\n    image: jhnnsrs/rekuest:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n";
+        std::fs::write(dir.join("docker-compose.yaml"), then).unwrap();
+        std::fs::write(dir.join("configs/rekuest.yaml"), "then: true\n").unwrap();
+        let mut held = lock::read(&dir);
+        held.history.push(Entry {
+            files: Some(crate::generations::take(&dir, 1).unwrap()),
+            ..previous(&[("rekuest", "jhnnsrs/rekuest:latest", Some("sha256:old"))])
+        });
+        lock::write(&dir, &held).unwrap();
+
+        // The update: files of today, and the lock moves on.
+        crate::profile::rewrite(&dir, config.clone(), &[]).unwrap();
+        let mut held = lock::read(&dir);
+        held.history.push(Entry {
+            reason: "updated".into(),
+            ..previous(&[("rekuest", "jhnnsrs/rekuest:latest", Some("sha256:new"))])
+        });
+        lock::write(&dir, &held).unwrap();
+        assert!(crate::compose_file::declares_service(&dir, "rekuest-takt"));
+
+        let plan = plan(&dir).unwrap();
+        assert_eq!(plan.files.as_deref(), Some("1"));
+        apply(&dir, &plan).unwrap();
+
+        assert_eq!(crate::migrate::layout(&dir, &config), 1);
+        assert!(!crate::compose_file::declares_service(&dir, "rekuest-takt"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
+            "then: true\n"
+        );
+        // The older image, in the profile and in both services that run it.
+        let compose = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
+        assert_eq!(
+            compose
+                .matches("image: jhnnsrs/rekuest:latest@sha256:old")
+                .count(),
+            2,
+            "{compose}"
+        );
+        assert_eq!(
+            read_profile(&dir).unwrap().config.rekuest.image.as_deref(),
+            Some("jhnnsrs/rekuest:latest@sha256:old")
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

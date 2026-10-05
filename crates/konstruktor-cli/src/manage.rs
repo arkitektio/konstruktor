@@ -1804,13 +1804,42 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         }
     }
 
-    if stale.is_empty() && advances.is_empty() {
+    // Files of an older layout move with every service, moved upstream or not: what is
+    // generated now is written for the releases the services are on afterwards.
+    let pending = konstruktor_core::migrate::pending(&dir, &config);
+    let together: Vec<String> = match pending.is_empty() {
+        true => Vec::new(),
+        false => config
+            .stack_images()
+            .into_iter()
+            .map(|(service, _)| service)
+            .filter(|service| !updates::is_infrastructure(&config, service))
+            .collect(),
+    };
+    if !pending.is_empty() {
+        ui::step("This hub's files are from an earlier Konstruktor. They are rewritten:");
+        for step in &pending {
+            ui::step(&ui::dim(&format!("  {}", step.title)));
+        }
+        ui::step(&ui::dim(
+            "Every service moves with them. A copy of the files as they are is kept, and \
+             `konstruktor rollback` puts it back.",
+        ));
+        ui::say("");
+    }
+
+    if stale.is_empty() && advances.is_empty() && pending.is_empty() {
         ui::ok("Everything is up to date.");
         ui::say("");
         return Ok(());
     }
 
     let mut names: Vec<&str> = stale.iter().map(|c| c.service.as_str()).collect();
+    for service in &together {
+        if !names.contains(&service.as_str()) {
+            names.push(service);
+        }
+    }
     for advance in &advances {
         if !names.contains(&advance.service.as_str()) {
             names.push(&advance.service);
@@ -1878,7 +1907,7 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     // moved back, a migration cannot), record what is running for `rollback`, move pins,
     // then pull, guard and recreate each service, and check it all came back.
     let request = updates::UpdateRequest {
-        services: stale.iter().map(|c| c.service.clone()).collect(),
+        services: names.iter().map(|name| name.to_string()).collect(),
         advances,
         pull: true,
         backup_into,
@@ -1930,8 +1959,8 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     }
     if !report.succeeded() {
         bail!(
-            "updated, but not every service is healthy — the previous state is in the \
-             backup taken above"
+            "updated, but not every service is healthy — `konstruktor rollback` puts the \
+             images and files back, and the data as it was is in the backup taken above"
         );
     }
     ui::ok("All services answer.");

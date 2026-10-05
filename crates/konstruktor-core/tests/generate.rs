@@ -641,12 +641,13 @@ mod stack_images {
         assert!(!compose_service_names(&remote).contains(&"rekuest-takt".to_string()));
     }
 
-    /// A rollback, an advanced pin, a re-authorization and a service change all end by
-    /// writing every generated file. On a hub from before takt that would point its
-    /// services and its gateway at a container it does not run, so they refuse and leave
-    /// the folder as it is; only `regenerate`, asked for by name, moves the hub across.
+    /// A rollback, an advanced pin, a re-authorization, a service change and a regenerate
+    /// all end by writing every generated file. On a hub whose files are of an older
+    /// layout that would write for releases its services are not on, so they refuse and
+    /// leave the folder as it is; only an update, which moves the services too, rewrites.
     #[test]
-    fn nothing_rewrites_a_hub_from_before_takt_in_passing() {
+    fn nothing_rewrites_a_hub_of_an_older_layout_in_passing() {
+        use konstruktor_core::migrate;
         use konstruktor_core::profile::{self, ProfileError};
 
         let config = config_of("hub_config.yaml");
@@ -657,13 +658,18 @@ mod stack_images {
         let before = "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-reaper:\n    image: jhnnsrs/rekuest:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n";
         std::fs::write(dir.join("docker-compose.yaml"), before).unwrap();
         let profile_before = std::fs::read_to_string(profile::profile_path(&dir)).unwrap();
+        assert_eq!(migrate::layout(&dir, &config), 1);
 
         let moved = [("mikro".to_string(), "jhnnsrs/mikro:9.9.9".to_string())];
-        let refused = profile::rewrite_images(&dir, &moved).unwrap_err();
-        assert!(
-            matches!(&refused, ProfileError::Layout(why) if why.contains("konstruktor hub regenerate")),
-            "{refused}"
-        );
+        for refused in [
+            profile::rewrite_images(&dir, &moved).unwrap_err(),
+            profile::regenerate(&dir).unwrap_err(),
+        ] {
+            assert!(
+                matches!(&refused, ProfileError::Layout(why) if why.contains("konstruktor update")),
+                "{refused}"
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
             before
@@ -674,7 +680,11 @@ mod stack_images {
         );
         assert!(!dir.join("configs").exists(), "no config was written");
 
-        profile::regenerate(&dir).unwrap();
+        // What an update does to the files: they are what this build generates, and the
+        // hub says so from then on.
+        profile::rewrite(&dir, config.clone(), &[]).unwrap();
+        assert_eq!(migrate::layout(&dir, &config), migrate::CURRENT_LAYOUT);
+        assert_eq!(migrate::pending(&dir, &config), []);
         assert!(konstruktor_core::compose_file::declares_service(
             &dir,
             "rekuest-takt"
@@ -683,16 +693,13 @@ mod stack_images {
             &dir,
             "rekuest-reaper"
         ));
-        assert_eq!(
-            std::fs::read_to_string(dir.join("docker-compose.yaml.bak")).unwrap(),
-            before
-        );
         assert!(std::fs::read_to_string(dir.join("configs/Caddyfile"))
             .unwrap()
             .contains("reverse_proxy rekuest-takt:8080"));
 
-        // On the layout this build generates, the same rewrite goes through.
+        // On the layout this build generates, the same rewrites go through.
         profile::rewrite_images(&dir, &moved).unwrap();
+        profile::regenerate(&dir).unwrap();
         assert_eq!(
             profile::read_profile(&dir)
                 .unwrap()
@@ -701,86 +708,6 @@ mod stack_images {
                 .image
                 .as_deref(),
             Some("jhnnsrs/mikro:9.9.9")
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// The compose file a hub from before takt runs: Rekuest's reaper, and no takt.
-    #[test]
-    fn a_hub_whose_files_predate_takt_is_not_updated_into_a_broken_one() {
-        let config = config_of("hub_config.yaml");
-        let dir = std::env::temp_dir().join(format!("konstruktor-predates-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("docker-compose.yaml"),
-            "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-reaper:\n    image: jhnnsrs/rekuest:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n",
-        )
-        .unwrap();
-
-        let refusal = konstruktor_core::updates::predates_takt(&dir, &config, "rekuest")
-            .expect("rekuest is refused");
-        assert!(refusal.contains("konstruktor hub regenerate"), "{refusal}");
-        assert!(konstruktor_core::updates::predates_takt(&dir, &config, "rekuest-takt").is_some());
-        // Nothing else is held back by it.
-        assert_eq!(
-            konstruktor_core::updates::predates_takt(&dir, &config, "mikro"),
-            None
-        );
-
-        // Regenerated, the same hub updates.
-        std::fs::write(
-            dir.join("docker-compose.yaml"),
-            konstruktor_core::compose_file::regenerate_from(&config),
-        )
-        .unwrap();
-        assert_eq!(
-            konstruktor_core::updates::predates_takt(&dir, &config, "rekuest"),
-            None
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-    /// The compose file a hub from 0.12 or 0.13 runs: takt beside Rekuest, on its one port.
-    #[test]
-    fn a_hub_whose_files_predate_the_takt_socket_is_not_updated_into_a_broken_one() {
-        let config = config_of("hub_config.yaml");
-        let dir = std::env::temp_dir().join(format!(
-            "konstruktor-predates-socket-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("docker-compose.yaml"),
-            "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-takt:\n    image: jhnnsrs/rekuest-takt:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n",
-        )
-        .unwrap();
-
-        // It has takt, so the older refusal has nothing to say.
-        assert_eq!(
-            konstruktor_core::updates::predates_takt(&dir, &config, "rekuest"),
-            None
-        );
-        let refusal = konstruktor_core::updates::predates_takt_socket(&dir, &config, "rekuest")
-            .expect("rekuest is refused");
-        assert!(refusal.contains("konstruktor hub regenerate"), "{refusal}");
-        assert!(
-            konstruktor_core::updates::predates_takt_socket(&dir, &config, "rekuest-takt")
-                .is_some()
-        );
-        // Nothing else is held back by it.
-        assert_eq!(
-            konstruktor_core::updates::predates_takt_socket(&dir, &config, "mikro"),
-            None
-        );
-
-        // Regenerated, the same hub updates.
-        std::fs::write(
-            dir.join("docker-compose.yaml"),
-            konstruktor_core::compose_file::regenerate_from(&config),
-        )
-        .unwrap();
-        assert_eq!(
-            konstruktor_core::updates::predates_takt_socket(&dir, &config, "rekuest"),
-            None
         );
         std::fs::remove_dir_all(&dir).ok();
     }

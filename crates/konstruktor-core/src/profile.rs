@@ -51,7 +51,7 @@ pub enum ProfileError {
     #[error("{path} describes a {found} deployment, not a hub one")]
     WrongKind { path: String, found: String },
     /// The files on disk are of a layout this build must not rewrite in passing. See
-    /// [`crate::compose_file::predates_takt`].
+    /// [`crate::migrate::behind`].
     #[error("{0}")]
     Layout(String),
 }
@@ -92,14 +92,16 @@ pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> 
 /// unchanged rather than half rewritten.
 pub fn rewrite_images(dir: &Path, images: &[(String, String)]) -> Result<(), ProfileError> {
     let config = read_profile(dir)?.config;
-    if let Some(reason) = crate::compose_file::predates_takt(dir, &config) {
+    if let Some(reason) = crate::migrate::behind(dir, &config) {
         return Err(ProfileError::Layout(reason));
     }
     rewrite(dir, config, images)
 }
 
-/// [`rewrite_images`], whatever layout the files on disk have.
-fn rewrite(
+/// [`rewrite_images`], whatever layout the files on disk have: what they are afterwards is
+/// the layout this build generates. Only an update may ask for that of a hub that is
+/// behind, since it moves the images with the files.
+pub fn rewrite(
     dir: &Path,
     mut config: HubConfig,
     images: &[(String, String)],
@@ -116,18 +118,22 @@ fn rewrite(
     let files = crate::generate::generate_hub_files(&config, &identity);
 
     write_profile(dir, &hub_profile(config))?;
-    crate::generate::write::write_generated_files(dir, &files)?;
+    crate::migrate::write_hub(dir, &files)?;
     Ok(())
 }
 
 /// Write every generated file of the hub in `dir` again, from its profile as it stands.
 ///
-/// What brings a hub's files up to what this build generates: a compose service the
-/// generator has gained since (takt), a route, a config key. Nothing in the profile
-/// changes, so every secret, key and image stays what it was. The compose file is the one
-/// generated file people edit by hand, so the one on disk is kept as its backup first.
+/// What undoes hand edits, and picks up what the generator has learnt within the layout
+/// the hub already has. Nothing in the profile changes, so every secret, key and image
+/// stays what it was. The compose file is the one generated file people edit by hand, so
+/// the one on disk is kept as its backup first. A hub of an older layout is refused: its
+/// images have to move with its files, which is `update`'s.
 pub fn regenerate(dir: &Path) -> Result<(), ProfileError> {
     let config = read_profile(dir)?.config;
+    if let Some(reason) = crate::migrate::behind(dir, &config) {
+        return Err(ProfileError::Layout(reason));
+    }
     let compose = dir.join(crate::compose_file::COMPOSE_FILENAME);
     if compose.exists() {
         std::fs::copy(
