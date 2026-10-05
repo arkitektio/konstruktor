@@ -139,6 +139,19 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     // Started as `konstruktor up` starts it: every image is fetched and its build written
     // into the compose file before the first container exists, so the run is on today's
     // releases and the hub is on exact builds from its first second.
+    // Fetched and asserted first: `start` forgives an image it cannot fetch, which is
+    // right for a hub and wrong for a test — a run on last week's cached build proves
+    // nothing about today's. An image named for this run may exist on this machine alone.
+    let mut pull_args = vec!["pull", "--quiet"];
+    if !named.trim().is_empty() {
+        pull_args.push("--ignore-pull-failures");
+    }
+    let pull = compose(&dir, &pull_args);
+    assert!(
+        pull.status.success(),
+        "docker compose pull failed:\n{}",
+        String::from_utf8_lossy(&pull.stderr)
+    );
     let started = konstruktor_core::start::start(&dir, &|line| eprintln!("  {}", line.line)).await;
     assert!(
         started.is_ok(),

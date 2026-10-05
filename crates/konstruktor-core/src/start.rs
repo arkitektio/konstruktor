@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use crate::compose::{self, ComposeLine};
 use crate::config::hub::{HubConfig, DB_COMPOSE_SERVICE};
-use crate::updates::{guard, Guard};
+use crate::updates::Guard;
 
 /// What a start had to say besides compose's own output.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -104,7 +104,9 @@ async fn start_with(
 
     if let Some(config) = &config {
         // --- 1. the database -------------------------------------------------------
-        match guard(dir, config, DB_COMPOSE_SERVICE).await {
+        // Of the build this start runs, not of what the tag resolves to by now.
+        let database = crate::updates::pinned_database(dir, config);
+        match crate::updates::guard_on(dir, config, DB_COMPOSE_SERVICE, &database).await {
             Guard::Refuse(reason) => return Err(StartError::Refused(reason)),
             Guard::Warn(detail) => {
                 say(&detail);

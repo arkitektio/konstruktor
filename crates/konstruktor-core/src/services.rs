@@ -464,7 +464,8 @@ pub async fn apply_services(
         .collect();
     if !databases.is_empty() {
         // The same guard `start` runs, before anything pulls or recreates the database.
-        match crate::updates::guard(dir, &config, DB_COMPOSE_SERVICE).await {
+        let database = crate::updates::pinned_database(dir, &config);
+        match crate::updates::guard_on(dir, &config, DB_COMPOSE_SERVICE, &database).await {
             crate::updates::Guard::Refuse(reason) => return Err(StartError::Refused(reason)),
             // Said once, by `start` below, which asks the same guard again.
             crate::updates::Guard::Warn(_) | crate::updates::Guard::Clear => {}

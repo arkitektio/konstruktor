@@ -251,6 +251,14 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
 
     let _teardown = Teardown(dir.clone());
     // Started as `konstruktor up` starts it: fetched, and on exact builds.
+    // Fetched and asserted first: `start` forgives an image it cannot fetch, which is
+    // right for a hub and wrong for a test.
+    let pull = compose(&dir, &["pull", "--quiet"]);
+    assert!(
+        pull.status.success(),
+        "docker compose pull failed:\n{}",
+        String::from_utf8_lossy(&pull.stderr)
+    );
     let started = konstruktor_core::start::start(&dir, &|line| eprintln!("  {}", line.line)).await;
     assert!(
         started.is_ok(),

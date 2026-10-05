@@ -13,8 +13,12 @@
 //! ```
 //!
 //! `KONSTRUKTOR_E2E_IMAGES` (`service=image` pairs, as in `hub_health`) updates onto those
-//! images instead of the seeded ones — a release that is not published yet. They are run as
-//! they are on this machine: with it set, the update fetches nothing.
+//! images instead of the seeded ones — a release that is not published yet. One built on
+//! this machine is run as it is; nothing is fetched for it.
+//!
+//! `KONSTRUKTOR_E2E_FAILING_UPGRADE` names, the same way, a build of Rekuest whose
+//! `manage.py upgrade` fails (and the takt to run beside it). With it, a second test
+//! checks that such an update leaves the hub exactly as it found it.
 //!
 //! The fixture names its ports (18480, 18443), so two runs at once collide.
 
@@ -202,14 +206,8 @@ async fn update(dir: &Path, pull: bool) -> Result<updates::UpdateReport, updates
     .await
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "spawns a whole hub in Docker; run with KONSTRUKTOR_E2E=1 and --ignored"]
-async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
-    if std::env::var("KONSTRUKTOR_E2E").as_deref() != Ok("1") {
-        eprintln!("skipping: set KONSTRUKTOR_E2E=1 to spawn a hub");
-        return;
-    }
-
+/// The hub 0.13.0 generated, started on the images of its time and healthy.
+async fn a_running_hub_of_0_13() -> (PathBuf, Teardown) {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hub-upgrade-e2e");
     if dir.exists() {
         compose(&dir, &["down", "--volumes", "--remove-orphans"]);
@@ -230,7 +228,7 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     let config = read_profile(&dir).expect("0.13.0's profile is read").config;
     assert_eq!(migrate::layout(&dir, &config), 2);
 
-    let _teardown = Teardown(dir.clone());
+    let teardown = Teardown(dir.clone());
     let up = compose(&dir, &["up", "-d"]);
     assert!(
         up.status.success(),
@@ -244,8 +242,33 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     );
     tokio::time::sleep(settle).await;
     healthy(&dir).await;
+    assert_eq!(running_images(&dir)["rekuest"], "jhnnsrs/rekuest:5.2.0");
+    (dir, teardown)
+}
+
+/// `service=image` pairs from an environment variable.
+fn images_named(var: &str) -> Vec<(String, String)> {
+    std::env::var(var)
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .map(|(service, image)| (service.to_string(), image.to_string()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "spawns a whole hub in Docker; run with KONSTRUKTOR_E2E=1 and --ignored"]
+async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
+    if std::env::var("KONSTRUKTOR_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set KONSTRUKTOR_E2E=1 to spawn a hub");
+        return;
+    }
+
+    let (dir, _teardown) = a_running_hub_of_0_13().await;
+    let compose_file = dir.join("docker-compose.yaml");
+    let text = std::fs::read_to_string(&compose_file).unwrap();
+    let config = read_profile(&dir).unwrap().config;
     let before = running_images(&dir);
-    assert_eq!(before["rekuest"], "jhnnsrs/rekuest:5.2.0");
 
     // --- an update that cannot fetch an image changes nothing --------------------------
     let profile_text = std::fs::read_to_string(profile::profile_path(&dir)).unwrap();
@@ -272,11 +295,7 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     std::fs::write(profile::profile_path(&dir), profile_text).unwrap();
 
     // --- the update ---------------------------------------------------------------------
-    let named = std::env::var("KONSTRUKTOR_E2E_IMAGES").unwrap_or_default();
-    let named: Vec<(&str, &str)> = named
-        .split(',')
-        .filter_map(|pair| pair.trim().split_once('='))
-        .collect();
+    let named = images_named("KONSTRUKTOR_E2E_IMAGES");
     if !named.is_empty() {
         let mut chosen = read_profile(&dir).unwrap();
         for (service, image) in &named {
@@ -285,9 +304,7 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         }
         profile::write_profile(&dir, &chosen).unwrap();
     }
-    let report = update(&dir, named.is_empty())
-        .await
-        .expect("the update runs");
+    let report = update(&dir, true).await.expect("the update runs");
     assert_eq!(
         report.migrated.len() as u32,
         migrate::CURRENT_LAYOUT - 2,
@@ -468,10 +485,53 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     // --- released, an update moves it again -----------------------------------------------
     konstruktor_core::freeze::release(&dir, &[]).expect("the freeze is lifted");
     request.services = vec!["kraph".into()];
-    request.pull = named.is_empty();
     let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
         .await
         .expect("the update runs");
     assert_eq!(report.updated, ["kraph"]);
     assert!(report.refused.is_empty(), "{:?}", report.refused);
+}
+
+/// A release whose own upgrade fails stops the update before anything is replaced: the
+/// hub is on the builds it ran, on the files it had, and answers.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "spawns a whole hub in Docker; run with KONSTRUKTOR_E2E=1 and --ignored"]
+async fn an_upgrade_that_fails_leaves_the_hub_as_it_was() {
+    let failing = images_named("KONSTRUKTOR_E2E_FAILING_UPGRADE");
+    if std::env::var("KONSTRUKTOR_E2E").as_deref() != Ok("1") || failing.is_empty() {
+        eprintln!("skipping: set KONSTRUKTOR_E2E=1 and KONSTRUKTOR_E2E_FAILING_UPGRADE");
+        return;
+    }
+
+    let (dir, _teardown) = a_running_hub_of_0_13().await;
+    let config = read_profile(&dir).unwrap().config;
+    let mut chosen = read_profile(&dir).unwrap();
+    for (service, image) in &failing {
+        chosen.config.set_service_image(service, image);
+    }
+    profile::write_profile(&dir, &chosen).unwrap();
+    let files = |dir: &Path| {
+        (
+            std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
+            std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
+        )
+    };
+    let files_before = files(&dir);
+    let builds_before = running_images(&dir);
+
+    let stopped = update(&dir, true).await;
+    assert!(
+        matches!(&stopped, Err(updates::UpdateError::Migration(why)) if why.contains("could not upgrade itself")),
+        "{:?}",
+        stopped.map(|report| report.updated)
+    );
+    assert_eq!(files(&dir), files_before, "the files were not put back");
+    assert_eq!(migrate::layout(&dir, &config), 2);
+    assert!(konstruktor_core::lock::read(&dir).pins.is_empty());
+    assert_eq!(
+        running_images(&dir),
+        builds_before,
+        "a container was replaced, or one that was stopped did not come back"
+    );
+    healthy(&dir).await;
 }

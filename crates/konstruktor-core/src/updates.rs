@@ -458,11 +458,24 @@ pub enum Guard {
 /// Pulling first is harmless — a fetched image changes nothing until a container is
 /// recreated on it — so the safe order is pull, ask, then recreate or refuse.
 pub async fn guard(dir: &std::path::Path, config: &HubConfig, service: &str) -> Guard {
+    guard_on(dir, config, service, &config.db.image).await
+}
+
+/// [`guard`], of the image that would actually be run. An update asks about what its
+/// channel just fetched; a start asks about the build written down for the hub
+/// ([`pinned_database`]), which is not what the tag resolves to once something else on
+/// the machine has fetched it further.
+pub async fn guard_on(
+    dir: &std::path::Path,
+    config: &HubConfig,
+    service: &str,
+    image: &str,
+) -> Guard {
     if service != DB_COMPOSE_SERVICE {
         return Guard::Clear;
     }
     let data = crate::backup::live_pgdata_major(dir, config).await;
-    let server = crate::docker::image_pg_major(&config.db.image).await;
+    let server = crate::docker::image_pg_major(image).await;
     match crate::backup::major_move(data, server) {
         crate::backup::MajorMove::Same(_) => Guard::Clear,
         crate::backup::MajorMove::Across { data, server } => Guard::Refuse(format!(
@@ -690,6 +703,14 @@ async fn reads_its_config(dir: &std::path::Path, service: &str) -> Reads {
         ),
         Err(_) => Reads::Unasked,
     }
+}
+
+/// The database image a start of the hub in `dir` runs: the build written down for it, or
+/// what the profile names when there is none.
+pub fn pinned_database(dir: &std::path::Path, config: &HubConfig) -> String {
+    crate::pins::references(config, &crate::lock::read(dir).pins)
+        .remove(DB_COMPOSE_SERVICE)
+        .unwrap_or_else(|| config.db.image.clone())
 }
 
 /// Whether any container of the hub in `dir` is running.
@@ -1049,7 +1070,15 @@ pub async fn apply(
 
     // --- fetch, and ask whether what arrived may be run -------------------------------
     // By channel, not through the compose file: that names the build the hub runs, and
-    // fetching it again would find nothing new.
+    // fetching it again would find nothing new. An image that is on this machine and came
+    // from no registry (built here) is not asked for anywhere.
+    let built_here: Vec<String> = crate::docker::image_states(&config.stack_images())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|state| state.present && state.repo_digests.is_empty())
+        .map(|state| state.service)
+        .collect();
     let mut moving: Vec<(String, Vec<String>)> = Vec::new();
     for service in &services {
         // takt moves with Rekuest, below; asked for beside it, it is not moved twice.
@@ -1073,7 +1102,7 @@ pub async fn apply(
         if request.pull {
             step(format!("Fetching {service}"));
             for name in std::iter::once(service).chain(&companions) {
-                let Some(image) = channels.get(name) else {
+                let Some(image) = channels.get(name).filter(|_| !built_here.contains(name)) else {
                     continue;
                 };
                 let pull = vec!["pull".to_string(), image.clone()];
@@ -1114,6 +1143,9 @@ pub async fn apply(
         .into_iter()
         .filter(|(service, _)| !builds.contains_key(service))
         .filter(|(service, _)| !fetched.iter().any(|(name, _)| name == service))
+        // A refused service's tag has just been fetched to an image it must not run; with
+        // no container to read the build off, it stays unpinned rather than pinned to that.
+        .filter(|(service, _)| !report.refused.iter().any(|(name, _)| name == service))
         .collect();
     builds.extend(crate::pins::adopt(dir, &untouched).await);
     if let Err(error) = crate::pins::record(dir, builds) {
@@ -1198,53 +1230,131 @@ pub async fn apply(
         }
     }
 
-    // --- recreate --------------------------------------------------------------------
-    // Asked before anything is recreated: afterwards the answer is always yes.
+    // Asked before anything is stopped or recreated: afterwards the answer is always yes.
     let was_running = running(dir).await;
+
+    // --- what each release has to do to its own data -------------------------------------
+    // Between two versions, and only the release knows what. It must not run while the
+    // old code still writes, so everything that writes that service's data is stopped
+    // first — the service and what moves with it — and every upgrade runs before a single
+    // container is replaced: a failure then still has a hub to go back to, old builds on
+    // old files, started again as it was.
+    let mut upgrading: Vec<(String, String, String)> = Vec::new();
+    for (service, _) in &moving {
+        let reached = match channels.get(service) {
+            Some(image) => crate::docker::image_label(image, VERSION_LABEL).await,
+            None => None,
+        };
+        if let (Some(from), Some(to)) = (running_version(dir, service).await, reached) {
+            // Asked while the old container still serves: only a release that ships an
+            // upgrade costs its service a stop.
+            if from != to && ships_an_upgrade(dir, service).await {
+                upgrading.push((service.clone(), from, to));
+            }
+        }
+    }
+    if !upgrading.is_empty() {
+        let is_up = |name: String| async move {
+            crate::engine_probe::engine()
+                .async_command()
+                .args(["compose", "ps", "--status", "running", "-q", &name])
+                .current_dir(dir)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
+        };
+        let mut stopped: Vec<String> = Vec::new();
+        for (service, _, _) in &upgrading {
+            let writers = moving
+                .iter()
+                .find(|(name, _)| name == service)
+                .map(|(_, companions)| companions.clone())
+                .unwrap_or_default();
+            for name in std::iter::once(service.clone()).chain(writers) {
+                if is_up(name.clone()).await && !stopped.contains(&name) {
+                    stopped.push(name);
+                }
+            }
+        }
+        // The upgrade talks to the database, which a stopped hub does not run.
+        let database_was_up = is_up(DB_COMPOSE_SERVICE.to_string()).await;
+        let compose = |verb: &str, names: &[String]| {
+            let mut argv = vec!["compose".to_string(), verb.to_string()];
+            argv.extend(names.iter().cloned());
+            argv
+        };
+        // Back to how it was: the files and builds of before, and what was stopped here
+        // running again on them.
+        let undo = |why: String, stopped: Vec<String>| async move {
+            put_back(&why);
+            if !stopped.is_empty() {
+                let _ = crate::compose::run_streamed(dir, compose("start", &stopped), &line).await;
+            }
+            if !database_was_up {
+                let database = [DB_COMPOSE_SERVICE.to_string()];
+                let _ = crate::compose::run_streamed(dir, compose("stop", &database), &line).await;
+            }
+        };
+        if !stopped.is_empty() {
+            step(format!("Stopping {} for its upgrade", stopped.join(", ")));
+            if let Err(error) =
+                crate::compose::run_streamed(dir, compose("stop", &stopped), &line).await
+            {
+                undo("A service could not be stopped".into(), stopped).await;
+                return Err(UpdateError::Compose(error));
+            }
+        }
+        if !database_was_up {
+            let up = vec![
+                "compose".to_string(),
+                "up".to_string(),
+                "-d".to_string(),
+                "--no-deps".to_string(),
+                DB_COMPOSE_SERVICE.to_string(),
+            ];
+            let started = crate::compose::run_streamed(dir, up, &line).await;
+            let ready = match started {
+                Ok(_) => crate::backup::wait_for_database(dir, &config, "database", &|_| {})
+                    .await
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = ready {
+                undo("The database could not be started".into(), stopped).await;
+                return Err(UpdateError::Compose(error));
+            }
+        }
+        for (service, from, to) in &upgrading {
+            step(format!("{service} upgrades itself from {from} to {to}"));
+            if let Upgraded::Failed(said) = upgrade(dir, service, from, to).await {
+                undo(
+                    format!("`{service}` could not upgrade itself from {from} to {to}"),
+                    stopped,
+                )
+                .await;
+                return Err(UpdateError::Migration(format!(
+                    "the update was stopped before anything was replaced: `{service}` \
+                     could not upgrade itself from {from} to {to}. It said:\n{said}\nThis \
+                     hub runs the builds it ran, on the files it had. What the upgrade \
+                     did to the data before it failed is not undone: an upgrade is \
+                     written to be run again, and the data as it was is in the backup."
+                )));
+            }
+        }
+        if !database_was_up {
+            let database = [DB_COMPOSE_SERVICE.to_string()];
+            let _ = crate::compose::run_streamed(dir, compose("stop", &database), &line).await;
+        }
+    }
+
+    // --- recreate --------------------------------------------------------------------
     // From here there is no going back to the old files: what the move still has to run
     // afterwards is owed until it has.
     crate::migrate::begin(dir, &pending).map_err(crate::profile::ProfileError::Io)?;
     let mut recreated: Vec<String> = Vec::new();
     for (service, companions) in &moving {
         step(format!("Updating {service}"));
-        // What the release has to do to its own data between the two versions. Only for a
-        // service that runs, whose version changes, and whose release ships the command —
-        // asked first, so that only then is the old container stopped for it.
-        let versions = match (
-            running_version(dir, service).await,
-            match channels.get(service) {
-                Some(image) => crate::docker::image_label(image, VERSION_LABEL).await,
-                None => None,
-            },
-        ) {
-            (Some(from), Some(to)) if from != to => Some((from, to)),
-            _ => None,
-        };
-        if let Some((from, to)) = versions {
-            if ships_an_upgrade(dir, service).await {
-                step(format!("{service} upgrades itself from {from} to {to}"));
-                let stop = vec!["compose".to_string(), "stop".to_string(), service.clone()];
-                crate::compose::run_streamed(dir, stop, &line)
-                    .await
-                    .map_err(UpdateError::Compose)?;
-                if let Upgraded::Failed(said) = upgrade(dir, service, &from, &to).await {
-                    // The old container is still there, stopped: it serves again.
-                    let start = vec!["compose".to_string(), "start".to_string(), service.clone()];
-                    let _ = crate::compose::run_streamed(dir, start, &line).await;
-                    return Err(UpdateError::Migration(format!(
-                        "`{service}` could not upgrade itself from {from} to {to} and runs \
-                         {from} again. It said:\n{said}\nThe update stopped there: {} moved \
-                         before it, and this hub's files are the new ones. `konstruktor \
-                         rollback` puts the earlier builds and files back; the data as it \
-                         was is in the backup.",
-                        match report.updated.is_empty() {
-                            true => "nothing".to_string(),
-                            false => report.updated.join(", "),
-                        }
-                    )));
-                }
-            }
-        }
         // `--no-deps`: updating one service on a stopped stack must not boot the rest.
         crate::compose::run_streamed(dir, crate::compose::up_service(service), &line)
             .await
