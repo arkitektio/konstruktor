@@ -42,6 +42,7 @@ services:
     stop_grace_period: 2s
     volumes:
     - ./configs/rekuest.yaml:/workspace/config.yaml
+    - takt_run:/run/takt
     deploy:
       restart_policy:
         condition: on-failure
@@ -119,8 +120,11 @@ services:
     - redis
     - rekuest
     stop_grace_period: 2s
+    environment:
+      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock
     volumes:
     - ./configs/rekuest.yaml:/workspace/config.yaml:ro
+    - takt_run:/run/takt
     deploy:
       restart_policy:
         condition: on-failure
@@ -141,4 +145,5 @@ networks:
   polished-meadow:
     driver: bridge
     name: polished-meadow
-volumes: {}
+volumes:
+  takt_run: {}

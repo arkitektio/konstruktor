@@ -158,6 +158,36 @@ fn running(dir: &Path, service: &str) -> bool {
     !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
+/// An organization, made the way the coordination server's first token would make it: by
+/// Rekuest itself, so that it reacts to it. Rekuest gives a new organization its agents on
+/// a thread of its own, which this short-lived process has to wait for.
+fn create_organization(dir: &Path, slug: &str) {
+    let code = format!(
+        "import threading\n\
+         from authentikate.models import Organization\n\
+         Organization.objects.create(slug='{slug}')\n\
+         [t.join() for t in threading.enumerate() if t.name == 'provision-{slug}']"
+    );
+    let out = compose(
+        dir,
+        &[
+            "exec",
+            "-T",
+            "rekuest",
+            "python",
+            "manage.py",
+            "shell",
+            "-c",
+            &code,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "the organization was not created:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Rekuest's WEBHOOK agents with how many actions each has — as `hub_health` reads them.
 fn provisioned_agents(dir: &Path, config: &HubConfig) -> std::collections::BTreeMap<String, u32> {
     let query = "select a.name, count(i.id) from facade_agent a \
@@ -230,6 +260,9 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
     eprintln!("hub is up; letting it settle for {}s…", settle.as_secs());
     tokio::time::sleep(settle).await;
     healthy(&dir, &config).await;
+    // Hook agents belong to organizations, and a hub that never met its coordination
+    // server has none: this is the one bank's agent is expected in further down.
+    create_organization(&dir, "e2e");
     assert_eq!(
         psql(
             &dir,
@@ -307,7 +340,8 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
     if agents.get("bank").copied().unwrap_or(0) == 0 {
         logs(&dir, "rekuest-takt");
         logs(&dir, "bank");
-        panic!("rekuest did not provision bank's HookAgent: {agents:?}");
+        logs(&dir, "rekuest");
+        panic!("rekuest did not provision bank's hook agent: {agents:?}");
     }
 
     // --- remove it again ----------------------------------------------------------------

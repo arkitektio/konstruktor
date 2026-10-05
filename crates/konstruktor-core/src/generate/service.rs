@@ -367,8 +367,9 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
                 ])
             })
             .collect();
-        // The pair finds each other by these two: Rekuest signs its internal requests to
-        // takt, takt asks Rekuest for its upkeep jobs. Both read this one file.
+        // The pair finds each other by these: Rekuest asks takt through the socket the two
+        // mount (an image from before it ignores the key and uses `takt_url`), takt asks
+        // Rekuest for its upkeep jobs. Both read this one file.
         let mut block = vec![
             ("services", list(services)),
             ("hook_agents", list(hook_agents)),
@@ -383,6 +384,7 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
         ];
         if let Some(takt) = config.takt_url() {
             block.push(("takt_url", s(&takt)));
+            block.push(("takt_socket", s(crate::config::hub::TAKT_SOCKET_PATH)));
         }
         pairs.push(("rekuest", map(block)));
     }

@@ -185,6 +185,11 @@ fn every_config_holds_its_own_key_and_trusts_the_hub_bundle() {
         rekuest["rekuest"]["takt_url"].as_str(),
         Some("http://rekuest-takt:8080/rekuest")
     );
+    // Rekuest asks takt through the socket the two mount; the URL then only gives the path.
+    assert_eq!(
+        rekuest["rekuest"]["takt_socket"].as_str(),
+        Some("/run/takt/internal.sock")
+    );
     assert_eq!(
         rekuest["rekuest"]["server_url"].as_str(),
         Some("http://rekuest:80/rekuest")

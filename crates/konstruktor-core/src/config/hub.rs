@@ -491,6 +491,15 @@ pub struct HubConfig {
 /// The port takt listens on inside the stack; its image's default.
 pub const TAKT_INTERNAL_PORT: u16 = 8080;
 
+/// The volume Rekuest and takt share, and nothing else mounts: takt's internal API (what
+/// Rekuest asks of it) is a unix socket in it, so reaching the socket is being Rekuest.
+pub const TAKT_SOCKET_VOLUME: &str = "takt_run";
+/// Where that volume is mounted in both containers.
+pub const TAKT_SOCKET_DIR: &str = "/run/takt";
+/// The socket takt binds there (`TAKT_INTERNAL_BIND`) and Rekuest connects to
+/// (`rekuest.takt_socket`).
+pub const TAKT_SOCKET_PATH: &str = "/run/takt/internal.sock";
+
 /// The image of takt that belongs to a Rekuest image: the same repository with `-takt`
 /// appended, under the same tag. The two are released together under the same tags, and a
 /// digest pins one image only, so it is dropped.
@@ -536,8 +545,9 @@ impl HubConfig {
         )
     }
 
-    /// Where the stack's own containers reach takt, with Rekuest's path: what Rekuest
-    /// signs its internal requests to, and what the hooked services report to.
+    /// Where the stack's own containers reach takt, with Rekuest's path: what the hooked
+    /// services report to. Rekuest itself asks takt through [`TAKT_SOCKET_PATH`] and takes
+    /// only the path from this; a Rekuest image from before the socket still uses it whole.
     pub fn takt_url(&self) -> Option<String> {
         self.takt_host()
             .map(|host| format!("http://{host}:{TAKT_INTERNAL_PORT}/{}", self.rekuest.host))

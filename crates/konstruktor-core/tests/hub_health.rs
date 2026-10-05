@@ -164,14 +164,42 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         .expect("the health check looked at rekuest-takt");
     assert!(takt.healthy, "rekuest-takt: {}", takt.detail);
 
-    // --- one HookAgent per hooked service ---------------------------------------------
-    // Rekuest provisions every `rekuest.service_agents` entry as a WEBHOOK agent, when takt
-    // asks it to, and registers the actions it reads from the service's manifest. Every
-    // request on the way is signed with instance keys, so an agent *with actions* proves
-    // the whole chain — takt asks, the service answers, and each side finds the other's key in the
-    // (inline) trust bundle. Every hooked service declares at least its embeddings sweep.
-    let expected = expected_service_agents(&dir);
-    assert!(!expected.is_empty(), "the hub has hooked services");
+    // --- the service catalog ------------------------------------------------------------
+    // Rekuest catalogues every `rekuest.services` entry when takt asks it to, from what the
+    // service answers at `_rekuest/service`. Every request on the way is signed with
+    // instance keys, so a catalogued service proves that chain — takt asks, Rekuest asks
+    // the service, and each side finds the other's key in the (inline) trust bundle.
+    let services = configured(&dir, "services");
+    assert!(!services.is_empty(), "the hub has hooked services");
+    let deadline = std::time::Instant::now() + provision_timeout();
+    let catalogued = loop {
+        let found =
+            catalogued_services(&dir, &config.db.postgres_user, &config.rekuest.db_config.db);
+        if services.iter().all(|name| found.contains(name)) || std::time::Instant::now() > deadline
+        {
+            break found;
+        }
+        eprintln!("waiting for rekuest to catalogue {services:?} (have {found:?})…");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    };
+    let missing: Vec<&String> = services
+        .iter()
+        .filter(|name| !catalogued.contains(*name))
+        .collect();
+    if !missing.is_empty() {
+        takt_and_rekuest_logs(&dir);
+        panic!("rekuest did not catalogue {missing:?}; its catalog: {catalogued:?}");
+    }
+
+    // --- one hook agent per hooked service, in an organization ---------------------------
+    // Hook agents belong to organizations, and a hub that never met its coordination server
+    // has none: one is created here, which is when Rekuest gives it its agents. Rekuest
+    // makes each through takt's internal API, so an agent *with actions* proves Rekuest
+    // reaches takt where only it can (the socket the two mount). Every hooked service
+    // declares at least its embeddings sweep.
+    let expected = configured(&dir, "hook_agents");
+    assert!(!expected.is_empty(), "the hub has hook agents");
+    create_organization(&dir, "e2e");
     let deadline = std::time::Instant::now() + provision_timeout();
     let provisioned = loop {
         let found =
@@ -187,24 +215,27 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         tokio::time::sleep(Duration::from_secs(10)).await;
     };
 
-    eprintln!("rekuest's service agents and their action counts: {provisioned:?}");
+    eprintln!("rekuest's hook agents and their action counts: {provisioned:?}");
     let missing: Vec<&String> = expected
         .iter()
         .filter(|service| provisioned.get(*service).copied().unwrap_or(0) == 0)
         .collect();
     if !missing.is_empty() {
-        let logs = compose(
-            &dir,
-            &["logs", "--no-color", "--tail", "120", "rekuest-takt"],
+        takt_and_rekuest_logs(&dir);
+        panic!(
+            "rekuest did not provision a hook agent with actions for {missing:?}; \
+             agents and their action counts: {provisioned:?}"
         );
+    }
+}
+
+fn takt_and_rekuest_logs(dir: &Path) {
+    for service in ["rekuest-takt", "rekuest"] {
+        let logs = compose(dir, &["logs", "--no-color", "--tail", "120", service]);
         eprintln!(
-            "----- logs: rekuest-takt -----\n{}{}",
+            "----- logs: {service} -----\n{}{}",
             String::from_utf8_lossy(&logs.stdout),
             String::from_utf8_lossy(&logs.stderr)
-        );
-        panic!(
-            "rekuest did not provision a HookAgent with actions for {missing:?}; \
-             agents and their action counts: {provisioned:?}"
         );
     }
 }
@@ -220,19 +251,75 @@ fn provision_timeout() -> Duration {
         .unwrap_or(Duration::from_secs(180))
 }
 
-/// The services rekuest was told to provision, as the generated config lists them.
-fn expected_service_agents(dir: &Path) -> Vec<String> {
+/// The names in one of the lists rekuest was configured with (`rekuest.services`,
+/// `rekuest.hook_agents`), as the generated config has them.
+fn configured(dir: &Path, list: &str) -> Vec<String> {
     let text = std::fs::read_to_string(dir.join("configs/rekuest.yaml")).expect("rekuest.yaml");
     let doc: serde_norway::Value = serde_norway::from_str(&text).expect("rekuest.yaml parses");
-    doc["rekuest"]["service_agents"]
+    doc["rekuest"][list]
         .as_sequence()
-        .map(|agents| {
-            agents
+        .map(|entries| {
+            entries
                 .iter()
-                .filter_map(|a| a["service"].as_str().map(str::to_string))
+                .filter_map(|e| e["name"].as_str().map(str::to_string))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// An organization, made the way the coordination server's first token would make it: by
+/// Rekuest itself, so that it reacts to it. Rekuest gives a new organization its agents on
+/// a thread of its own, which this short-lived process has to wait for.
+fn create_organization(dir: &Path, slug: &str) {
+    let code = format!(
+        "import threading\n\
+         from authentikate.models import Organization\n\
+         Organization.objects.create(slug='{slug}')\n\
+         [t.join() for t in threading.enumerate() if t.name == 'provision-{slug}']"
+    );
+    let out = compose(
+        dir,
+        &[
+            "exec",
+            "-T",
+            "rekuest",
+            "python",
+            "manage.py",
+            "shell",
+            "-c",
+            &code,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "the organization was not created:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The names in Rekuest's service catalog, read from its database.
+fn catalogued_services(dir: &Path, user: &str, database: &str) -> Vec<String> {
+    let out = compose(
+        dir,
+        &[
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            user,
+            "-d",
+            database,
+            "-tA",
+            "-c",
+            "select name from facade_service",
+        ],
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 /// Rekuest's WEBHOOK agents, by name, with how many actions each implements — read from

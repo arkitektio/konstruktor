@@ -3,6 +3,7 @@ use serde_norway::{Mapping, Value};
 use crate::catalog::ServiceId;
 use crate::config::hub::{
     HubConfig, LivekitBlock, ServiceBlock, DB_COMPOSE_SERVICE, LIVEKIT_INTERNAL_PORT,
+    TAKT_SOCKET_DIR, TAKT_SOCKET_PATH, TAKT_SOCKET_VOLUME,
 };
 use crate::config::mesh::{
     MESH_ENV_FILE, MESH_SOCKET as TAILSCALE_SOCKET, MESH_SOCKET_DIR as TAILSCALE_SOCKET_DIR,
@@ -77,6 +78,10 @@ fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
             fernet_key_path(service)
         )));
     }
+    // Rekuest reaches takt's internal API through the socket in the volume the two share.
+    if service.host == config.rekuest.host && config.takt_image().is_some() {
+        volumes.push(s(&format!("{TAKT_SOCKET_VOLUME}:{TAKT_SOCKET_DIR}")));
+    }
 
     map(vec![
         (
@@ -149,7 +154,8 @@ pub fn companion_of(config: &HubConfig, companion: &str) -> Option<String> {
 }
 
 /// takt: its own image, Rekuest's config (read-only: the same file, mounted where the image
-/// looks for it), and nothing else — no source mount, no object storage. Its health is the
+/// looks for it) and the volume its internal socket lives in, which only Rekuest mounts
+/// too — no source mount, no object storage. Its health is the
 /// image's own `HEALTHCHECK` (`takt healthcheck`), which only passes once Rekuest has
 /// migrated, so it depends on Rekuest having started and waits for the rest itself.
 fn takt_service(config: &HubConfig, image: &str) -> Value {
@@ -165,12 +171,23 @@ fn takt_service(config: &HubConfig, image: &str) -> Value {
             ]),
         ),
         ("stop_grace_period", s("2s")),
+        // The internal API is not on the port agents reach: only Rekuest mounts this socket.
+        (
+            "environment",
+            map(vec![(
+                "TAKT_INTERNAL_BIND",
+                s(&format!("unix:{TAKT_SOCKET_PATH}")),
+            )]),
+        ),
         (
             "volumes",
-            list(vec![s(&format!(
-                "./configs/{}.yaml:/workspace/config.yaml:ro",
-                rekuest.host
-            ))]),
+            list(vec![
+                s(&format!(
+                    "./configs/{}.yaml:/workspace/config.yaml:ro",
+                    rekuest.host
+                )),
+                s(&format!("{TAKT_SOCKET_VOLUME}:{TAKT_SOCKET_DIR}")),
+            ]),
         ),
         (
             "deploy",
@@ -654,6 +671,9 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
     }
     if share_socket {
         insert(&mut volumes, TAILSCALE_SOCKET_VOLUME, empty_map());
+    }
+    if enabled.contains(&ServiceId::Rekuest) && config.takt_image().is_some() {
+        insert(&mut volumes, TAKT_SOCKET_VOLUME, empty_map());
     }
 
     map(vec![
