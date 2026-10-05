@@ -69,6 +69,8 @@ Change a hub:
   authorize        Authorize it again: new addresses, or a mesh key
   update           Update the services whose images changed upstream
   rollback         Return to the images it ran before the last update
+  freeze           Have `update` leave it on the builds it runs
+  unfreeze         Let `update` move it again
   open             Open it in a browser
   superuser        Create an admin account in one service
   checkout         List or switch the branches of a dev hub's source checkouts
@@ -200,6 +202,10 @@ enum Command {
     Update(manage::UpdateArgs),
     /// Return a hub to the images it was running before its last update.
     Rollback(manage::RollbackArgs),
+    /// Tell `update` to leave a hub, or some of its services, on the builds it runs.
+    Freeze(manage::FreezeArgs),
+    /// Let `update` move frozen services again.
+    Unfreeze(manage::FreezeArgs),
     /// Open a hub in a browser.
     Open(manage::OpenArgs),
     /// Create an admin account in one running service.
@@ -411,6 +417,8 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Update(args) => manage::update(args, json).await,
         Command::Rollback(args) => manage::rollback(args, json).await,
+        Command::Freeze(args) => manage::freeze(args, json).await,
+        Command::Unfreeze(args) => manage::unfreeze(args, json).await,
         Command::Ps(target) => manage::ps(&target, json).await,
         Command::Logs(args) => manage::logs(args),
         Command::Superuser(args) => manage::superuser(args).await,

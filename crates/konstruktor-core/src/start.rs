@@ -145,7 +145,23 @@ async fn start_with(
         }
     }
 
-    // --- 3. up -------------------------------------------------------------------
+    // --- 3. the builds -----------------------------------------------------------
+    // What has no build written down yet gets one before its container exists. Not on a
+    // hub whose files are behind: those are an update's to rewrite, images included.
+    if let Some(config) = config
+        .as_ref()
+        .filter(|config| crate::migrate::behind(dir, config).is_none())
+    {
+        let pinned = crate::pins::pin_before_start(dir, config, on_line).await;
+        if !pinned.is_empty() {
+            say(&format!(
+                "Wrote down the build of {}: this hub runs exactly these until it is updated.",
+                pinned.join(", ")
+            ));
+        }
+    }
+
+    // --- 4. up -------------------------------------------------------------------
     let (mut args, left_out) = compose::up_in(dir).await;
     if remove_orphans {
         let at = args

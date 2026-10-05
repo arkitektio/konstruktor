@@ -37,6 +37,9 @@ struct Record {
     generated_by: Option<String>,
     #[serde(default)]
     files: BTreeMap<String, String>,
+    /// The builds the compose file of this generation names.
+    #[serde(default)]
+    pins: BTreeMap<String, lock::Pin>,
 }
 
 pub fn path(dir: &Path, name: &str) -> PathBuf {
@@ -76,6 +79,7 @@ pub fn take(dir: &Path, at: u64) -> std::io::Result<String> {
         layout: held.layout,
         generated_by: held.generated_by,
         files: held.files,
+        pins: held.pins,
     };
     std::fs::write(
         target.join(RECORD),
@@ -118,6 +122,7 @@ pub fn restore(dir: &Path, name: &str) -> std::io::Result<()> {
     held.layout = record.layout;
     held.generated_by = record.generated_by;
     held.files = record.files;
+    held.pins = record.pins;
     lock::write(dir, &held)
 }
 

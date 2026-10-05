@@ -744,6 +744,27 @@ pub fn default_backup_folder(path: String) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
+/// Tell `update` to leave a hub (or `services` of it) on the builds it runs; the services
+/// newly frozen. See `konstruktor_core::freeze`.
+#[tauri::command]
+pub fn freeze(path: String, services: Vec<String>) -> Result<Vec<String>, String> {
+    konstruktor_core::freeze::hold(std::path::Path::new(&path), &services)
+        .map_err(|e| e.to_string())
+}
+
+/// Let `update` move frozen services again; what was released.
+#[tauri::command]
+pub fn unfreeze(path: String, services: Vec<String>) -> Result<Vec<String>, String> {
+    konstruktor_core::freeze::release(std::path::Path::new(&path), &services)
+        .map_err(|e| e.to_string())
+}
+
+/// What is frozen in a hub, by compose service.
+#[tauri::command]
+pub fn frozen(path: String) -> std::collections::BTreeMap<String, konstruktor_core::lock::Frozen> {
+    konstruktor_core::freeze::frozen(std::path::Path::new(&path))
+}
+
 /// What a rollback would put back, before anything is written: the images the hub ran
 /// before its last update. See `konstruktor_core::rollback`.
 #[command]

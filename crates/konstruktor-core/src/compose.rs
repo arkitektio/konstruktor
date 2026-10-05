@@ -93,7 +93,8 @@ pub struct ComposeLine {
 /// Runs one compose invocation in a deployment folder, handing every line of both
 /// streams to `on_line` as it is written, and returns what it put on stdout.
 ///
-/// `args` starts with `compose`. Plain, line-by-line narration is asked for: without a
+/// `args` usually starts with `compose`; another engine command (`pull`, `volume`, …) is
+/// run as given. For compose, plain line-by-line narration is asked for: without a
 /// TTY compose already avoids its redrawing progress UI, `--ansi never` keeps colour codes
 /// out, and `--progress plain` adds each layer's download and extract steps — what a pull
 /// of several gigabytes is otherwise silent about for minutes. A failure carries both
@@ -105,10 +106,12 @@ pub async fn run_streamed(
 ) -> Result<String, String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    args.splice(
-        1..1,
-        ["--ansi", "never", "--progress", "plain"].map(String::from),
-    );
+    if args.first().is_some_and(|first| first == "compose") {
+        args.splice(
+            1..1,
+            ["--ansi", "never", "--progress", "plain"].map(String::from),
+        );
+    }
 
     let mut child = crate::engine_probe::engine()
         .async_command()

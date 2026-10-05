@@ -25,7 +25,6 @@ use std::time::Duration;
 use konstruktor_core::catalog::ServiceId;
 use konstruktor_core::compose::ComposeLine;
 use konstruktor_core::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
-use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::health::{self, ServiceHealth};
 use konstruktor_core::profile::{hub_profile, read_profile, write_profile};
@@ -122,7 +121,7 @@ async fn change_and_apply(dir: &Path, add: &[ServiceId], remove: &[ServiceId]) -
     let before = services::snapshot_configs(dir);
     let files = generate_hub_files(&config, &IssuedIdentity::default());
     write_profile(dir, &hub_profile(config.clone())).expect("profile is written");
-    write_generated_files(dir, &files).expect("files are written");
+    konstruktor_core::migrate::write_hub(dir, &config, &files).expect("files are written");
     let changed = services::changed_configs(&before, &services::snapshot_configs(dir));
     let restart = services::services_to_restart(&config, &changed, &plan);
     eprintln!("changed configs {changed:?}; restarting {restart:?}");
@@ -243,26 +242,20 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
     }
     std::fs::create_dir_all(&dir).expect("hub dir");
     write_profile(&dir, &hub_profile(config.clone())).expect("profile is written");
-    write_generated_files(
+    konstruktor_core::migrate::write_hub(
         &dir,
+        &config,
         &generate_hub_files(&config, &IssuedIdentity::default()),
     )
     .expect("files are written");
 
     let _teardown = Teardown(dir.clone());
-    // Fetched first: `up` runs whatever a tag last resolved to on this machine, and a run
-    // against last week's `latest` proves nothing about today's.
-    let pull = compose(&dir, &["pull", "--quiet"]);
+    // Started as `konstruktor up` starts it: fetched, and on exact builds.
+    let started = konstruktor_core::start::start(&dir, &|line| eprintln!("  {}", line.line)).await;
     assert!(
-        pull.status.success(),
-        "docker compose pull failed:\n{}",
-        String::from_utf8_lossy(&pull.stderr)
-    );
-    let up = compose(&dir, &["up", "-d"]);
-    assert!(
-        up.status.success(),
-        "docker compose up failed:\n{}",
-        String::from_utf8_lossy(&up.stderr)
+        started.is_ok(),
+        "the hub did not start: {:?}",
+        started.err()
     );
     let settle = secs("KONSTRUKTOR_E2E_SETTLE_SECS", 60);
     eprintln!("hub is up; letting it settle for {}s…", settle.as_secs());

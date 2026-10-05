@@ -117,8 +117,8 @@ pub fn rewrite(
         .unwrap_or_default();
     let files = crate::generate::generate_hub_files(&config, &identity);
 
-    write_profile(dir, &hub_profile(config))?;
-    crate::migrate::write_hub(dir, &files)?;
+    write_profile(dir, &hub_profile(config.clone()))?;
+    crate::migrate::write_hub(dir, &config, &files)?;
     Ok(())
 }
 

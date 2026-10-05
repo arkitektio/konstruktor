@@ -686,6 +686,30 @@ pub async fn image_states(images: &[(String, String)]) -> Result<Vec<ImageState>
     Ok(states)
 }
 
+/// A label of an image on this machine, e.g. `org.opencontainers.image.version`. `image`
+/// is anything the engine resolves: a reference, or an image id. `None` when the image is
+/// not here or carries no such label.
+pub async fn image_label(image: &str, label: &str) -> Option<String> {
+    let engine = engine_probe::engine();
+    let output = run(
+        engine.async_command().args(["image", "inspect", image]),
+        QUERY_TIMEOUT,
+    )
+    .await
+    .ok()
+    .filter(|output| output.status.success())?;
+
+    json_list(&output.stdout)
+        .into_iter()
+        .next()?
+        .get("Config")?
+        .get("Labels")?
+        .get(label)?
+        .as_str()
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+}
+
 /// The Postgres major an image would run, from the `PG_MAJOR` environment variable.
 ///
 /// The official Postgres images set it, and anything derived from them inherits it —

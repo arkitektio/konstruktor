@@ -107,6 +107,19 @@ pub fn plan(dir: &Path) -> Result<RollbackPlan, RollbackError> {
         crate::generations::layout(dir, name, &config)
             .is_some_and(|kept| kept != crate::migrate::layout(dir, &config))
     });
+    let frozen = crate::freeze::frozen(dir);
+    let thawed: Vec<&str> = changes
+        .iter()
+        .map(|change| change.service.as_str())
+        .filter(|service| frozen.contains_key(*service))
+        .collect();
+    if !thawed.is_empty() {
+        warnings.push(format!(
+            "{} is frozen on the build it runs now; going back to an earlier one lifts \
+             that. `konstruktor freeze` holds it on the earlier build afterwards",
+            thawed.join(", ")
+        ));
+    }
     if files.is_some() {
         warnings.push(
             "the update being undone rewrote this hub's files for the newer releases; the              files it kept from before are put back with the images"
@@ -169,7 +182,11 @@ pub fn apply(dir: &Path, plan: &RollbackPlan) -> Result<(), RollbackError> {
         Some(name) => restore_files(dir, name, &images),
         None => crate::profile::rewrite_images(dir, &images)
             .map_err(|e| RollbackError::Profile(e.to_string())),
-    }
+    }?;
+    // A service put back on another build is no longer held on the one it was frozen on.
+    let moved: Vec<String> = images.into_iter().map(|(service, _)| service).collect();
+    crate::freeze::forget(dir, &moved)?;
+    Ok(())
 }
 
 /// Puts a kept copy of the files back and points it at `images`. Nothing is generated: the

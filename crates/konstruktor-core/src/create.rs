@@ -405,7 +405,7 @@ pub async fn create_hub(
     write_profile(&dir, &hub_profile(config.clone()))
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
     write_credentials(&dir, &credentials)?;
-    crate::migrate::write_hub(&dir, &files)?;
+    crate::migrate::write_hub(&dir, &config, &files)?;
 
     // --- register, so the desktop app sees it -------------------------------
     registry::register(
@@ -1046,10 +1046,10 @@ pub async fn reauthorize(
         on(CreateEvent::Writing { file: name.clone() });
     }
 
-    write_profile(&answers.dir, &hub_profile(config))
+    write_profile(&answers.dir, &hub_profile(config.clone()))
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
     write_credentials(&answers.dir, &credentials)?;
-    crate::migrate::write_hub(&answers.dir, &files)?;
+    crate::migrate::write_hub(&answers.dir, &config, &files)?;
 
     // The registry record now describes the wrong hub: the identifier is editable on the
     // authorize screen, the coordination server can differ, and `last_generated_at` has to

@@ -6,12 +6,29 @@
 //! able to say which files it has: the layout number in `hub_lock.json`, bumped whenever
 //! files of the older number would not run the images of the newer.
 //!
-//! A move is a regeneration: the profile holds everything the files are made from. What a
-//! [`Step`] adds is its name, said before it happens. `konstruktor update` is the one path
-//! across — it regenerates and moves every service, since files of a new layout and
-//! images of an old one are exactly the hub that comes up healthy and does nothing. A
-//! container the new files no longer name (Rekuest's reaper) goes with the `up` that
-//! follows. Everything else that rewrites a hub's files asks [`behind`] first and refuses.
+//! A move is mostly a regeneration: the profile holds everything the files are made from.
+//! `konstruktor update` is the one path across — it regenerates and moves every service,
+//! since files of a new layout and images of an old one are exactly the hub that comes up
+//! healthy and does nothing. Everything else that rewrites a hub's files asks [`behind`]
+//! first and refuses.
+//!
+//! What regeneration cannot say is a [`Step`]'s [`Action`]s: docker commands run once, in
+//! the hub's folder, when the hub crosses that step — a volume copied, a one-off container
+//! run, something removed that the new files no longer name. They are written here, beside
+//! the layout they belong to ([`steps`]), and come in two kinds:
+//!
+//! - [`When::Before`] runs when everything is ready — files rewritten, images fetched,
+//!   each release asked whether it reads its config — and before the first container is
+//!   replaced. If it fails the update stops, the files go back, and the hub keeps running
+//!   as it was. So it has to be harmless to have run on a hub that then stays where it is:
+//!   additive, and repeatable.
+//! - [`When::After`] runs once everything is recreated on the new files. A failure there
+//!   is said, not undone; the step is written down as unfinished, the next update runs its
+//!   closing commands again before anything else, and nothing else rewrites the hub's
+//!   files until they have run.
+//!
+//! What a *service* has to do to its own data when its version changes is not here: that
+//! is the service's, shipped in its image (`manage.py upgrade`, see `updates`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -30,28 +47,79 @@ use crate::lock;
 /// 3. Rekuest and takt share a socket; Rekuest reads `services` and `hook_agents`.
 /// 4. Services follow the major they were generated for, not `latest`: Rekuest 6, Mikro 5,
 ///    Kabinet 4, Elektro 3, Alpaka 3, Fluss 2, Lovekit 2, Kraph 1.
-pub const CURRENT_LAYOUT: u32 = 4;
+/// 5. The compose file names the build of every image ([`crate::pins`]).
+pub const CURRENT_LAYOUT: u32 = 5;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
 /// taken for unless its files say otherwise.
 const LAST_UNRECORDED: u32 = 3;
+
+/// When, in an update, an [`Action`] runs. See this module's introduction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum When {
+    Before,
+    After,
+}
+
+/// One docker command a [`Step`] needs run, once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Action {
+    pub when: When,
+    /// What it does, as a front end says it before and while it runs.
+    pub title: String,
+    /// The arguments to the container engine, run in the hub's folder:
+    /// `["compose", "run", "--rm", …]`, `["volume", "create", …]`.
+    pub docker: Vec<String>,
+}
 
 /// One move from a layout to the next, as a front end shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Step {
     pub to: u32,
     pub title: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
 }
 
-fn title(to: u32) -> &'static str {
-    match to {
-        2 => "takt runs beside Rekuest, in place of its reaper",
-        3 => {
-            "Rekuest and takt share a socket, and Rekuest knows its services and hook agents apart"
+impl Step {
+    fn new(to: u32, title: &str) -> Self {
+        Step {
+            to,
+            title: title.to_string(),
+            actions: Vec::new(),
         }
-        4 => "every service follows the major release these files are written for, not `latest`",
-        _ => "the files this Konstruktor generates",
     }
+
+    /// The commands of this step that run at `when`, in order.
+    pub fn at(&self, when: When) -> impl Iterator<Item = &Action> {
+        self.actions
+            .iter()
+            .filter(move |action| action.when == when)
+    }
+}
+
+/// Every move this build knows, in order: the layout it leads to, what changes, and the
+/// commands it needs run. A new layout is a new entry here and a new [`CURRENT_LAYOUT`].
+///
+/// None needs a command so far. Rekuest's reaper, which layout 2 drops, goes with the
+/// `up --remove-orphans` every update ends with.
+pub fn steps() -> Vec<Step> {
+    vec![
+        Step::new(2, "takt runs beside Rekuest, in place of its reaper"),
+        Step::new(
+            3,
+            "Rekuest and takt share a socket, and Rekuest knows its services and hook agents apart",
+        ),
+        Step::new(
+            4,
+            "every service follows the major release these files are written for, not `latest`",
+        ),
+        Step::new(
+            5,
+            "the compose file names the exact build of every image, and only an update moves it",
+        ),
+    ]
 }
 
 /// The layout of the files in `dir`: what the lock recorded, or — for a hub written before
@@ -97,17 +165,75 @@ fn unrecorded(dir: &Path, config: &HubConfig) -> u32 {
 
 /// The moves between this hub's files and what this build generates, in order.
 pub fn pending(dir: &Path, config: &HubConfig) -> Vec<Step> {
-    (layout(dir, config) + 1..=CURRENT_LAYOUT)
-        .map(|to| Step {
-            to,
-            title: title(to).to_string(),
-        })
+    pending_of(&steps(), layout(dir, config))
+}
+
+/// [`pending`], of any list of steps: those past `layout`.
+pub fn pending_of(steps: &[Step], layout: u32) -> Vec<Step> {
+    steps
+        .iter()
+        .filter(|step| step.to > layout)
+        .cloned()
         .collect()
 }
 
+/// The steps whose files are written and whose closing commands have not all run.
+pub fn unfinished(dir: &Path) -> Vec<Step> {
+    let recorded = lock::read(dir).unfinished;
+    steps()
+        .into_iter()
+        .filter(|step| recorded.contains(&step.to))
+        .collect()
+}
+
+/// Writes down which of `steps` still have closing commands to run: at the point an update
+/// starts replacing containers, from where there is no going back to the old files.
+pub fn begin(dir: &Path, steps: &[Step]) -> std::io::Result<()> {
+    let closing: Vec<u32> = steps
+        .iter()
+        .filter(|step| step.at(When::After).next().is_some())
+        .map(|step| step.to)
+        .collect();
+    if closing.is_empty() {
+        return Ok(());
+    }
+    let mut held = lock::read(dir);
+    for to in closing {
+        if !held.unfinished.contains(&to) {
+            held.unfinished.push(to);
+        }
+    }
+    lock::write(dir, &held)
+}
+
+/// A step's closing commands have run.
+pub fn finish(dir: &Path, to: u32) -> std::io::Result<()> {
+    let mut held = lock::read(dir);
+    let before = held.unfinished.len();
+    held.unfinished.retain(|step| *step != to);
+    if held.unfinished.len() == before {
+        return Ok(());
+    }
+    lock::write(dir, &held)
+}
+
 /// Why this hub's files must not be rewritten in passing, if they must not: they are of an
-/// older layout, and only an update moves the images along with them.
+/// older layout — only an update moves the images along with them — or a move is half
+/// done, with commands still to run that the files as they are wait for.
 pub fn behind(dir: &Path, config: &HubConfig) -> Option<String> {
+    let waiting = unfinished(dir);
+    if !waiting.is_empty() {
+        return Some(format!(
+            "this hub's last update did not finish ({}): commands it still has to run \
+             failed. Run `konstruktor update` again, which runs them first. Nothing was \
+             changed.",
+            waiting
+                .iter()
+                .map(|step| step.title.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
     let steps = pending(dir, config);
     if steps.is_empty() {
         return None;
@@ -170,10 +296,13 @@ pub fn hand_edited(dir: &Path) -> Vec<String> {
 }
 
 /// Writes a hub's generated files and records them: the layout they have, and each file's
-/// hash. A file the record held and the generator no longer writes is removed.
-pub fn write_hub(dir: &Path, files: &GeneratedFiles) -> std::io::Result<()> {
-    crate::generate::write::write_generated_files(dir, files)?;
-    let written: BTreeMap<String, String> = files.clone();
+/// hash. The compose file is written with the builds the lock holds for this profile
+/// ([`crate::pins`]), so every path that regenerates keeps the hub on them without knowing.
+/// A file the record held and the generator no longer writes is removed.
+pub fn write_hub(dir: &Path, config: &HubConfig, files: &GeneratedFiles) -> std::io::Result<()> {
+    let mut written: BTreeMap<String, String> = files.clone();
+    crate::pins::apply(&mut written, config, &lock::read(dir).pins);
+    crate::generate::write::write_generated_files(dir, &written)?;
     for stale in lock::stamp(dir, CURRENT_LAYOUT, &written)? {
         let _ = std::fs::remove_file(dir.join(stale));
     }
@@ -208,7 +337,7 @@ mod tests {
 
         write("services:\n  rekuest: {}\n  rekuest-reaper: {}\n");
         assert_eq!(layout(&dir, &config), 1);
-        assert_eq!(pending(&dir, &config).len(), 3);
+        assert_eq!(pending(&dir, &config).len(), 4);
         assert!(behind(&dir, &config)
             .unwrap()
             .contains("konstruktor update"));
@@ -220,7 +349,7 @@ mod tests {
             "services:\n  rekuest: {}\n  rekuest-takt:\n    environment:\n      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock\n",
         );
         assert_eq!(layout(&dir, &config), 3);
-        assert_eq!(pending(&dir, &config).len(), 1);
+        assert_eq!(pending(&dir, &config).len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -233,9 +362,9 @@ mod tests {
         let mut with_extra = files.clone();
         with_extra.insert("configs/gone.yaml".into(), "x: 1\n".into());
 
-        write_hub(&dir, &with_extra).unwrap();
+        write_hub(&dir, &config, &with_extra).unwrap();
         assert!(dir.join("configs/gone.yaml").exists());
-        write_hub(&dir, &files).unwrap();
+        write_hub(&dir, &config, &files).unwrap();
         assert!(!dir.join("configs/gone.yaml").exists());
 
         std::fs::write(dir.join(COMPOSE_FILENAME), "services: {}\n").unwrap();
@@ -284,5 +413,45 @@ mod tests {
             unsupported_images(&config),
             [("mikro".to_string(), "jhnnsrs/mikro:next".to_string())]
         );
+    }
+
+    /// A step's closing commands are owed from the moment containers are replaced until
+    /// they have run, and the hub is not rewritten by anything else meanwhile.
+    #[test]
+    fn a_step_with_closing_commands_is_unfinished_until_they_ran() {
+        let config = config();
+        let dir = scratch("unfinished");
+        crate::profile::rewrite(&dir, config.clone(), &[]).unwrap();
+        assert_eq!(behind(&dir, &config), None);
+
+        let action = |when| Action {
+            when,
+            title: "copy the volume".into(),
+            docker: vec!["volume".into(), "ls".into()],
+        };
+        let mut plain = Step::new(4, "nothing to run");
+        let mut closing = Step::new(5, "has something to run afterwards");
+        plain.actions.push(action(When::Before));
+        closing.actions.push(action(When::Before));
+        closing.actions.push(action(When::After));
+        assert_eq!(
+            pending_of(&[plain.clone(), closing.clone()], 4),
+            [closing.clone()]
+        );
+        assert_eq!(closing.at(When::After).count(), 1);
+
+        begin(&dir, &[plain, closing]).unwrap();
+        assert_eq!(lock::read(&dir).unfinished, [5]);
+        assert_eq!(unfinished(&dir).len(), 1);
+        assert!(behind(&dir, &config).unwrap().contains("did not finish"));
+        assert!(matches!(
+            crate::profile::rewrite_images(&dir, &[]),
+            Err(crate::profile::ProfileError::Layout(_))
+        ));
+
+        finish(&dir, 5).unwrap();
+        assert_eq!(behind(&dir, &config), None);
+        crate::profile::rewrite_images(&dir, &[]).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

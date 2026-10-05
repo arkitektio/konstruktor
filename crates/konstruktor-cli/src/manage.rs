@@ -817,6 +817,18 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
         _ => rows.push(("authorized".into(), "not yet".into())),
     }
 
+    let frozen = konstruktor_core::freeze::frozen(&dir);
+    if let Some(since) = frozen.values().map(|held| held.at).min() {
+        rows.push((
+            "frozen".into(),
+            format!(
+                "{} since {} — `konstruktor unfreeze` releases",
+                frozen.keys().cloned().collect::<Vec<_>>().join(", "),
+                konstruktor_core::backup::timestamp(since)
+            ),
+        ));
+    }
+
     ui::table(&rows);
     report_containers(&dir).await;
 
@@ -1742,9 +1754,14 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         false => Vec::new(),
     };
 
+    // Held on the build they run: shown as that, and not among what would be updated.
+    let frozen = konstruktor_core::freeze::frozen(&dir);
     let rows: Vec<(String, String)> = wanted
         .iter()
         .map(|check| {
+            if frozen.contains_key(&check.service) {
+                return (check.service.clone(), ui::dim("frozen"));
+            }
             let state = match check.state {
                 UpstreamState::Current => "up to date".to_string(),
                 UpstreamState::Newer => ui::bold("newer available"),
@@ -1764,7 +1781,19 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     let mut stale: Vec<&updates::UpstreamCheck> = wanted
         .into_iter()
         .filter(|c| matches!(c.state, UpstreamState::Newer | UpstreamState::Missing))
+        .filter(|c| !frozen.contains_key(&c.service))
         .collect();
+    let advances: Vec<updates::Advance> = advances
+        .into_iter()
+        .filter(|advance| !frozen.contains_key(&advance.service))
+        .collect();
+    if !frozen.is_empty() {
+        ui::step(&ui::dim(&format!(
+            "Frozen and left alone: {}. `konstruktor unfreeze` releases.",
+            frozen.keys().cloned().collect::<Vec<_>>().join(", ")
+        )));
+        ui::say("");
+    }
 
     if !advances.is_empty() {
         ui::step("Newer versions are published for:");
@@ -1820,6 +1849,9 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         ui::step("This hub's files are from an earlier Konstruktor. They are rewritten:");
         for step in &pending {
             ui::step(&ui::dim(&format!("  {}", step.title)));
+            for action in &step.actions {
+                ui::step(&ui::dim(&format!("    runs: {}", action.title)));
+            }
         }
         ui::step(&ui::dim(
             "Every service moves with them. A copy of the files as they are is kept, and \
@@ -1828,7 +1860,18 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         ui::say("");
     }
 
-    if stale.is_empty() && advances.is_empty() && pending.is_empty() {
+    let owed = konstruktor_core::migrate::unfinished(&dir);
+    if !owed.is_empty() {
+        ui::step("An earlier update did not finish. It still has to run:");
+        for step in &owed {
+            for action in step.at(konstruktor_core::migrate::When::After) {
+                ui::step(&ui::dim(&format!("  {}", action.title)));
+            }
+        }
+        ui::say("");
+    }
+
+    if stale.is_empty() && advances.is_empty() && pending.is_empty() && owed.is_empty() {
         ui::ok("Everything is up to date.");
         ui::say("");
         return Ok(());
@@ -1889,7 +1932,11 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
             ),
         }
         ui::say("");
-        let confirmed = inquire::Confirm::new(&format!("Update {}?", names.join(", ")))
+        let question = match names.is_empty() {
+            true => "Finish the earlier update?".to_string(),
+            false => format!("Update {}?", names.join(", ")),
+        };
+        let confirmed = inquire::Confirm::new(&question)
             .with_default(true)
             .prompt()
             .unwrap_or(false);
@@ -1935,6 +1982,12 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
             "If this update goes wrong: konstruktor restore {path}"
         )));
     }
+    if report.updated.is_empty() && report.refused.is_empty() && !owed.is_empty() {
+        ui::say("");
+        ui::ok("The earlier update is finished.");
+        ui::say("");
+        return Ok(());
+    }
     if report.updated.is_empty() {
         ui::say("");
         bail!("nothing was updated — see above");
@@ -1953,6 +2006,12 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     }
     ui::say("");
 
+    if !report.unfinished.is_empty() {
+        bail!(
+            "updated, but not finished: a command this move still has to run failed — see \
+             above. `konstruktor update` runs it again before anything else."
+        );
+    }
     if !report.refused.is_empty() {
         let names: Vec<&str> = report.refused.iter().map(|(s, _)| s.as_str()).collect();
         bail!("{} was not updated — see above", names.join(", "));
@@ -1968,6 +2027,52 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
+
+#[derive(Args, Debug, Clone)]
+pub struct FreezeArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// Only this service (and what moves with it). Repeatable; everything when absent.
+    #[arg(long = "service", value_name = "SERVICE")]
+    pub services: Vec<String>,
+}
+
+/// `freeze`: tell `update` to leave a hub — or some of its services — on the builds it runs.
+pub async fn freeze(args: FreezeArgs, json: bool) -> Result<()> {
+    let dir = args.target.resolve()?;
+    let newly = konstruktor_core::freeze::hold(&dir, &args.services).map_err(|e| anyhow!("{e}"))?;
+    if json {
+        return ui::emit_json(&konstruktor_core::freeze::frozen(&dir));
+    }
+    ui::say("");
+    match newly.is_empty() {
+        true => ui::ok("Already frozen."),
+        false => ui::ok(&format!("Frozen: {}.", newly.join(", "))),
+    }
+    ui::step(&ui::dim(
+        "Nothing was changed or restarted: a hub runs exact builds anyway, and now \
+         `konstruktor update` leaves these alone until `konstruktor unfreeze`.",
+    ));
+    ui::say("");
+    Ok(())
+}
+
+/// `unfreeze`: let `update` move frozen services again. Nothing is fetched or restarted.
+pub async fn unfreeze(args: FreezeArgs, json: bool) -> Result<()> {
+    let dir = args.target.resolve()?;
+    let released =
+        konstruktor_core::freeze::release(&dir, &args.services).map_err(|e| anyhow!("{e}"))?;
+    if json {
+        return ui::emit_json(&released);
+    }
+    ui::say("");
+    ui::ok(&format!("Released: {}.", released.join(", ")));
+    ui::step(&ui::dim(
+        "Nothing was fetched or restarted. `konstruktor update` moves them when you want.",
+    ));
+    ui::say("");
+    Ok(())
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct RollbackArgs {

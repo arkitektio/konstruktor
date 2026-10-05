@@ -308,16 +308,25 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     // unless this run named an image, which somebody choosing one is left on.
     let seeded = konstruktor_core::config::hub::build_hub_config(&Default::default());
     let chosen = |service: &str| named.iter().any(|(name, _)| *name == service);
-    assert_eq!(Some(&after["mikro"]), seeded.mikro.image.as_ref());
+    // The profile names the channel; what runs is an exact build of it.
+    let on_channel = |service: &str, channel: Option<String>| {
+        let channel = channel.expect("a seeded image");
+        assert!(
+            after[service].starts_with(&format!("{channel}@sha256:")),
+            "{service} runs {}, not a build of {channel}",
+            after[service]
+        );
+    };
+    on_channel("mikro", seeded.mikro.image.clone());
     if !chosen("rekuest") {
-        assert_eq!(Some(&after["rekuest"]), seeded.rekuest.image.as_ref());
+        on_channel("rekuest", seeded.rekuest.image.clone());
         assert_eq!(
             read_profile(&dir).unwrap().config.rekuest.image,
             seeded.rekuest.image
         );
     }
     if !chosen("rekuest") && !chosen("rekuest-takt") {
-        assert_eq!(Some(&after["rekuest-takt"]), seeded.takt_image().as_ref());
+        on_channel("rekuest-takt", seeded.takt_image());
     }
 
     let results = healthy(&dir).await;
@@ -363,4 +372,106 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         eprintln!("waiting for rekuest to provision {missing:?}…");
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
+
+    // --- it runs exact builds, and nothing but an update moves them -----------------------
+    // The compose file names a digest for every image that has one, and Docker agrees it
+    // describes what runs: `up` again makes no container anew.
+    // Of the services that stay up: the bucket init container runs once and exits, and
+    // every `up` runs it again.
+    let run_once = seeded.minio.init_container_host.clone();
+    let containers = |dir: &Path| {
+        String::from_utf8_lossy(&compose(dir, &["ps", "--format", "{{.Service}}|{{.ID}}"]).stdout)
+            .lines()
+            .filter_map(|line| line.split_once('|'))
+            .filter(|(service, _)| *service != run_once)
+            .map(|(_, id)| id.to_string())
+            .collect::<std::collections::BTreeSet<String>>()
+    };
+    let pinned = std::fs::read_to_string(&compose_file).unwrap();
+    for service in ["rekuest", "mikro", "fluss", "kabinet", "kraph", "db"] {
+        if chosen(service) {
+            continue;
+        }
+        let image = konstruktor_core::lock::read(&dir)
+            .pins
+            .get(service)
+            .and_then(|pin| pin.reference())
+            .unwrap_or_else(|| panic!("{service} has no build written down"));
+        assert!(image.contains("@sha256:"), "{image}");
+        assert!(
+            pinned.contains(&format!("image: {image}\n")),
+            "the compose file does not name {image}"
+        );
+    }
+    let before_up = containers(&dir);
+    let up = compose(&dir, &["up", "-d"]);
+    assert!(up.status.success());
+    assert_eq!(containers(&dir), before_up, "`up` replaced a container");
+
+    // A channel that moves on this machine moves nothing in the hub: the tag kraph
+    // follows is pointed at another image, and `up` still runs the build written down.
+    let seeded_kraph = seeded.kraph.image.clone().unwrap();
+    let kept = format!("{seeded_kraph}-kept-by-hub-upgrade");
+    let docker = |args: &[&str]| {
+        konstruktor_core::docker::command()
+            .args(args)
+            .output()
+            .expect("docker runs")
+    };
+    assert!(docker(&["tag", &seeded_kraph, &kept]).status.success());
+    assert!(docker(&["tag", "jhnnsrs/kraph:1.1.0", &seeded_kraph])
+        .status
+        .success());
+    let up = compose(&dir, &["up", "-d"]);
+    docker(&["tag", &kept, &seeded_kraph]);
+    docker(&["rmi", &kept]);
+    assert!(up.status.success());
+    assert_eq!(
+        containers(&dir),
+        before_up,
+        "a tag that moved on this machine replaced a container"
+    );
+
+    // --- frozen, an update leaves it alone -------------------------------------------------
+    let files_before = (
+        pinned.clone(),
+        std::fs::read_to_string(profile::profile_path(&dir)).unwrap(),
+    );
+    let held = konstruktor_core::freeze::hold(&dir, &[]).expect("the hub is frozen");
+    assert!(held.iter().any(|service| service == "mikro"), "{held:?}");
+    assert_eq!(
+        (
+            std::fs::read_to_string(&compose_file).unwrap(),
+            std::fs::read_to_string(profile::profile_path(&dir)).unwrap()
+        ),
+        files_before,
+        "freezing changed a file"
+    );
+    let mut request = UpdateRequest {
+        services: vec!["mikro".into(), "rekuest".into()],
+        advances: Vec::new(),
+        pull: true,
+        backup_into: None,
+        health_check: false,
+    };
+    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("an update of a frozen hub runs");
+    assert!(report.updated.is_empty(), "{:?}", report.updated);
+    assert_eq!(report.refused.len(), 2, "{:?}", report.refused);
+    assert_eq!(
+        containers(&dir),
+        before_up,
+        "a frozen container was replaced"
+    );
+
+    // --- released, an update moves it again -----------------------------------------------
+    konstruktor_core::freeze::release(&dir, &[]).expect("the freeze is lifted");
+    request.services = vec!["kraph".into()];
+    request.pull = named.is_empty();
+    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("the update runs");
+    assert_eq!(report.updated, ["kraph"]);
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
 }

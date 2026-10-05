@@ -86,3 +86,42 @@ fn rewriting_a_hub_of_an_earlier_release_lands_on_what_is_generated_today() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// A frozen hub whose files are behind is not moved in passing: the move would take every
+/// service along, which is what the freeze forbids. It is refused before anything is
+/// backed up, copied or written.
+#[tokio::test]
+async fn a_frozen_hub_of_an_earlier_release_is_not_updated() {
+    use konstruktor_core::lock::{self, Frozen};
+    use konstruktor_core::updates::{self, UpdateError, UpdateRequest};
+
+    let dir = hub_of("0.14.0", "frozen");
+    let mut held = lock::read(&dir);
+    held.frozen.insert("mikro".into(), Frozen { at: 1 });
+    lock::write(&dir, &held).unwrap();
+    let compose = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
+
+    let refused = updates::apply(
+        &dir,
+        &UpdateRequest {
+            services: vec!["rekuest".into()],
+            advances: Vec::new(),
+            pull: true,
+            backup_into: Some(dir.join("backups")),
+            health_check: true,
+        },
+        &|_| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&refused, UpdateError::Frozen(why) if why.contains("konstruktor unfreeze")),
+        "{refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
+        compose
+    );
+    assert!(!dir.join("backups").exists() && !dir.join(".konstruktor").exists());
+    std::fs::remove_dir_all(&dir).ok();
+}

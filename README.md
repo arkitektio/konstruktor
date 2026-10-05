@@ -104,6 +104,8 @@ konstruktor hub services add|remove <ids…>  # change a hub's services
 konstruktor authorize [target]  # authorize again: new addresses, or a mesh key
 konstruktor update [target]     # only what has actually moved upstream
 konstruktor rollback [target]   # back onto the images it ran before that
+konstruktor freeze [target]     # have update leave it alone; --service for some
+konstruktor unfreeze [target]   # let update move it again
 konstruktor open [target]       # the hub in a browser
 konstruktor check [target]      # does every service answer on every address?
 konstruktor compose show|validate|edit|reset|undo [target]
@@ -166,9 +168,26 @@ answer.
 
 New hubs pin their infrastructure to something immutable. `caddy` and `redis` get exact
 version tags; `jhnnsrs/daten` (Postgres) and `jhnnsrs/init` publish only channel tags, so
-they are pinned by digest with the channel kept beside it. The services go on following
-their channel, which is what a channel is for. Hubs created before this keep the tags they
-have — which is why the guard above exists as well as the pin.
+they are pinned by digest with the channel kept beside it. Hubs created before this keep
+the tags they have — which is why the guard above exists as well as the pin.
+
+The services follow a channel — a major, `jhnnsrs/rekuest:6` — and still run **exact
+builds**. The profile names the channel; `hub_lock.json` holds the digest that channel
+resolved to; and the compose file is written from both, as `repo:tag@sha256:…`. So
+starting, restarting, restoring or copying a hub runs the builds it ran, whatever the tags
+point at by then, and **`update` is the one thing that looks at a channel again**. A new
+major of a service arrives with the Konstruktor that writes files for it.
+
+**`freeze`** tells `update` to leave a hub alone — all of it, or `--service` by service —
+and **`unfreeze`** lifts that. Neither changes a file or restarts anything: the builds are
+written down either way, and a freeze only says not to look for newer ones.
+
+Some moves need more than new files. A change to the hub itself — a volume, a one-off
+container — is a command written beside the layout it belongs to, run by the update that
+crosses it: before anything is replaced where it can be, so that a failure leaves the hub
+running as it was. A change to a service's own data is that service's: when its version
+changes, `update` stops it, runs the new release's `manage.py upgrade --from … --to …` if
+it ships one, and starts it.
 
 A pin never moves on its own; that is the point of it. So **`update --infra` also advances
 pins**: it asks each infrastructure image's registry what versions it publishes, offers the

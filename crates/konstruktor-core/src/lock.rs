@@ -72,6 +72,13 @@ pub struct Entry {
     pub files: Option<String>,
 }
 
+/// A service an update leaves alone: see [`crate::freeze`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Frozen {
+    /// Seconds since the epoch.
+    pub at: u64,
+}
+
 /// The file itself. Oldest first; the last entry is what the hub is on now.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Lock {
@@ -87,6 +94,17 @@ pub struct Lock {
     /// differs was edited by hand since; one listed here and no longer generated is stale.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
+    /// The build each image is written into the compose file as, by compose service: the
+    /// digest its channel resolved to when it was last looked at. See [`crate::pins`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pins: BTreeMap<String, Pin>,
+    /// The services an update leaves alone, by compose service.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frozen: BTreeMap<String, Frozen>,
+    /// Layout steps whose files are written and whose closing commands have not all run:
+    /// see [`crate::migrate`]. The next update runs them first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unfinished: Vec<u32>,
     #[serde(default)]
     pub history: Vec<Entry>,
 }

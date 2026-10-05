@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
-use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::health::{self, ServiceHealth};
 use konstruktor_core::profile::{hub_profile, write_profile};
@@ -134,29 +133,30 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     }
     std::fs::create_dir_all(&dir).expect("hub dir");
     write_profile(&dir, &hub_profile(config.clone())).expect("profile is written");
-    write_generated_files(&dir, &files).expect("files are written");
+    konstruktor_core::migrate::write_hub(&dir, &config, &files).expect("files are written");
 
     let _teardown = Teardown(dir.clone());
-    // Fetched first: `up` runs whatever a tag last resolved to on this machine, and a run
-    // against last week's `latest` proves nothing about today's.
-    // An image named for this run may exist on this machine alone; otherwise a pull that
-    // fails must fail the run, not leave it on whatever was cached.
-    let mut pull_args = vec!["pull", "--quiet"];
-    if !named.trim().is_empty() {
-        pull_args.push("--ignore-pull-failures");
+    // Started as `konstruktor up` starts it: every image is fetched and its build written
+    // into the compose file before the first container exists, so the run is on today's
+    // releases and the hub is on exact builds from its first second.
+    let started = konstruktor_core::start::start(&dir, &|line| eprintln!("  {}", line.line)).await;
+    assert!(
+        started.is_ok(),
+        "the hub did not start: {:?}",
+        started.err()
+    );
+    let pins = konstruktor_core::lock::read(&dir).pins;
+    let written = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
+    for service in ["mikro", "db"] {
+        let build = pins
+            .get(service)
+            .and_then(|pin| pin.reference())
+            .unwrap_or_else(|| panic!("{service} was started without a build written down"));
+        assert!(
+            written.contains(&format!("image: {build}\n")),
+            "the compose file does not name {build}"
+        );
     }
-    let pull = compose(&dir, &pull_args);
-    assert!(
-        pull.status.success(),
-        "docker compose pull failed:\n{}",
-        String::from_utf8_lossy(&pull.stderr)
-    );
-    let up = compose(&dir, &["up", "-d"]);
-    assert!(
-        up.status.success(),
-        "docker compose up failed:\n{}",
-        String::from_utf8_lossy(&up.stderr)
-    );
 
     let settle = settle_time();
     eprintln!("hub is up; letting it settle for {}s…", settle.as_secs());
