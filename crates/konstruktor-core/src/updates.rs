@@ -577,6 +577,70 @@ pub enum UpdateError {
     Health(String),
 }
 
+/// What a service's image says of the config it is about to be started on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reads {
+    /// It reads every key as written.
+    Yes,
+    /// It does not: the config is invalid to it, or sets keys it does not read. With what
+    /// it printed.
+    No(String),
+    /// It could not be asked — an image from before the question, or one that is no
+    /// Arkitekt service. Not a refusal: such an image is run as it always was.
+    Unasked,
+}
+
+/// Reads the answer off `manage.py validate_settings --strict`: 0 is yes, 1 is the
+/// command's own no. Anything else is the command not existing or not knowing `--strict`
+/// (argparse exits 2), or the container not starting — none of which is an answer.
+pub fn reads_from(code: Option<i32>, output: &str) -> Reads {
+    match code {
+        Some(0) => Reads::Yes,
+        Some(1) => Reads::No(
+            output
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => Reads::Unasked,
+    }
+}
+
+/// Asks the image `service` would be recreated onto whether it reads the config generated
+/// for it, in a container of its own that touches nothing: no dependencies started, no
+/// database asked.
+async fn reads_its_config(dir: &std::path::Path, service: &str) -> Reads {
+    let output = crate::engine_probe::engine()
+        .async_command()
+        .args([
+            "compose",
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            service,
+            "python",
+            "manage.py",
+            "validate_settings",
+            "--strict",
+        ])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await;
+    match output {
+        Ok(out) => reads_from(out.status.code(), &String::from_utf8_lossy(&out.stdout)),
+        Err(_) => Reads::Unasked,
+    }
+}
+
 /// Whether any container of the hub in `dir` is running.
 async fn running(dir: &std::path::Path) -> bool {
     crate::engine_probe::engine()
@@ -824,6 +888,37 @@ pub async fn apply(
             Guard::Clear => {}
         }
         moving.push((service.clone(), companions));
+    }
+
+    // --- does each release read what was written for it? ------------------------------
+    // The last question before anything is replaced, and the one the files cannot answer
+    // themselves: a config a release does not read starts it all the same, with defaults.
+    for (service, _) in &moving {
+        let is_service = config
+            .enabled_services()
+            .into_iter()
+            .any(|id| config.service(id).host == *service);
+        if !is_service {
+            continue;
+        }
+        match reads_its_config(dir, service).await {
+            Reads::Yes => on_event(UpdateEvent::Line {
+                line: format!("{service} reads its config as written"),
+                stderr: false,
+            }),
+            Reads::No(said) => {
+                put_back(&format!(
+                    "`{service}`'s new release does not read the config written for it"
+                ));
+                return Err(UpdateError::Compose(format!(
+                    "`{service}` was not updated: the release it would move to does not read \
+                     the config this Konstruktor writes for it, and would start on defaults. \
+                     It said:\n{said}\nNothing was replaced. A newer Konstruktor may know \
+                     this release."
+                )));
+            }
+            Reads::Unasked => {}
+        }
     }
 
     // --- recreate --------------------------------------------------------------------
@@ -1145,5 +1240,22 @@ mod tests {
     #[test]
     fn digest_strips_repo() {
         assert_eq!(digest_of("jhnnsrs/rekuest@sha256:abc"), "sha256:abc");
+    }
+
+    /// `validate_settings --strict` exits 1 to refuse; an image that does not know the
+    /// flag (argparse: 2) or the command is not refusing anything.
+    #[test]
+    fn only_the_commands_own_no_is_a_refusal() {
+        assert_eq!(reads_from(Some(0), "Configuration valid"), Reads::Yes);
+        assert_eq!(
+            reads_from(Some(1), "tree\n\nnot read: rekuest.service_agents\n"),
+            Reads::No("tree\nnot read: rekuest.service_agents".into())
+        );
+        assert_eq!(
+            reads_from(Some(2), "error: unrecognized arguments: --strict"),
+            Reads::Unasked
+        );
+        assert_eq!(reads_from(Some(127), "python: not found"), Reads::Unasked);
+        assert_eq!(reads_from(None, ""), Reads::Unasked);
     }
 }
