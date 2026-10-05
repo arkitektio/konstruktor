@@ -161,6 +161,14 @@ async fn start_with(
                 pinned.join(", ")
             ));
         }
+        // And each service's config is its own image's to write: asked again only when the
+        // hub's facts, the operator's settings or the build changed since it last was.
+        let identity = crate::credentials::read_credentials(dir)
+            .map(|credentials| credentials.issued_identity())
+            .unwrap_or_default();
+        if let Err(error) = crate::contract::render_hub(dir, config, &identity).await {
+            return Err(StartError::Refused(error.to_string()));
+        }
     }
 
     // --- 4. up -------------------------------------------------------------------

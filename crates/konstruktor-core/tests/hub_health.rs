@@ -158,9 +158,34 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         "the hub did not start: {:?}",
         started.err()
     );
+    // A service whose image answers the hub contract wrote its own config, from the facts
+    // this installer wrote for it — every image named for this run is expected to.
+    let self_written = konstruktor_core::lock::read(&dir).rendered;
+    eprintln!(
+        "configs written by their own images: {:?}",
+        self_written.keys().collect::<Vec<_>>()
+    );
+    for pair in named.split(',').filter(|pair| !pair.trim().is_empty()) {
+        let service = pair.trim().split('=').next().unwrap_or_default();
+        if config
+            .enabled_services()
+            .into_iter()
+            .any(|id| config.service(id).host == service)
+        {
+            assert!(
+                self_written.contains_key(service)
+                    && dir.join(format!("facts/{service}.yaml")).is_file(),
+                "{service}'s image did not write its own config"
+            );
+        }
+    }
     let pins = konstruktor_core::lock::read(&dir).pins;
     let written = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
-    for service in ["mikro", "db"] {
+    // Not of an image named for this run: one built on this machine has no build to name.
+    for service in ["mikro", "kabinet", "db"]
+        .into_iter()
+        .filter(|service| !named.contains(&format!("{service}=")))
+    {
         let build = pins
             .get(service)
             .and_then(|pin| pin.reference())

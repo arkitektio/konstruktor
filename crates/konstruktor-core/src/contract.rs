@@ -154,6 +154,158 @@ pub async fn render(image: &str, facts: &Path, overrides: &Path) -> Rendered {
     }
 }
 
+/// A service whose image would not write its config.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RenderError {
+    /// The release's own no, in its words.
+    #[error("`{service}` cannot be configured for this hub as it is. {said}")]
+    Refused { service: String, said: String },
+    #[error("`{service}`'s image failed to write its config: {said}")]
+    Failed { service: String, said: String },
+    #[error("{0}")]
+    Write(String),
+}
+
+/// The image each enabled service runs: the build written down for it, or what the profile
+/// names.
+fn images(dir: &Path, config: &HubConfig) -> Vec<(ServiceId, String, String)> {
+    let pinned = crate::pins::references(config, &crate::lock::read(dir).pins);
+    config
+        .enabled_services()
+        .into_iter()
+        .filter_map(|id| {
+            let block = config.service(id);
+            let image = pinned
+                .get(&block.host)
+                .cloned()
+                .or_else(|| block.image.clone())?;
+            Some((id, block.host.clone(), image))
+        })
+        .collect()
+}
+
+/// What every enabled service's image says of itself, by compose service — asked once per
+/// build and remembered in the lock. A service without a contract is not in the answer.
+pub async fn described(dir: &Path, config: &HubConfig) -> BTreeMap<String, Description> {
+    let mut held = crate::lock::read(dir);
+    let mut asked = false;
+    let mut out = BTreeMap::new();
+    for (_, host, image) in images(dir, config) {
+        let known = held
+            .described
+            .get(&host)
+            .filter(|known| known.image == image)
+            .cloned();
+        let said = match known {
+            Some(known) => known.description,
+            None => {
+                let description = describe(&image).await;
+                held.described.insert(
+                    host.clone(),
+                    crate::lock::Described {
+                        image,
+                        description: description.clone(),
+                    },
+                );
+                asked = true;
+                description
+            }
+        };
+        if let Some(said) = said {
+            out.insert(host, said);
+        }
+    }
+    if asked {
+        // Re-read: describing takes a while, and the lock may have been written meanwhile.
+        let mut now = crate::lock::read(dir);
+        now.described = held.described;
+        let _ = crate::lock::write(dir, &now);
+    }
+    out
+}
+
+/// Has every service whose image has a contract write its own config.
+///
+/// For each: the hub's facts go into `facts/<service>.yaml` — the one file about a service
+/// this installer writes of its own knowledge — and the image turns them, with the
+/// operator's overrides, into `configs/<service>.yaml`. An image is only asked again when
+/// what it was asked with changed or the file is no longer what it wrote. Returns the
+/// services whose config was written by their image, asked now or before.
+pub async fn render_hub(
+    dir: &Path,
+    config: &HubConfig,
+    issued: &IssuedIdentity,
+) -> Result<Vec<String>, RenderError> {
+    let said = described(dir, config).await;
+    let written = |error: std::io::Error| RenderError::Write(error.to_string());
+    let mut rendered = Vec::new();
+    for (id, host, image) in images(dir, config) {
+        if !said.contains_key(&host) {
+            continue;
+        }
+        let document = crate::generate::dump(&facts(config, id, issued, &said));
+        let overrides = crate::overrides::path(dir, &host);
+        let from = crate::lock::digest(
+            format!(
+                "{image}\n{document}\n{}",
+                std::fs::read_to_string(&overrides).unwrap_or_default()
+            )
+            .as_bytes(),
+        );
+        let target = dir.join(format!("configs/{host}.yaml"));
+        let on_disk = std::fs::read(&target)
+            .map(|bytes| crate::lock::digest(&bytes))
+            .ok();
+        let current = crate::lock::read(dir)
+            .rendered
+            .get(&host)
+            .is_some_and(|mark| mark.from == from && Some(&mark.config) == on_disk.as_ref());
+        rendered.push(host.clone());
+        if current {
+            continue;
+        }
+
+        let facts_file = dir.join(FACTS_DIR).join(format!("{host}.yaml"));
+        std::fs::create_dir_all(dir.join(FACTS_DIR)).map_err(written)?;
+        std::fs::write(&facts_file, &document).map_err(written)?;
+        // It holds the service's secrets: its owner's alone, where the platform can say so.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&facts_file, std::fs::Permissions::from_mode(0o600));
+        }
+        let text = match render(&image, &facts_file, &overrides).await {
+            Rendered::Config(text) => text,
+            Rendered::Refused(said) => {
+                return Err(RenderError::Refused {
+                    service: host,
+                    said,
+                })
+            }
+            Rendered::Failed(said) => {
+                return Err(RenderError::Failed {
+                    service: host,
+                    said,
+                })
+            }
+        };
+        std::fs::write(&target, &text).map_err(written)?;
+        let mut held = crate::lock::read(dir);
+        let config_digest = crate::lock::digest(text.as_bytes());
+        held.files
+            .insert(format!("configs/{host}.yaml"), config_digest.clone());
+        held.rendered.insert(
+            host,
+            crate::lock::Rendering {
+                from,
+                config: config_digest,
+            },
+        );
+        crate::lock::write(dir, &held).map_err(written)?;
+    }
+    Ok(rendered)
+}
+
 /// The paths a service of `id` offers when its image does not say: what this installer
 /// knew of the services before any described itself.
 fn known_endpoints(id: ServiceId) -> BTreeMap<String, String> {

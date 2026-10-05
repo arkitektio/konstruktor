@@ -83,6 +83,22 @@ pub struct Frozen {
     pub at: u64,
 }
 
+/// What an image said of itself, and which build said it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Described {
+    pub image: String,
+    /// `None`: asked, and it has no contract.
+    pub description: Option<crate::contract::Description>,
+}
+
+/// A config a service's image wrote: the hash of everything it was written from (the
+/// build, the hub's facts, the operator's overrides) and of what came out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rendering {
+    pub from: String,
+    pub config: String,
+}
+
 /// The file itself. Oldest first; the last entry is what the hub is on now.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Lock {
@@ -105,6 +121,14 @@ pub struct Lock {
     /// The services an update leaves alone, by compose service.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub frozen: BTreeMap<String, Frozen>,
+    /// What each service's image said of itself, by compose service, and of which build:
+    /// see [`crate::contract`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub described: BTreeMap<String, Described>,
+    /// The configs written by their services' own images, by compose service: what each was
+    /// written from and what came out, so that it is only asked again when either changed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rendered: BTreeMap<String, Rendering>,
     /// Layout steps whose files are written and whose closing commands have not all run:
     /// see [`crate::migrate`]. The next update runs them first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -116,7 +116,18 @@ async fn changed(
         return Ok(());
     }
     profile::rewrite(&dir, config.clone(), &[])?;
-    if let Reads::No(said) = updates::reads_its_config(&dir, service).await {
+    // A service whose image writes its own config judges the setting as it does; one that
+    // does not is asked whether it reads the result.
+    let identity = konstruktor_core::credentials::read_credentials(&dir)
+        .map(|credentials| credentials.issued_identity())
+        .unwrap_or_default();
+    let verdict = match konstruktor_core::contract::render_hub(&dir, &config, &identity).await {
+        Ok(written) if written.iter().any(|name| name == service) => Reads::Yes,
+        Ok(_) => updates::reads_its_config(&dir, service).await,
+        Err(konstruktor_core::contract::RenderError::Refused { said, .. }) => Reads::No(said),
+        Err(error) => Reads::Failed(error.to_string()),
+    };
+    if let Reads::No(said) = verdict {
         match &before {
             Some(bytes) => std::fs::write(&file, bytes)?,
             None => {

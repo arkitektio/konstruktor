@@ -627,6 +627,9 @@ pub enum UpdateError {
     /// service's own upgrade.
     #[error("{0}")]
     Migration(String),
+    /// A service's image would not write its config for this hub ([`crate::contract`]).
+    #[error(transparent)]
+    Config(#[from] crate::contract::RenderError),
 }
 
 /// What a service's image says of the config it is about to be started on.
@@ -1160,6 +1163,56 @@ async fn apply_on(
         moving.push((service.clone(), companions));
     }
 
+    // --- may each release be moved to, and beside the others? ----------------------------
+    // What a release says of itself: the oldest version it can be moved to from directly,
+    // and the versions of other services it needs beside it. Asked of what was just
+    // fetched, before any of it is written down.
+    let mut reached: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (service, _) in config.stack_images() {
+        let moves = moving.iter().any(|(name, _)| *name == service);
+        let version = match (moves, channels.get(&service)) {
+            (true, Some(image)) => crate::docker::image_label(image, VERSION_LABEL).await,
+            _ => running_version(dir, &service).await,
+        };
+        if let Some(version) = version {
+            reached.insert(service, version);
+        }
+    }
+    let mut allowed: Vec<(String, Vec<String>)> = Vec::new();
+    for (service, companions) in moving {
+        let said = match channels.get(&service) {
+            Some(image) => crate::contract::describe(image).await,
+            None => None,
+        };
+        let from = running_version(dir, &service).await;
+        let stop = said.as_ref().and_then(|said| {
+            let oldest = said.upgrade_from.as_deref()?;
+            let from = from.as_deref()?;
+            (!crate::contract::at_least(from, oldest)).then(|| {
+                format!(
+                    "`{service}` runs {from}, and the release it would move to can only be \
+                     moved to from {oldest} or newer: it has to stop at a release in \
+                     between first. It was left on {from}."
+                )
+            })
+        });
+        let beside = said.as_ref().and_then(|said| {
+            crate::contract::unmet(said, &reached)
+                .map(|why| format!("`{service}` was not updated: {why}."))
+        });
+        match stop.or(beside) {
+            Some(reason) => {
+                on_event(UpdateEvent::Refused {
+                    service: service.clone(),
+                    reason: reason.clone(),
+                });
+                report.refused.push((service, reason));
+            }
+            None => allowed.push((service, companions)),
+        }
+    }
+    let moving = allowed;
+
     // --- the builds --------------------------------------------------------------------
     // What moves is pinned to what its channel resolves to now. Whatever else has no build
     // written down yet — a hub from before builds were, a service just added — is pinned to
@@ -1195,6 +1248,19 @@ async fn apply_on(
         put_back("The files could not be generated");
         return Err(error.into());
     }
+    // Each service whose image has a contract writes its own config, from the hub's facts
+    // and what the operator set. A release that says it cannot be configured for this hub
+    // stops the update here, with nothing replaced.
+    let identity = crate::credentials::read_credentials(dir)
+        .map(|credentials| credentials.issued_identity())
+        .unwrap_or_default();
+    let self_written = match crate::contract::render_hub(dir, &config, &identity).await {
+        Ok(services) => services,
+        Err(error) => {
+            put_back("A service would not write its config for this hub");
+            return Err(error.into());
+        }
+    };
     let changed =
         crate::services::changed_configs(&configs_before, &crate::services::snapshot_configs(dir));
     let compose_changed = compose_before != read(crate::compose_file::COMPOSE_FILENAME);
@@ -1220,7 +1286,8 @@ async fn apply_on(
             .enabled_services()
             .into_iter()
             .any(|id| config.service(id).host == *service);
-        if !is_service {
+        // A config its own image wrote was judged by it as it was written.
+        if !is_service || self_written.contains(service) {
             continue;
         }
         match reads_its_config(dir, service).await {
