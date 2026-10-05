@@ -124,6 +124,11 @@ pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
     )?;
 
     konstruktor_core::profile::regenerate(&dir)?;
+    // The services' configs are their own images' to write.
+    let identity = konstruktor_core::credentials::read_credentials(&dir)
+        .map(|credentials| credentials.issued_identity())
+        .unwrap_or_default();
+    konstruktor_core::contract::render_hub(&dir, &config, &identity).await?;
     ui::ok("The hub's files are what this Konstruktor generates.");
     ui::say("Nothing running has changed yet: `konstruktor restart` makes the hub read them.");
     validate(&dir).await

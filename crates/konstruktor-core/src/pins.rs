@@ -331,14 +331,14 @@ mod tests {
         )]);
         assert_eq!(references(&config, &pins).len(), 1);
 
-        config.rekuest.image = Some("jhnnsrs/rekuest:7".into());
+        config.rekuest.image = Some("jhnnsrs/rekuest:99".into());
         assert!(references(&config, &pins).is_empty());
 
         // A rollback names the build in the profile itself: nothing to add.
-        config.rekuest.image = Some("jhnnsrs/rekuest:7@sha256:old".into());
+        config.rekuest.image = Some("jhnnsrs/rekuest:99@sha256:old".into());
         let pins = BTreeMap::from([(
             "rekuest".to_string(),
-            pin("jhnnsrs/rekuest:7@sha256:old", "sha256:abc"),
+            pin("jhnnsrs/rekuest:99@sha256:old", "sha256:abc"),
         )]);
         assert!(references(&config, &pins).is_empty());
         assert!(!unpinned(&config, &pins)

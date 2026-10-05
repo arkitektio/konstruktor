@@ -179,6 +179,12 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
             );
         }
     }
+    // Their databases were prepared by that start, for the builds they run — so the next
+    // start of the same builds has nothing to prepare, and the services only serve.
+    assert_eq!(
+        konstruktor_core::contract::unprepared(&dir, &config).await,
+        Vec::<(String, String)>::new()
+    );
     let pins = konstruktor_core::lock::read(&dir).pins;
     let written = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
     // Not of an image named for this run: one built on this machine has no build to name.

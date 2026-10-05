@@ -285,6 +285,16 @@ pub async fn run(
 ) -> Result<(), RollbackError> {
     apply(dir, plan)?;
     let config = crate::profile::read_profile(dir).ok().map(|p| p.config);
+    // The builds that are back write their own configs: what a release reads is its own
+    // image's to say, the earlier one's as much as the newer one's.
+    if let Some(config) = &config {
+        let identity = crate::credentials::read_credentials(dir)
+            .map(|credentials| credentials.issued_identity())
+            .unwrap_or_default();
+        crate::contract::render_hub(dir, config, &identity)
+            .await
+            .map_err(|error| RollbackError::Profile(error.to_string()))?;
+    }
     // Of the files as they are now: a restored copy may not name a service the plan moves
     // (takt, on a hub going back to before it).
     let declared = |service: &str| crate::compose_file::declares_service(dir, service);

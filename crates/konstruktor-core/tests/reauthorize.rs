@@ -619,13 +619,18 @@ async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
     assert_eq!(secrets_of(&before, &kept), secrets_of(&after, &kept));
 
     assert!(compose_services(&dir).contains(&"bank".to_string()));
-    assert!(dir.join("configs/bank.yaml").is_file());
-    // Rekuest provisions a HookAgent for it and the gateway routes it — both from files
-    // the running containers have bind-mounted, which is why applying restarts them.
-    let rekuest = std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap();
-    assert!(
-        rekuest.contains("/bank/_rekuest/hook"),
-        "no hook agent for bank"
+    // Rekuest is told of it — its own image writes the hook agent into its config from
+    // that — and the gateway routes it.
+    let told = konstruktor_core::contract::facts(
+        &after,
+        ServiceId::Rekuest,
+        &Default::default(),
+        &Default::default(),
+    );
+    assert_eq!(
+        told["peers"]["bank"]["url"].as_str(),
+        Some("http://bank:80/bank"),
+        "rekuest is not told of bank"
     );
     let caddyfile = std::fs::read_to_string(dir.join("configs/Caddyfile")).unwrap();
     assert!(caddyfile.contains("/bank"), "bank is not routed");

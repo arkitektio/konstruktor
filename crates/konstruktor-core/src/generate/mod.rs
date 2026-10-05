@@ -43,17 +43,12 @@ pub(crate) fn dump(value: &Value) -> String {
 }
 
 /// Every file a hub deployment consists of, keyed by its path in the folder.
-pub fn generate_hub_files(config: &HubConfig, issued: &IssuedIdentity) -> GeneratedFiles {
+pub fn generate_hub_files(config: &HubConfig, _issued: &IssuedIdentity) -> GeneratedFiles {
     let enabled = config.enabled_services();
     let mut files = GeneratedFiles::new();
 
-    // --- the services' own configs ------------------------------------------
-    for id in &enabled {
-        files.insert(
-            format!("configs/{}.yaml", config.service(*id).host),
-            dump(&service::build_service_config(config, *id, issued)),
-        );
-    }
+    // A service's own config is not among these: its image writes that, from the hub's
+    // facts ([`crate::contract`]).
 
     // --- secret files, mounted read-only into the one service that reads each ---
     for id in &enabled {

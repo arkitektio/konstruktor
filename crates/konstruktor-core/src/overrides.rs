@@ -6,23 +6,18 @@
 //! upload quota, the roles that may upload, a model to use — and those have to outlive
 //! every update.
 //!
-//! They live in `overrides/<service>.yaml`, a file generation never writes. Whatever is
-//! generated for the service has the override laid over it, key by key: a mapping is
-//! merged into, anything else replaces what was there. The release a hub moves to is asked
-//! whether it reads the result before it starts (`validate_settings --strict`), so an
-//! override that names a key the new release dropped stops the update with that key's
-//! name, instead of being silently ignored.
+//! They live in `overrides/<service>.yaml`, a file this installer never writes on its own.
+//! When a service's image writes its config ([`crate::contract`]) the override is laid
+//! over what it wrote, key by key — a mapping is merged into, anything else replaces what
+//! was there — and the image judges the result as it does its own: an override that names
+//! a key the release does not read stops there, by that key's name, instead of being
+//! silently ignored.
 
 use std::path::{Path, PathBuf};
 
 use serde_norway::{Mapping, Value};
 
-use crate::generate::GeneratedFiles;
-
 pub const OVERRIDES_DIR: &str = "overrides";
-
-/// Where the generated configs are, and overrides apply.
-const CONFIGS: &str = "configs/";
 
 pub fn path(dir: &Path, service: &str) -> PathBuf {
     dir.join(OVERRIDES_DIR).join(format!("{service}.yaml"))
@@ -50,28 +45,6 @@ pub fn merge(base: &mut Value, over: &Value) {
             }
         }
         (base, over) => *base = over.clone(),
-    }
-}
-
-/// Lays each service's overrides over its generated config. A service without overrides
-/// keeps exactly what was generated.
-pub fn apply(dir: &Path, files: &mut GeneratedFiles) {
-    let services: Vec<(String, String)> = files
-        .keys()
-        .filter_map(|file| {
-            let service = file.strip_prefix(CONFIGS)?.strip_suffix(".yaml")?;
-            Some((file.clone(), service.to_string()))
-        })
-        .collect();
-    for (file, service) in services {
-        let Some(over) = read(dir, &service) else {
-            continue;
-        };
-        let Ok(mut config) = serde_norway::from_str::<Value>(&files[&file]) else {
-            continue;
-        };
-        merge(&mut config, &over);
-        files.insert(file, crate::generate::dump(&config));
     }
 }
 
@@ -206,35 +179,6 @@ mod tests {
         unset(&dir, "mikro", "datalayer.upload_roles").unwrap();
         unset(&dir, "mikro", "django.log_level").unwrap();
         assert!(!path(&dir, "mikro").exists());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Generation writes the service's config again and the override is still in it; a
-    /// service nobody set anything for is byte for byte what was generated.
-    #[test]
-    fn overrides_survive_every_regeneration() {
-        use crate::config::hub::{build_hub_config, HubConfigOptions};
-
-        let dir = scratch("regenerate");
-        let config = build_hub_config(&HubConfigOptions::default());
-        let generated = crate::generate::generate_hub_files(&config, &Default::default());
-        set(&dir, "mikro", "datalayer.quotas.default", "10").unwrap();
-
-        for _ in 0..2 {
-            crate::profile::rewrite(&dir, config.clone(), &[]).unwrap();
-            let mikro = yaml(&std::fs::read_to_string(dir.join("configs/mikro.yaml")).unwrap());
-            assert_eq!(mikro["datalayer"]["quotas"]["default"], yaml("10"));
-            assert_eq!(
-                mikro["datalayer"]["host"],
-                yaml(&generated["configs/mikro.yaml"])["datalayer"]["host"]
-            );
-            assert_eq!(
-                std::fs::read_to_string(dir.join("configs/fluss.yaml")).unwrap(),
-                generated["configs/fluss.yaml"]
-            );
-        }
-        // What is on disk is what was written, override included: nobody edited it.
-        assert_eq!(crate::migrate::hand_edited(&dir), Vec::<String>::new());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

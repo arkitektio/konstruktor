@@ -129,6 +129,11 @@ pub struct Lock {
     /// written from and what came out, so that it is only asked again when either changed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rendered: BTreeMap<String, Rendering>,
+    /// The build each service's database was last prepared for, by compose service, as the
+    /// image's id: migrated, and set up ([`crate::contract::prepare_databases`]). A start
+    /// prepares only for a build that is not the one written here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prepared: BTreeMap<String, String>,
     /// Layout steps whose files are written and whose closing commands have not all run:
     /// see [`crate::migrate`]. The next update runs them first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

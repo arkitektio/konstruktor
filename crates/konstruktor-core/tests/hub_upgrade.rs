@@ -556,21 +556,38 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     assert!(report.refused.is_empty(), "{:?}", report.refused);
 
     // --- back to an earlier build, and forward again -----------------------------------------
-    // Kraph is put on the build before the one its channel points at, as a hub that has
-    // not been updated for a while is; an update moves it, a rollback puts it back and
-    // holds it there, and released it moves on.
+    // Kraph is put on a build before the one its channel points at, as a hub that has not
+    // been updated for a while is; an update moves it, a rollback puts it back and holds
+    // it there, and released it moves on. The earlier build has to be a release that
+    // answers the hub contract as well — it writes its own config when it is put back —
+    // so it is named for the run (`KONSTRUKTOR_E2E_EARLIER_KRAPH=jhnnsrs/kraph:1.2.0`),
+    // and without one this part is left out.
+    let Ok(earlier_kraph) = std::env::var("KONSTRUKTOR_E2E_EARLIER_KRAPH") else {
+        eprintln!("skipping the rollback round trip: set KONSTRUKTOR_E2E_EARLIER_KRAPH");
+        return;
+    };
     let channel = seeded.kraph.image.clone().unwrap();
-    let earlier =
-        konstruktor_core::pins::resolve(&[("kraph".into(), "jhnnsrs/kraph:1.1.0".into())])
-            .await
-            .remove("kraph")
-            .and_then(|pin| pin.digest)
-            .expect("kraph 1.1.0 is on this machine");
+    let fetched = konstruktor_core::docker::command()
+        .args(["pull", "--quiet", &earlier_kraph])
+        .output()
+        .expect("docker runs");
+    assert!(
+        fetched.status.success(),
+        "{earlier_kraph} could not be fetched"
+    );
+    let earlier = konstruktor_core::pins::resolve(&[("kraph".into(), earlier_kraph.clone())])
+        .await
+        .remove("kraph")
+        .and_then(|pin| pin.digest)
+        .expect("the earlier kraph has a registry digest");
     let newest = konstruktor_core::lock::read(&dir).pins["kraph"]
         .digest
         .clone()
         .unwrap();
-    assert_ne!(earlier, newest, "kraph's channel is no further than 1.1.0");
+    assert_ne!(
+        earlier, newest,
+        "kraph's channel is no further than the earlier build"
+    );
     konstruktor_core::pins::record(
         &dir,
         [(

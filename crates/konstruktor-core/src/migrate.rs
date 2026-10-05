@@ -48,7 +48,11 @@ use crate::lock;
 /// 4. Services follow the major they were generated for, not `latest`: Rekuest 6, Mikro 5,
 ///    Kabinet 4, Elektro 3, Alpaka 3, Fluss 2, Lovekit 2, Kraph 1.
 /// 5. The compose file names the build of every image ([`crate::pins`]).
-pub const CURRENT_LAYOUT: u32 = 5;
+/// 6. Every service's image writes its own config and prepares its own database
+///    ([`crate::contract`]), on the majors that do: Rekuest 7, Mikro 7, Kabinet 6,
+///    Elektro 5, Alpaka 5, Fluss 4, Bank 4, Kuvert 4, Lovekit 3, Lokate 3, Kraph 2,
+///    Dokuments 2.
+pub const CURRENT_LAYOUT: u32 = 6;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
 /// taken for unless its files say otherwise.
@@ -118,6 +122,10 @@ pub fn steps() -> Vec<Step> {
         Step::new(
             5,
             "the compose file names the exact build of every image, and only an update moves it",
+        ),
+        Step::new(
+            6,
+            "every service writes its own config and prepares its own database, on the releases that do",
         ),
     ]
 }
@@ -297,18 +305,34 @@ pub fn hand_edited(dir: &Path) -> Vec<String> {
 
 /// Writes a hub's generated files and records them: the layout they have, and each file's
 /// hash. The compose file is written with the builds the lock holds for this profile
-/// ([`crate::pins`]), and each service's config with what the operator set for it laid over
-/// ([`crate::overrides`]), so every path that regenerates keeps both without knowing.
+/// ([`crate::pins`]), so every path that regenerates keeps the hub on them without knowing.
+/// A service's own config is not written here: its image writes it ([`crate::contract`]).
 /// A file the record held and the generator no longer writes is removed.
 pub fn write_hub(dir: &Path, config: &HubConfig, files: &GeneratedFiles) -> std::io::Result<()> {
+    let held = lock::read(dir);
     let mut written: BTreeMap<String, String> = files.clone();
-    crate::pins::apply(&mut written, config, &lock::read(dir).pins);
-    crate::overrides::apply(dir, &mut written);
+    crate::pins::apply(&mut written, config, &held.pins);
     crate::generate::write::write_generated_files(dir, &written)?;
-    for stale in lock::stamp(dir, CURRENT_LAYOUT, &written)? {
-        let _ = std::fs::remove_file(dir.join(stale));
+    // The services' configs are theirs, written by their images and recorded with them:
+    // they stay on the record while their service runs, and go when it does.
+    let running: Vec<String> = config
+        .enabled_services()
+        .into_iter()
+        .map(|id| format!("configs/{}.yaml", config.service(id).host))
+        .collect();
+    let stale = lock::stamp(dir, CURRENT_LAYOUT, &written)?;
+    let mut now = lock::read(dir);
+    for path in stale {
+        match (running.contains(&path), held.files.get(&path)) {
+            (true, Some(hash)) => {
+                now.files.insert(path, hash.clone());
+            }
+            _ => {
+                let _ = std::fs::remove_file(dir.join(path));
+            }
+        }
     }
-    Ok(())
+    lock::write(dir, &now)
 }
 
 #[cfg(test)]
@@ -339,7 +363,7 @@ mod tests {
 
         write("services:\n  rekuest: {}\n  rekuest-reaper: {}\n");
         assert_eq!(layout(&dir, &config), 1);
-        assert_eq!(pending(&dir, &config).len(), 4);
+        assert_eq!(pending(&dir, &config).len(), 5);
         assert!(behind(&dir, &config)
             .unwrap()
             .contains("konstruktor update"));
@@ -351,7 +375,7 @@ mod tests {
             "services:\n  rekuest: {}\n  rekuest-takt:\n    environment:\n      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock\n",
         );
         assert_eq!(layout(&dir, &config), 3);
-        assert_eq!(pending(&dir, &config).len(), 2);
+        assert_eq!(pending(&dir, &config).len(), 3);
         std::fs::remove_dir_all(&dir).ok();
     }
 

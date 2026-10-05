@@ -1,6 +1,6 @@
 use serde_norway::{Mapping, Value};
 
-use crate::catalog::{ServiceId, HOOKED_SERVICES};
+use crate::catalog::ServiceId;
 use crate::config::hub::{HubConfig, ServiceBlock};
 use crate::generate::IssuedIdentity;
 use crate::secrets::public_jwk;
@@ -226,8 +226,14 @@ fn build_datalayer(config: &HubConfig, id: ServiceId, service: &ServiceBlock) ->
     map(pairs)
 }
 
-/// The `configs/<service>.yaml` a service reads at startup.
-pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedIdentity) -> Value {
+/// What the hub provides one service, block by block: its Django settings, its database,
+/// the redis, how tokens are verified, its object storage and buckets, its key and the
+/// trust bundle.
+///
+/// This is not a service's config. A service's config is its own image's to write
+/// ([`crate::contract`]); these are the hub's facts for it, kept in the shape they were
+/// first written in, and read back out of it into a document in nobody's vocabulary.
+pub(crate) fn hub_blocks(config: &HubConfig, id: ServiceId, issued: &IssuedIdentity) -> Value {
     let service = config.service(id);
 
     let csrf = config
@@ -311,157 +317,7 @@ pub fn build_service_config(config: &HubConfig, id: ServiceId, issued: &IssuedId
         pairs.push(("instance", map(instance)));
     }
 
-    // Rekuest signs provenance with its instance key; only the issuer name is configured.
-    if id == ServiceId::Rekuest && service.instance_key_pair.is_some() {
-        pairs.push((
-            "provenance",
-            map(vec![(
-                "issuer",
-                service
-                    .provenance_issuer
-                    .as_deref()
-                    .map(s)
-                    .unwrap_or(Value::Null),
-            )]),
-        ));
-        // Two separate lists, one entry each per hooked service: the *service* (what exists
-        // there: its structures and signals, catalogued by Rekuest) and the *hook agent*
-        // (what can be done there: its actions, given to every organization). They are
-        // different things that happen to run in the same process, so neither entry
-        // refers to the other.
-        let hooked: Vec<_> = HOOKED_SERVICES
-            .iter()
-            .filter(|other| {
-                let block = config.service(**other);
-                block.enabled && block.image.is_some()
-            })
-            .map(|other| (other.as_str(), config.service(*other)))
-            .collect();
-        let endpoint = |block: &ServiceBlock, what: &str| {
-            s(&format!(
-                "http://{}:{}/{}/_rekuest/{what}",
-                block.host, block.internal_port, block.host
-            ))
-        };
-        let services: Vec<Value> = hooked
-            .iter()
-            .map(|(name, block)| map(vec![("name", s(name)), ("url", endpoint(block, "service"))]))
-            .collect();
-        let hook_agents: Vec<Value> = hooked
-            .iter()
-            .map(|(name, block)| {
-                map(vec![
-                    ("name", s(name)),
-                    ("hook_url", endpoint(block, "hook")),
-                ])
-            })
-            .collect();
-        // The pair finds each other by these: Rekuest asks takt through the socket the two
-        // mount, takt asks Rekuest for its upkeep jobs. Both read this one file.
-        let mut block = vec![
-            ("services", list(services)),
-            ("hook_agents", list(hook_agents)),
-            (
-                "server_url",
-                s(&format!(
-                    "http://{}:{}/{}",
-                    service.host, service.internal_port, service.host
-                )),
-            ),
-        ];
-        if let Some(takt) = config.takt_url() {
-            block.push(("takt_url", s(&takt)));
-            block.push(("takt_socket", s(crate::config::hub::TAKT_SOCKET_PATH)));
-        }
-        pairs.push(("rekuest", map(block)));
-    }
-
-    // The services whose periodic work and signals go through the hub's Rekuest.
-    if HOOKED_SERVICES.contains(&id) && config.rekuest.enabled {
-        let rekuest = &config.rekuest;
-        pairs.push((
-            "rekuest_hook",
-            // takt, not the server: the reports and signals a service sends are the agent
-            // protocol's, which takt serves. A profile whose Rekuest has no image runs
-            // neither, and keeps the address it always had.
-            map(vec![(
-                "rekuest_url",
-                s(&config.takt_url().unwrap_or_else(|| {
-                    format!(
-                        "http://{}:{}/{}",
-                        rekuest.host, rekuest.internal_port, rekuest.host
-                    )
-                })),
-            )]),
-        ));
-    }
-
-    // --- beyond upstream ------------------------------------------------------
-    //
-    // The two keys below have no counterpart in the Python generator, which writes
-    // `ollama_config` and `ensured_repositories` into the *profile* and then emits
-    // neither into the service's own config — so nothing ever reaches the container.
-    //
-    // The key names are the services' own (`alpaka_server/configuration.py`,
-    // `kabinet_server/configuration.py`). Both top-level models are `extra="ignore"`, so
-    // a misspelt key is not an error — it is silently dropped and the default used. The
-    // golden fixtures will not catch that either: both keys are emitted only when
-    // somebody asked for something upstream cannot express, so a stock hub still
-    // generates exactly what the Python CLI generates.
-    if id == ServiceId::Alpaka {
-        if let Some(ollama) = &config.local_ollama {
-            pairs.push(("ollama_url", s(&ollama.url)));
-        }
-    }
-
-    // Lovekit's way to its media server: the key pair it signs room tokens with, and
-    // where it calls LiveKit's API inside the stack. The key names are the service's own
-    // (`lovekit_server/configuration.py`); without the block it starts and hands out
-    // nothing.
-    if id == ServiceId::Lovekit {
-        if let Some(livekit) = config.running_livekit() {
-            pairs.push((
-                "livekit",
-                map(vec![
-                    ("api_key", s(&livekit.api_key)),
-                    ("api_secret", s(&livekit.api_secret)),
-                    ("api_url", s(&livekit.api_url())),
-                ]),
-            ));
-        }
-    }
-
-    // Kuvert refuses to start without its key file; nothing else declares one.
-    if service.fernet_key.is_some() {
-        pairs.push((
-            "secrets",
-            map(vec![("key_path", s(&fernet_key_path(service)))]),
-        ));
-    }
-
-    if id == ServiceId::Kabinet {
-        if let Some(repositories) = service
-            .ensured_repositories
-            .as_ref()
-            .filter(|asked| !is_the_seeded_default(asked))
-        {
-            pairs.push((
-                "ensured_repos",
-                list(repositories.iter().map(|r| s(r)).collect()),
-            ));
-        }
-    }
-
     map(pairs)
-}
-
-/// Whether Kabinet's repository list is the one the config builder seeds.
-///
-/// A hub nobody customized has to keep generating what upstream generates, and upstream
-/// emits no such key at all — so the default is written into the profile (where upstream
-/// puts it too) and left out of the generated config.
-fn is_the_seeded_default(repositories: &[String]) -> bool {
-    repositories == ["jhnnsrs/ome:main", "jhnnsrs/renderer:main"]
 }
 
 #[cfg(test)]

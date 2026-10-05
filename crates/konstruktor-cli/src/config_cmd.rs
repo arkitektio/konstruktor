@@ -6,8 +6,8 @@
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Subcommand};
 
-use konstruktor_core::updates::Reads;
-use konstruktor_core::{migrate, overrides, profile, updates};
+use konstruktor_core::contract::RenderError;
+use konstruktor_core::{migrate, overrides, profile};
 
 use crate::manage::Target;
 use crate::ui;
@@ -115,29 +115,25 @@ async fn changed(
         ui::ok("Kept. This hub's files are rewritten by its next `konstruktor update`, with this in them.");
         return Ok(());
     }
-    profile::rewrite(&dir, config.clone(), &[])?;
-    // A service whose image writes its own config judges the setting as it does; one that
-    // does not is asked whether it reads the result.
+    // The service's own image writes its config with the setting laid over, and judges it
+    // as it does: what it does not read is refused, and nothing is kept.
     let identity = konstruktor_core::credentials::read_credentials(&dir)
         .map(|credentials| credentials.issued_identity())
         .unwrap_or_default();
-    let verdict = match konstruktor_core::contract::render_hub(&dir, &config, &identity).await {
-        Ok(written) if written.iter().any(|name| name == service) => Reads::Yes,
-        Ok(_) => updates::reads_its_config(&dir, service).await,
-        Err(konstruktor_core::contract::RenderError::Refused { said, .. }) => Reads::No(said),
-        Err(error) => Reads::Failed(error.to_string()),
-    };
-    if let Reads::No(said) = verdict {
+    if let Err(error) = konstruktor_core::contract::render_hub(&dir, &config, &identity).await {
         match &before {
             Some(bytes) => std::fs::write(&file, bytes)?,
             None => {
                 let _ = std::fs::remove_file(&file);
             }
         }
-        profile::rewrite(&dir, config, &[])?;
-        return Err(anyhow!(
-            "`{service}` does not read that, so nothing was kept. It said:\n{said}"
-        ));
+        let _ = konstruktor_core::contract::render_hub(&dir, &config, &identity).await;
+        return Err(match error {
+            RenderError::Refused { said, .. } => {
+                anyhow!("`{service}` does not read that, so nothing was kept. It said:\n{said}")
+            }
+            other => anyhow!("nothing was kept: {other}"),
+        });
     }
     ui::ok(&format!(
         "Written into {service}'s config, and kept by every update."

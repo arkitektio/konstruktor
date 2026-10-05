@@ -877,43 +877,43 @@ fn seed(id: ServiceId) -> ServiceSeed {
     match id {
         ServiceId::Rekuest => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/rekuest:6"),
+            image: Some("jhnnsrs/rekuest:7"),
             db: "rekuest",
             github_repo: "https://github.com/arkitektio/rekuest-server-next",
         },
         ServiceId::Mikro => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/mikro:5"),
+            image: Some("jhnnsrs/mikro:7"),
             db: "mikro",
             github_repo: "https://github.com/arkitektio/mikro-server-next",
         },
         ServiceId::Fluss => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/fluss:2"),
+            image: Some("jhnnsrs/fluss:4"),
             db: "fluss",
             github_repo: "https://github.com/arkitektio/fluss-server-next",
         },
         ServiceId::Kabinet => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/kabinet:4"),
+            image: Some("jhnnsrs/kabinet:6"),
             db: "kabinet",
             github_repo: "https://github.com/arkitektio/kabinet-server",
         },
         ServiceId::Kraph => ServiceSeed {
             enabled: true,
-            image: Some("jhnnsrs/kraph:1"),
+            image: Some("jhnnsrs/kraph:2"),
             db: "kraph",
             github_repo: "https://github.com/arkitektio/kraph-server",
         },
         ServiceId::Elektro => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/elektro:3"),
+            image: Some("jhnnsrs/elektro:5"),
             db: "elektro",
             github_repo: "https://github.com/arkitektio/elektro-server",
         },
         ServiceId::Alpaka => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/alpaka:3"),
+            image: Some("jhnnsrs/alpaka:5"),
             db: "alpaka",
             github_repo: "https://github.com/arkitektio/alpaka-server",
         },
@@ -921,32 +921,32 @@ fn seed(id: ServiceId) -> ServiceSeed {
         // an image, which is what older profiles say; see `ServiceBlock::runs`.
         ServiceId::Lovekit => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/lovekit:2"),
+            image: Some("jhnnsrs/lovekit:3"),
             db: "lovekit",
             github_repo: "https://github.com/arkitektio/lovekit-server",
         },
         // Experimental: offered, never switched on unless asked for.
         ServiceId::Bank => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/bank:2"),
+            image: Some("jhnnsrs/bank:4"),
             db: "bank",
             github_repo: "https://github.com/jhnnsrs/bank",
         },
         ServiceId::Kuvert => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/kuvert:2"),
+            image: Some("jhnnsrs/kuvert:4"),
             db: "kuvert",
             github_repo: "https://github.com/jhnnsrs/kuvert",
         },
         ServiceId::Dokuments => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/dokuments:1"),
+            image: Some("jhnnsrs/dokuments:2"),
             db: "dokuments",
             github_repo: "https://github.com/jhnnsrs/dokuments-server",
         },
         ServiceId::Lokate => ServiceSeed {
             enabled: false,
-            image: Some("jhnnsrs/lokate:2"),
+            image: Some("jhnnsrs/lokate:3"),
             db: "lokate",
             github_repo: "https://github.com/arkitektio/lokate-server",
         },

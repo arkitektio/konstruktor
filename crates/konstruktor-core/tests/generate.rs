@@ -176,23 +176,25 @@ mod authorized {
         }
     }
 
+    /// How tokens are verified is one of the hub's facts, the same for every service: what
+    /// each image writes its own `authentikate` block from.
+    use konstruktor_core::catalog::ServiceId;
+
+    fn auth_of(config: &HubConfig, id: ServiceId, issued: &IssuedIdentity) -> Value {
+        konstruktor_core::contract::facts(config, id, issued, &Default::default())["hub"]["auth"]
+            .clone()
+    }
+
     #[test]
     fn every_service_trusts_the_issuer_the_server_declared() {
-        let files = generate_hub_files(&config_of("hub_config.yaml"), &issued());
-
-        for (name, contents) in &files {
-            if !name.starts_with("configs/") || !name.ends_with(".yaml") {
-                continue;
-            }
-            let parsed: Value = serde_norway::from_str(contents).expect("valid YAML");
-            let Some(authentikate) = parsed.get("authentikate") else {
-                continue; // rustfs_init has none
-            };
-            let issuers = authentikate["issuers"].as_sequence().expect("a list");
-            assert_eq!(issuers.len(), 1, "{name}");
-            assert_eq!(issuers[0]["iss"].as_str(), Some(ISSUER), "{name}");
+        let config = config_of("hub_config.yaml");
+        for id in config.enabled_services() {
+            let auth = auth_of(&config, id, &issued());
+            let issuers = auth["issuers"].as_sequence().expect("a list");
+            assert_eq!(issuers.len(), 1, "{id:?}");
+            assert_eq!(issuers[0]["iss"].as_str(), Some(ISSUER), "{id:?}");
             // The issuer is used verbatim; the key set is moved to the base route.
-            assert_eq!(issuers[0]["jwks_uri"].as_str(), Some(JWKS), "{name}");
+            assert_eq!(issuers[0]["jwks_uri"].as_str(), Some(JWKS), "{id:?}");
         }
     }
 
@@ -200,11 +202,9 @@ mod authorized {
     /// Rekuest even when the coordination server vouches for everyone's tokens.
     #[test]
     fn provenance_still_points_at_the_local_rekuest() {
-        let files = generate_hub_files(&config_of("hub_config.yaml"), &issued());
-        let mikro: Value =
-            serde_norway::from_str(&files["configs/mikro.yaml"]).expect("valid YAML");
+        let auth = auth_of(&config_of("hub_config.yaml"), ServiceId::Mikro, &issued());
 
-        let provenance = &mikro["authentikate"]["provenance"]["issuers"];
+        let provenance = &auth["provenance"]["issuers"];
         assert_eq!(provenance[0]["iss"].as_str(), Some("rekuest"));
         assert_eq!(
             provenance[0]["jwks_uri"].as_str(),
@@ -215,11 +215,13 @@ mod authorized {
     /// Without a grant, both fall back to the CLI's own derivation from `coord_server`.
     #[test]
     fn falls_back_to_the_bare_host_when_there_is_no_grant() {
-        let files = generate_hub_files(&config_of("hub_config.yaml"), &IssuedIdentity::default());
-        let mikro: Value =
-            serde_norway::from_str(&files["configs/mikro.yaml"]).expect("valid YAML");
+        let auth = auth_of(
+            &config_of("hub_config.yaml"),
+            ServiceId::Mikro,
+            &IssuedIdentity::default(),
+        );
 
-        let issuers = &mikro["authentikate"]["issuers"];
+        let issuers = &auth["issuers"];
         assert_eq!(issuers[0]["iss"].as_str(), Some("go.arkitekt.live"));
         assert_eq!(
             issuers[0]["jwks_uri"].as_str(),

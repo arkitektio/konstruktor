@@ -10,8 +10,8 @@
 //!   operator set laid over ([`crate::overrides`]).
 //!
 //! So a key a release renames is renamed in that release's image, and nothing here has to
-//! learn of it. An image that does not answer `describe` has no contract: its config is
-//! the one this installer has always generated for it ([`crate::generate::service`]).
+//! learn of it. An image that does not answer `describe` has no contract, and is not a
+//! release this installer runs.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -19,9 +19,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_norway::Value;
 
-use crate::catalog::{ServiceId, HOOKED_SERVICES};
+use crate::catalog::ServiceId;
 use crate::config::hub::HubConfig;
-use crate::generate::service::{build_service_config, map, s};
+use crate::generate::service::{hub_blocks, map, s};
 use crate::generate::IssuedIdentity;
 
 /// The version of the contract this build speaks.
@@ -177,6 +177,13 @@ pub enum RenderError {
     Refused { service: String, said: String },
     #[error("`{service}`'s image failed to write its config: {said}")]
     Failed { service: String, said: String },
+    /// The image does not answer the contract at all: no release this installer can run.
+    #[error(
+        "`{service}` runs {image}, which does not answer the hub contract (`python -m \
+         arkitekt_service describe`). A service's config is its own image's to write, so \
+         this Konstruktor runs only releases that do: update `{service}` to one."
+    )]
+    NoContract { service: String, image: String },
     #[error("{0}")]
     Write(String),
 }
@@ -239,7 +246,7 @@ pub async fn described(dir: &Path, config: &HubConfig) -> BTreeMap<String, Descr
     out
 }
 
-/// Has every service whose image has a contract write its own config.
+/// Has every service's image write its own config.
 ///
 /// For each: the hub's facts go into `facts/<service>.yaml` — the one file about a service
 /// this installer writes of its own knowledge — and the image turns them, with the
@@ -256,7 +263,10 @@ pub async fn render_hub(
     let mut rendered = Vec::new();
     for (id, host, image) in images(dir, config) {
         if !said.contains_key(&host) {
-            continue;
+            return Err(RenderError::NoContract {
+                service: host,
+                image,
+            });
         }
         let document = crate::generate::dump(&facts(config, id, issued, &said));
         let overrides = crate::overrides::path(dir, &host);
@@ -321,19 +331,116 @@ pub async fn render_hub(
     Ok(rendered)
 }
 
-/// The paths a service of `id` offers when its image does not say: what this installer
-/// knew of the services before any described itself.
-fn known_endpoints(id: ServiceId) -> BTreeMap<String, String> {
-    match HOOKED_SERVICES.contains(&id) {
-        true => BTreeMap::from([
-            (
-                "rekuest_service".to_string(),
-                "_rekuest/service".to_string(),
-            ),
-            ("rekuest_hook".to_string(), "_rekuest/hook".to_string()),
-        ]),
-        false => BTreeMap::new(),
+/// The command that brings `service`'s database to the build it is about to run: its
+/// image's `migrate`, which waits for the database, applies the migrations and runs the
+/// service's own setup — in a container of that build, beside nothing else of the service.
+pub fn prepare(service: &str) -> Vec<String> {
+    [
+        "compose",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        service,
+        "python",
+        "-m",
+        "arkitekt_service",
+        "migrate",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// The id of the image a reference resolves to on this machine.
+async fn image_id(image: &str) -> Option<String> {
+    crate::docker::image_states(&[(String::new(), image.to_string())])
+        .await
+        .ok()?
+        .into_iter()
+        .next()?
+        .image_id
+}
+
+/// The services whose database is not prepared for the build they run, with that build's
+/// id: never started on it, or started last on another.
+pub async fn unprepared(dir: &Path, config: &HubConfig) -> Vec<(String, String)> {
+    let prepared = crate::lock::read(dir).prepared;
+    let mut out = Vec::new();
+    for (_, host, image) in images(dir, config) {
+        // An image that is not on the machine has no build to compare: it is prepared for
+        // once it is.
+        let Some(id) = image_id(&image).await else {
+            continue;
+        };
+        if prepared.get(&host) != Some(&id) {
+            out.push((host, id));
+        }
     }
+    out
+}
+
+/// Writes down that `service`'s database is prepared for the build with this id.
+pub fn prepared(dir: &Path, service: &str, id: &str) -> std::io::Result<()> {
+    let mut held = crate::lock::read(dir);
+    held.prepared.insert(service.to_string(), id.to_string());
+    crate::lock::write(dir, &held)
+}
+
+/// [`prepared`], for the build `service` runs now.
+pub async fn prepared_for_its_build(dir: &Path, config: &HubConfig, service: &str) {
+    for (_, host, image) in images(dir, config) {
+        if host == service {
+            if let Some(id) = image_id(&image).await {
+                let _ = prepared(dir, service, &id);
+            }
+        }
+    }
+}
+
+/// Prepares every service's database for the build it is about to be started on — once.
+///
+/// A service's own start only serves. What its database needs first is its image's to do
+/// (`migrate`: wait, migrate, the service's setup), and this is when it is asked to: for a
+/// build the database was not prepared for yet — a hub's first start, a service just
+/// added, a build put back. A container that merely restarts, and a hub brought up again
+/// on the builds it ran, cost nothing. The database is started for it if it is not up.
+pub async fn prepare_databases(
+    dir: &Path,
+    config: &HubConfig,
+    on_line: &(dyn Fn(crate::compose::ComposeLine) + Send + Sync),
+) -> Result<Vec<String>, String> {
+    let waiting = unprepared(dir, config).await;
+    if waiting.is_empty() {
+        return Ok(Vec::new());
+    }
+    let say = |line: String| on_line(crate::compose::ComposeLine { line, stderr: true });
+    let up = vec![
+        "compose".to_string(),
+        "up".to_string(),
+        "-d".to_string(),
+        crate::config::hub::DB_COMPOSE_SERVICE.to_string(),
+    ];
+    crate::compose::run_streamed(dir, up, on_line).await?;
+    crate::backup::wait_for_database(dir, config, "database", &|_| {})
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut done = Vec::new();
+    for (service, id) in waiting {
+        say(format!(
+            "Preparing {service}'s database for the build it runs"
+        ));
+        crate::compose::run_streamed(dir, prepare(&service), on_line)
+            .await
+            .map_err(|said| {
+                format!(
+                    "`{service}`'s database could not be prepared for the build it would \
+                     run, so nothing was started on it. It said:\n{said}"
+                )
+            })?;
+        prepared(dir, &service, &id).map_err(|error| error.to_string())?;
+        done.push(service);
+    }
+    Ok(done)
 }
 
 /// What the hub tells the service `id` about itself (`arkitekt_service.contract.facts.Facts`): the one
@@ -353,7 +460,7 @@ pub fn facts(
     let service = config.service(id);
     // The blocks this installer generates are the hub's facts already, in one service's
     // spelling; read back out of it, they are in nobody's.
-    let generated = build_service_config(config, id, issued);
+    let generated = hub_blocks(config, id, issued);
     let block = |name: &str| generated.get(name).cloned();
     let field = |block: &Option<Value>, name: &str| {
         block
@@ -441,7 +548,7 @@ pub fn facts(
         let endpoints = described
             .get(&peer.host)
             .map(|said| said.offers.endpoints.clone())
-            .unwrap_or_else(|| known_endpoints(other));
+            .unwrap_or_default();
         let mut offers: Vec<(String, Value)> = endpoints
             .iter()
             .map(|(kind, path)| (kind.clone(), s(&format!("{base}/{path}"))))
@@ -637,14 +744,18 @@ mod tests {
             rekuest["peers"]["takt"]["settings"]["socket"].as_str(),
             Some("/run/takt/internal.sock")
         );
-        // What a service said it offers, where it said; what was always known of the rest.
+        // What a service said it offers, where it said — and nothing for one that said
+        // nothing: no list here knows what a service is.
         assert_eq!(
             rekuest["peers"]["kraph"]["offers"]["rekuest_hook"].as_str(),
             Some("http://kraph:80/kraph/_hooks/rekuest")
         );
+        assert!(rekuest["peers"]["mikro"]["offers"]
+            .as_mapping()
+            .is_some_and(|offers| offers.is_empty()));
         assert_eq!(
-            rekuest["peers"]["mikro"]["offers"]["rekuest_service"].as_str(),
-            Some("http://mikro:80/mikro/_rekuest/service")
+            rekuest["peers"]["mikro"]["url"].as_str(),
+            Some("http://mikro:80/mikro")
         );
         assert!(rekuest["peers"].get("rekuest").is_none());
 

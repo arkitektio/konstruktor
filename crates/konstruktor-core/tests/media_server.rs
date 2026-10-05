@@ -64,19 +64,22 @@ fn a_hub_with_lovekit_runs_a_media_server() {
     );
 
     // Lovekit signs its tokens with that pair, and calls the API inside the stack.
-    let lovekit = yaml(&files, "configs/lovekit.yaml");
+    let lovekit = konstruktor_core::contract::facts(
+        &config,
+        ServiceId::Lovekit,
+        &IssuedIdentity::default(),
+        &Default::default(),
+    );
+    let media_server = &lovekit["peers"]["livekit"];
     assert_eq!(
-        lovekit["livekit"]["api_key"].as_str(),
+        media_server["settings"]["api_key"].as_str(),
         Some(livekit.api_key.as_str())
     );
     assert_eq!(
-        lovekit["livekit"]["api_secret"].as_str(),
+        media_server["settings"]["api_secret"].as_str(),
         Some(livekit.api_secret.as_str())
     );
-    assert_eq!(
-        lovekit["livekit"]["api_url"].as_str(),
-        Some("http://livekit:7880")
-    );
+    assert_eq!(media_server["url"].as_str(), Some("http://livekit:7880"));
 
     // The container reads the file, and publishes the media ports as they are.
     let compose = yaml(&files, "docker-compose.yaml");
@@ -148,23 +151,27 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
         &IssuedIdentity::default(),
     );
 
-    let dokuments = yaml(&files, "configs/dokuments.yaml");
-    assert_eq!(dokuments["postgres"]["db_name"].as_str(), Some("dokuments"));
-    assert_eq!(
-        dokuments["django"]["force_script_name"].as_str(),
-        Some("dokuments")
-    );
+    // What each is told of the hub — its own image writes its config from that.
+    let config = hub(vec![ServiceId::Dokuments, ServiceId::Lokate], None);
+    let told = |id| {
+        konstruktor_core::contract::facts(
+            &config,
+            id,
+            &IssuedIdentity::default(),
+            &Default::default(),
+        )
+    };
+    let dokuments = told(ServiceId::Dokuments);
+    assert_eq!(dokuments["database"]["name"].as_str(), Some("dokuments"));
+    assert_eq!(dokuments["me"]["path"].as_str(), Some("dokuments"));
     assert!(
-        dokuments["datalayer"]["media"]["bucket"].is_string(),
+        dokuments["storage"]["buckets"]["media"].is_string(),
         "Dokuments' settings read its media bucket on boot"
     );
 
-    let lokate = yaml(&files, "configs/lokate.yaml");
-    assert_eq!(lokate["postgres"]["db_name"].as_str(), Some("lokate"));
-    assert!(
-        lokate.get("datalayer").is_none(),
-        "Lokate stores no objects"
-    );
+    let lokate = told(ServiceId::Lokate);
+    assert_eq!(lokate["database"]["name"].as_str(), Some("lokate"));
+    assert!(lokate.get("storage").is_none(), "Lokate stores no objects");
 
     let compose = yaml(&files, "docker-compose.yaml");
     for host in ["dokuments", "lokate"] {

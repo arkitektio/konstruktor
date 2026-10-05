@@ -182,6 +182,16 @@ major of a service arrives with the Konstruktor that writes files for it.
 and **`unfreeze`** lifts that. Neither changes a file or restarts anything: the builds are
 written down either way, and a freeze only says not to look for newer ones.
 
+A service's config is not Konstruktor's to write. Every service image answers the same
+few questions (`python -m arkitekt_service …`, the
+[arkitekt-service](https://github.com/arkitektio/arkitekt-service) package): what it needs
+from a hub, and — given the hub's facts — its own config for the release it is. Konstruktor
+writes `facts/<service>.yaml` (database, storage, keys, the other services and what they
+offer) and the image turns that into `configs/<service>.yaml`. What you set yourself goes in
+`overrides/<service>.yaml` (`konstruktor config set`) and is laid over it; a setting a
+release does not read is refused by name. And a service's start only serves: its database
+is prepared — migrated, and set up — by its image before that, once per build.
+
 Some moves need more than new files. A change to the hub itself — a volume, a one-off
 container — is a command written beside the layout it belongs to, run by the update that
 crosses it: before anything is replaced where it can be, so that a failure leaves the hub

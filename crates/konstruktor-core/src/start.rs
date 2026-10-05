@@ -147,6 +147,26 @@ async fn start_with(
         }
     }
 
+    // What runs already, and the configs it read when it started: a start may have a
+    // service's image write its config again (step 3), and a container that was running
+    // through that still has the old one.
+    let running_before: Vec<String> = crate::engine_probe::engine()
+        .async_command()
+        .args(["compose", "ps", "--status", "running", "--services"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let configs_before = crate::services::snapshot_configs(dir);
+
     // --- 3. the builds -----------------------------------------------------------
     // What has no build written down yet gets one before its container exists. Not on a
     // hub whose files are behind: those are an update's to rewrite, images included.
@@ -169,6 +189,11 @@ async fn start_with(
         if let Err(error) = crate::contract::render_hub(dir, config, &identity).await {
             return Err(StartError::Refused(error.to_string()));
         }
+        // And each service's database is prepared for the build it is about to run, once:
+        // the services' own starts only serve.
+        crate::contract::prepare_databases(dir, config, on_line)
+            .await
+            .map_err(StartError::Refused)?;
     }
 
     // --- 4. up -------------------------------------------------------------------
@@ -187,6 +212,37 @@ async fn start_with(
     report.output = compose::run_streamed(dir, args, on_line)
         .await
         .map_err(StartError::Compose)?;
+
+    // --- 5. the services whose config was rewritten under them ---------------------
+    // The hub changed — a service came or went, an address moved — and a service's image
+    // wrote its config for that. `up` does not look into a mounted file, so a container
+    // that ran through it is restarted to read it; one `up` just created already has.
+    if let Some(config) = &config {
+        let rewritten = crate::services::changed_configs(
+            &configs_before,
+            &crate::services::snapshot_configs(dir),
+        );
+        let restart: Vec<String> = crate::services::services_to_restart(
+            config,
+            &rewritten,
+            &crate::services::ServicePlan::default(),
+        )
+        .into_iter()
+        .filter(|name| running_before.contains(name))
+        .filter(|name| crate::compose_file::declares_service(dir, name))
+        .collect();
+        if !restart.is_empty() {
+            say(&format!(
+                "Restarting {} to read the configuration written for it…",
+                restart.join(", ")
+            ));
+            let mut argv = vec!["compose".to_string(), "restart".to_string()];
+            argv.extend(restart);
+            compose::run_streamed(dir, argv, on_line)
+                .await
+                .map_err(StartError::Compose)?;
+        }
+    }
     Ok(report)
 }
 

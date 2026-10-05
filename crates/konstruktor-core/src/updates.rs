@@ -632,26 +632,6 @@ pub enum UpdateError {
     Config(#[from] crate::contract::RenderError),
 }
 
-/// What a service's image says of the config it is about to be started on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reads {
-    /// It reads every key as written (one under a former name included: a release may
-    /// rename a key within its major, and says so itself).
-    Yes,
-    /// It does not: the config sets keys it does not read. With what it printed.
-    No(String),
-    /// It was not asked: an image from before the question, or one that is no Arkitekt
-    /// service. Such an image is run as it always was.
-    Unasked,
-    /// It was asked and the asking failed — the command crashed, the config is invalid to
-    /// it, the container did not start. With what it printed. Not a refusal: whatever is
-    /// wrong will be loud when the service starts, which a key nobody reads never is.
-    Failed(String),
-}
-
-/// `validate_settings --strict`'s own no (sysexits' `EX_CONFIG`).
-const NOT_READ: i32 = 78;
-
 fn last_lines(output: &str) -> String {
     let lines: Vec<&str> = output
         .lines()
@@ -659,53 +639,6 @@ fn last_lines(output: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect();
     lines[lines.len().saturating_sub(12)..].join("\n")
-}
-
-/// Reads the answer off `manage.py validate_settings --strict`: 0 is yes, 78 the command's
-/// own no. 2 is argparse not knowing the command or the flag, 126 and 127 a container with
-/// no `python`: the question was never put. Anything else is the asking going wrong.
-pub fn reads_from(code: Option<i32>, output: &str) -> Reads {
-    match code {
-        Some(0) => Reads::Yes,
-        Some(NOT_READ) => Reads::No(last_lines(output)),
-        Some(2 | 126 | 127) | None => Reads::Unasked,
-        Some(_) => Reads::Failed(last_lines(output)),
-    }
-}
-
-/// Asks the image `service` would be recreated onto whether it reads the config generated
-/// for it, in a container of its own that touches nothing: no dependencies started, no
-/// database asked.
-pub async fn reads_its_config(dir: &std::path::Path, service: &str) -> Reads {
-    let output = crate::engine_probe::engine()
-        .async_command()
-        .args([
-            "compose",
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            service,
-            "python",
-            "manage.py",
-            "validate_settings",
-            "--strict",
-        ])
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await;
-    match output {
-        Ok(out) => reads_from(
-            out.status.code(),
-            &format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ),
-        ),
-        Err(_) => Reads::Unasked,
-    }
 }
 
 /// The database image a start of the hub in `dir` runs: the build written down for it, or
@@ -804,25 +737,6 @@ async fn ships_an_upgrade(dir: &std::path::Path, service: &str) -> bool {
         .output()
         .await
         .is_ok_and(|out| out.status.success())
-}
-
-/// The new release's database migrations, as a command of their own in a container of the
-/// new image. The services also migrate when they start, which then finds nothing to do.
-fn migrate(service: &str) -> Vec<String> {
-    [
-        "compose",
-        "run",
-        "--rm",
-        "--no-deps",
-        "-T",
-        service,
-        "python",
-        "manage.py",
-        "migrate",
-        "--noinput",
-    ]
-    .map(String::from)
-    .to_vec()
 }
 
 /// Runs the new release's own upgrade — what it has to do to its data between the two
@@ -1590,8 +1504,8 @@ async fn apply_on(
     let identity = crate::credentials::read_credentials(dir)
         .map(|credentials| credentials.issued_identity())
         .unwrap_or_default();
-    let self_written = match crate::contract::render_hub(dir, &config, &identity).await {
-        Ok(services) => services,
+    match crate::contract::render_hub(dir, &config, &identity).await {
+        Ok(_) => {}
         Err(error) => {
             put_back("A service would not write its config for this hub");
             return Err(error.into());
@@ -1612,42 +1526,6 @@ async fn apply_on(
     }
     if !report.rewritten.is_empty() {
         step(format!("Rewrote {}", report.rewritten.join(", ")));
-    }
-
-    // --- does each release read what was written for it? ------------------------------
-    // The last question before anything is replaced, and the one the files cannot answer
-    // themselves: a config a release does not read starts it all the same, with defaults.
-    for (service, _) in &moving {
-        let is_service = config
-            .enabled_services()
-            .into_iter()
-            .any(|id| config.service(id).host == *service);
-        // A config its own image wrote was judged by it as it was written.
-        if !is_service || self_written.contains(service) {
-            continue;
-        }
-        match reads_its_config(dir, service).await {
-            Reads::Yes => on_event(UpdateEvent::Line {
-                line: format!("{service} reads its config as written"),
-                stderr: false,
-            }),
-            Reads::No(said) => {
-                put_back(&format!(
-                    "`{service}`'s new release does not read the config written for it"
-                ));
-                return Err(UpdateError::Compose(format!(
-                    "`{service}` was not updated: the release it would move to does not read \
-                     the config this Konstruktor writes for it, and would start on defaults. \
-                     It said:\n{said}\nNothing was replaced. A newer Konstruktor may know \
-                     this release."
-                )));
-            }
-            Reads::Failed(said) => warn(format!(
-                "`{service}`'s new release could not be asked whether it reads its config; \
-                 it is updated all the same. It said:\n{said}"
-            )),
-            Reads::Unasked => {}
-        }
     }
 
     // --- what the move needs run first ---------------------------------------------------
@@ -1787,7 +1665,9 @@ async fn apply_on(
                       is in the backup.";
         for (service, versions) in &preparing {
             step(format!("Migrating {service}'s database"));
-            if let Err(said) = crate::compose::run_streamed(dir, migrate(service), &line).await {
+            if let Err(said) =
+                crate::compose::run_streamed(dir, crate::contract::prepare(service), &line).await
+            {
                 undo(
                     format!("`{service}`'s database could not be migrated"),
                     stopped,
@@ -1799,6 +1679,8 @@ async fn apply_on(
                     last_lines(&said)
                 )));
             }
+            // Prepared for this build: the start that follows does not do it again.
+            crate::contract::prepared_for_its_build(dir, &config, service).await;
             let Some((from, to)) = versions else {
                 continue;
             };
@@ -2161,27 +2043,6 @@ mod tests {
     #[test]
     fn digest_strips_repo() {
         assert_eq!(digest_of("jhnnsrs/rekuest@sha256:abc"), "sha256:abc");
-    }
-
-    /// Only `validate_settings --strict`'s own exit code refuses. An image that does not
-    /// know the flag was never asked, and a crash is said without stopping the update.
-    #[test]
-    fn only_the_commands_own_no_is_a_refusal() {
-        assert_eq!(reads_from(Some(0), "Configuration valid"), Reads::Yes);
-        assert_eq!(
-            reads_from(Some(78), "tree\n\nnot read: rekuest.service_agents\n"),
-            Reads::No("tree\nnot read: rekuest.service_agents".into())
-        );
-        assert_eq!(
-            reads_from(Some(2), "error: unrecognized arguments: --strict"),
-            Reads::Unasked
-        );
-        assert_eq!(reads_from(Some(127), "python: not found"), Reads::Unasked);
-        assert_eq!(reads_from(None, ""), Reads::Unasked);
-        assert_eq!(
-            reads_from(Some(1), "Traceback\nImportError: no module"),
-            Reads::Failed("Traceback\nImportError: no module".into())
-        );
     }
 
     /// A release with no `upgrade` command has nothing of its own to do; one whose
