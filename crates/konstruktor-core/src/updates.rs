@@ -468,6 +468,21 @@ pub fn predates_takt(dir: &std::path::Path, config: &HubConfig, service: &str) -
     crate::compose_file::predates_takt(dir, config)
 }
 
+/// Why Rekuest (or takt) cannot be moved on this hub as its files stand, though it runs
+/// takt: its files are from before the two shared a socket. See
+/// [`crate::compose_file::predates_takt_socket`].
+pub fn predates_takt_socket(
+    dir: &std::path::Path,
+    config: &HubConfig,
+    service: &str,
+) -> Option<String> {
+    let takt = config.takt_host()?;
+    if service != config.rekuest.host.as_str() && service != takt.as_str() {
+        return None;
+    }
+    crate::compose_file::predates_takt_socket(dir, config)
+}
+
 /// Where a backup taken before an update goes unless somebody says otherwise: a
 /// `konstruktor-backups` folder beside the deployment, so it survives the deployment.
 pub fn default_backup_folder(dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -685,7 +700,9 @@ pub async fn apply(
         step(format!("Updating {service}"));
         // Before anything is pulled: a hub that cannot run the new image is left exactly
         // as it is, old image included.
-        if let Some(reason) = predates_takt(dir, &config, service) {
+        if let Some(reason) = predates_takt(dir, &config, service)
+            .or_else(|| predates_takt_socket(dir, &config, service))
+        {
             on_event(UpdateEvent::Refused {
                 service: service.clone(),
                 reason: reason.clone(),

@@ -174,6 +174,42 @@ pub fn predates_takt(dir: &Path, config: &HubConfig) -> Option<String> {
     ))
 }
 
+/// Why Rekuest cannot be moved to a newer image on this hub as its files stand, if it
+/// cannot.
+///
+/// Since Rekuest 6 takt serves what Rekuest asks of it on a listener of its own — here a
+/// unix socket in a volume the two mount — and Rekuest reads its hooked services from two
+/// lists. A hub generated before that has takt on its one port and the one list: the new
+/// images come up healthy on those files and do nothing, since Rekuest reaches no takt
+/// and knows no service. Unlike [`predates_takt`] this holds back only an update: the old
+/// images run on the new files, so every path that rewrites them moves the hub across.
+pub fn predates_takt_socket(dir: &Path, config: &HubConfig) -> Option<String> {
+    let takt = config.takt_host()?;
+    let rekuest = &config.rekuest.host;
+    let bound = std::fs::read_to_string(dir.join(COMPOSE_FILENAME))
+        .ok()
+        .and_then(|text| serde_norway::from_str::<serde_norway::Value>(&text).ok())
+        .and_then(|doc| {
+            let service = doc.get("services")?.get(takt.as_str())?;
+            Some(
+                service
+                    .get("environment")
+                    .and_then(|env| env.get("TAKT_INTERNAL_BIND"))
+                    .is_some(),
+            )
+        })?;
+    if bound {
+        return None;
+    }
+    Some(format!(
+        "this hub's files were generated before `{rekuest}` and `{takt}` shared a socket, \
+         and the release they would move to does not work without it: `{rekuest}` could not \
+         reach `{takt}`, so nothing could be assigned, and it would know none of the hub's \
+         services. Run `konstruktor hub regenerate` first, then `konstruktor update` again. \
+         Nothing was changed."
+    ))
+}
+
 /// What the generator would write for this hub's profile today.
 ///
 /// Not written anywhere: a front end shows it, or offers it as the thing to reset to,

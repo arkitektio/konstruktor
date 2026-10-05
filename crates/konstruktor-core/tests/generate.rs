@@ -739,4 +739,49 @@ mod stack_images {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+    /// The compose file a hub from 0.12 or 0.13 runs: takt beside Rekuest, on its one port.
+    #[test]
+    fn a_hub_whose_files_predate_the_takt_socket_is_not_updated_into_a_broken_one() {
+        let config = config_of("hub_config.yaml");
+        let dir = std::env::temp_dir().join(format!(
+            "konstruktor-predates-socket-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            "services:\n  rekuest:\n    image: jhnnsrs/rekuest:latest\n  rekuest-takt:\n    image: jhnnsrs/rekuest-takt:latest\n  mikro:\n    image: jhnnsrs/mikro:latest\n",
+        )
+        .unwrap();
+
+        // It has takt, so the older refusal has nothing to say.
+        assert_eq!(
+            konstruktor_core::updates::predates_takt(&dir, &config, "rekuest"),
+            None
+        );
+        let refusal = konstruktor_core::updates::predates_takt_socket(&dir, &config, "rekuest")
+            .expect("rekuest is refused");
+        assert!(refusal.contains("konstruktor hub regenerate"), "{refusal}");
+        assert!(
+            konstruktor_core::updates::predates_takt_socket(&dir, &config, "rekuest-takt")
+                .is_some()
+        );
+        // Nothing else is held back by it.
+        assert_eq!(
+            konstruktor_core::updates::predates_takt_socket(&dir, &config, "mikro"),
+            None
+        );
+
+        // Regenerated, the same hub updates.
+        std::fs::write(
+            dir.join("docker-compose.yaml"),
+            konstruktor_core::compose_file::regenerate_from(&config),
+        )
+        .unwrap();
+        assert_eq!(
+            konstruktor_core::updates::predates_takt_socket(&dir, &config, "rekuest"),
+            None
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
