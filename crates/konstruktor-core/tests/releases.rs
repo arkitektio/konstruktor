@@ -12,7 +12,7 @@ use konstruktor_core::migrate;
 use konstruktor_core::profile;
 
 /// Each captured release, and the layout its files have.
-const RELEASES: [(&str, u32); 2] = [("0.11.0", 1), ("0.13.0", 2)];
+const RELEASES: [(&str, u32); 3] = [("0.11.0", 1), ("0.13.0", 2), ("0.14.0", 3)];
 
 fn copy(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();

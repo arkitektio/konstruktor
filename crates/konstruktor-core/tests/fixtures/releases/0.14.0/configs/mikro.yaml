@@ -1,0 +1,110 @@
+django:
+  admin:
+    email: null
+    password: 403cd5nguz1zn1ysvumtnkylhq7u4r0r6d75r7sc
+    username: admin
+  csrf_trusted_origins:
+  - http://localhost
+  - https://localhost
+  debug: false
+  force_script_name: mikro
+  hosts:
+  - '*'
+  secret_key: '%^#fjfigoju6p&6zo0jtri%3bf8)v8a6g7($lehc0pxqej(%gc'
+postgres:
+  db_name: mikro
+  engine: django.db.backends.postgresql
+  host: db
+  password: 3aotbqeoxljzp0jbd1al7a6677t0it9dup6ctpys
+  port: 5432
+  username: purple-surf
+redis:
+  host: redis
+  port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: go.arkitekt.live
+    jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
+    kind: jwks_uri
+  static_tokens: {}
+  provenance:
+    audience: '*'
+    issuers:
+    - iss: rekuest
+      jwks:
+        keys:
+        - alg: Ed25519
+          crv: Ed25519
+          kid: DHzjbFWzdvAcJ9vuGFwwXBK0xia-tlMUX-sKuxO0jJY
+          kty: OKP
+          service: live.arkitekt.rekuest
+          use: sig
+          x: _ave0_he-1MCWo5U7RqVJ3YqmYdWW_bKd4FXCNH2tj4
+      kind: jwks_dict
+datalayer:
+  role_arn: arn:aws:iam::000000000000:role/datalayer
+  session_duration_seconds: 3600
+  access_key: 7pxpq6qjd39eov8ny3sswosliqk43lxwl3gj7fun
+  secret_key: jtj0kmaxx73l4lgubk95053prkxwwtdp5n4rps25
+  host: rustfs
+  port: 9000
+  protocol: http
+  region: us-east-1
+  media:
+    bucket: mikromedia
+  zarr:
+    bucket: mikrozarr
+  parquet:
+    bucket: mikroparquet
+  bigfile:
+    bucket: mikrobigfile
+  fabriks:
+    bucket: mikrofabriks
+  konnektion:
+    bucket: mikrokonnektion
+instance:
+  private_key: |
+    -----BEGIN PRIVATE KEY-----
+    MC4CAQAwBQYDK2VwBCIEIB8BD7iVdxP90aoOrthSOMapKzUEgH4ilMkunNpQCnIx
+    -----END PRIVATE KEY-----
+  trust:
+    jwks:
+      keys:
+      - alg: Ed25519
+        crv: Ed25519
+        kid: DHzjbFWzdvAcJ9vuGFwwXBK0xia-tlMUX-sKuxO0jJY
+        kty: OKP
+        service: live.arkitekt.rekuest
+        use: sig
+        x: _ave0_he-1MCWo5U7RqVJ3YqmYdWW_bKd4FXCNH2tj4
+      - alg: Ed25519
+        crv: Ed25519
+        kid: crHfwBOeat0jCbbNviBuCW1oOIM4_xNztABdExQx_0c
+        kty: OKP
+        service: live.arkitekt.kabinet
+        use: sig
+        x: K-2A-j1InSomDOUb1mrJCU1efSSSz-D1ROdVpz7ZfKc
+      - alg: Ed25519
+        crv: Ed25519
+        kid: BqbEquNlXJmXJ_Yroq36u2NYcwdZRgY0llXHkLplr78
+        kty: OKP
+        service: live.arkitekt.mikro
+        use: sig
+        x: XvaZBvCLKSTuyTSLVe-xNJN-HDxPsoXmeW85_3uljvI
+      - alg: Ed25519
+        crv: Ed25519
+        kid: FWRyIGA5wLUsvNrImszLO4RZTFfQH5795-gmbEoucj4
+        kty: OKP
+        service: live.arkitekt.fluss
+        use: sig
+        x: yqhrZnzlTJL33pufqB0RA4YkhYIdTrAmx5fs9N_QtD8
+      - alg: Ed25519
+        crv: Ed25519
+        kid: B_VAJEoGKlCg0VDphEWwy5WWn7h4mAfkfaSfzF65CCM
+        kty: OKP
+        service: live.arkitekt.kraph
+        use: sig
+        x: F5xyRiAlt7RP_WedUoM5BIr1fQRNyRkEZdlqfRZdRPA
+rekuest_hook:
+  rekuest_url: http://rekuest-takt:8080/rekuest

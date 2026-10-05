@@ -115,11 +115,8 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         https_port: Some(free_port()),
         ..Default::default()
     });
-    for pair in std::env::var("KONSTRUKTOR_E2E_IMAGES")
-        .unwrap_or_default()
-        .split(',')
-        .filter(|pair| !pair.trim().is_empty())
-    {
+    let named = std::env::var("KONSTRUKTOR_E2E_IMAGES").unwrap_or_default();
+    for pair in named.split(',').filter(|pair| !pair.trim().is_empty()) {
         let (service, image) = pair
             .trim()
             .split_once('=')
@@ -142,8 +139,13 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     let _teardown = Teardown(dir.clone());
     // Fetched first: `up` runs whatever a tag last resolved to on this machine, and a run
     // against last week's `latest` proves nothing about today's.
-    // `--ignore-pull-failures`: an image under test may exist on this machine alone.
-    let pull = compose(&dir, &["pull", "--quiet", "--ignore-pull-failures"]);
+    // An image named for this run may exist on this machine alone; otherwise a pull that
+    // fails must fail the run, not leave it on whatever was cached.
+    let mut pull_args = vec!["pull", "--quiet"];
+    if !named.trim().is_empty() {
+        pull_args.push("--ignore-pull-failures");
+    }
+    let pull = compose(&dir, &pull_args);
     assert!(
         pull.status.success(),
         "docker compose pull failed:\n{}",

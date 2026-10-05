@@ -1,0 +1,125 @@
+django:
+  admin:
+    email: null
+    password: 403cd5nguz1zn1ysvumtnkylhq7u4r0r6d75r7sc
+    username: admin
+  csrf_trusted_origins:
+  - http://localhost
+  - https://localhost
+  debug: false
+  force_script_name: rekuest
+  hosts:
+  - '*'
+  secret_key: ybz&p2t#wg&z&r1*%btm82ljnevyve#hgw5y7u^_wlnxq^7+%e
+postgres:
+  db_name: rekuest
+  engine: django.db.backends.postgresql
+  host: db
+  password: 3aotbqeoxljzp0jbd1al7a6677t0it9dup6ctpys
+  port: 5432
+  username: purple-surf
+redis:
+  host: redis
+  port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: go.arkitekt.live
+    jwks_uri: https://go.arkitekt.live/.well-known/jwks.json
+    kind: jwks_uri
+  static_tokens: {}
+  provenance:
+    audience: '*'
+    issuers:
+    - iss: rekuest
+      jwks:
+        keys:
+        - alg: Ed25519
+          crv: Ed25519
+          kid: DHzjbFWzdvAcJ9vuGFwwXBK0xia-tlMUX-sKuxO0jJY
+          kty: OKP
+          service: live.arkitekt.rekuest
+          use: sig
+          x: _ave0_he-1MCWo5U7RqVJ3YqmYdWW_bKd4FXCNH2tj4
+      kind: jwks_dict
+datalayer:
+  role_arn: arn:aws:iam::000000000000:role/datalayer
+  session_duration_seconds: 3600
+  access_key: 7pxpq6qjd39eov8ny3sswosliqk43lxwl3gj7fun
+  secret_key: jtj0kmaxx73l4lgubk95053prkxwwtdp5n4rps25
+  host: rustfs
+  port: 9000
+  protocol: http
+  region: us-east-1
+  media:
+    bucket: rekuestmedia
+instance:
+  private_key: |
+    -----BEGIN PRIVATE KEY-----
+    MC4CAQAwBQYDK2VwBCIEICupxiM1pCJh1UeFH+METPbEeevgCC+eE9cCKr9X2N6V
+    -----END PRIVATE KEY-----
+  trust:
+    jwks:
+      keys:
+      - alg: Ed25519
+        crv: Ed25519
+        kid: DHzjbFWzdvAcJ9vuGFwwXBK0xia-tlMUX-sKuxO0jJY
+        kty: OKP
+        service: live.arkitekt.rekuest
+        use: sig
+        x: _ave0_he-1MCWo5U7RqVJ3YqmYdWW_bKd4FXCNH2tj4
+      - alg: Ed25519
+        crv: Ed25519
+        kid: crHfwBOeat0jCbbNviBuCW1oOIM4_xNztABdExQx_0c
+        kty: OKP
+        service: live.arkitekt.kabinet
+        use: sig
+        x: K-2A-j1InSomDOUb1mrJCU1efSSSz-D1ROdVpz7ZfKc
+      - alg: Ed25519
+        crv: Ed25519
+        kid: BqbEquNlXJmXJ_Yroq36u2NYcwdZRgY0llXHkLplr78
+        kty: OKP
+        service: live.arkitekt.mikro
+        use: sig
+        x: XvaZBvCLKSTuyTSLVe-xNJN-HDxPsoXmeW85_3uljvI
+      - alg: Ed25519
+        crv: Ed25519
+        kid: FWRyIGA5wLUsvNrImszLO4RZTFfQH5795-gmbEoucj4
+        kty: OKP
+        service: live.arkitekt.fluss
+        use: sig
+        x: yqhrZnzlTJL33pufqB0RA4YkhYIdTrAmx5fs9N_QtD8
+      - alg: Ed25519
+        crv: Ed25519
+        kid: B_VAJEoGKlCg0VDphEWwy5WWn7h4mAfkfaSfzF65CCM
+        kty: OKP
+        service: live.arkitekt.kraph
+        use: sig
+        x: F5xyRiAlt7RP_WedUoM5BIr1fQRNyRkEZdlqfRZdRPA
+provenance:
+  issuer: rekuest
+rekuest:
+  services:
+  - name: mikro
+    url: http://mikro:80/mikro/_rekuest/service
+  - name: kabinet
+    url: http://kabinet:80/kabinet/_rekuest/service
+  - name: fluss
+    url: http://fluss:80/fluss/_rekuest/service
+  hook_agents:
+  - name: mikro
+    hook_url: http://mikro:80/mikro/_rekuest/hook
+  - name: kabinet
+    hook_url: http://kabinet:80/kabinet/_rekuest/hook
+  - name: fluss
+    hook_url: http://fluss:80/fluss/_rekuest/hook
+  service_agents:
+  - service: mikro
+    hook_url: http://mikro:80/mikro/_rekuest/hook
+  - service: kabinet
+    hook_url: http://kabinet:80/kabinet/_rekuest/hook
+  - service: fluss
+    hook_url: http://fluss:80/fluss/_rekuest/hook
+  server_url: http://rekuest:80/rekuest
+  takt_url: http://rekuest-takt:8080/rekuest
+  takt_socket: /run/takt/internal.sock

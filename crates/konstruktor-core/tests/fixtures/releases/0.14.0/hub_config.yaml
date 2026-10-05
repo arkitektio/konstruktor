@@ -1,0 +1,371 @@
+version: '1.0'
+kind: hub
+backend: docker
+config:
+  alpaka:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: alpaka
+    debug: false
+    enabled: false
+    github_repo: https://github.com/arkitektio/alpaka-server
+    host: alpaka
+    image: jhnnsrs/alpaka:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: alpakamedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: j(n%jtb8nifojlh!m+=d9*3of!@5rm3n(+3jjq9p@i)pys-nzn
+    ollama_config:
+      kind: local
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAIBzfA28PRtgKX68Gl4X6TNsMoXNkDVm89Ku37B9xQ8I=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIPw8imUs5cAWq7WQHHJkx50+RvIzxnCtisBL1MHZ4p4v
+        -----END PRIVATE KEY-----
+  coord_server: go.arkitekt.live
+  csrf_trusted_origins: null
+  db:
+    enabled: true
+    github_repo: https://github.com/arkitektio/daten-server
+    host: daten
+    image: jhnnsrs/daten:latest
+    mount: null
+    postgres_password: 3aotbqeoxljzp0jbd1al7a6677t0it9dup6ctpys
+    postgres_user: purple-surf
+    volume_name: db_data
+  default_service_grace_period_seconds: 2
+  device_id: e2e
+  domain: null
+  elektro:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: elektro
+    debug: false
+    enabled: false
+    github_repo: https://github.com/arkitektio/elektro-server
+    host: elektro
+    image: jhnnsrs/elektro:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: elektromedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: )l-_rhv53svrbw285w)(8%lf6727wio&6m7%-bl_x63%0!%d^a
+    zarr_bucket:
+      kind: local
+      bucket_name: elektrozarr
+    parquet_bucket:
+      kind: local
+      bucket_name: elektroparquet
+    bigfile_bucket:
+      kind: local
+      bucket_name: elektrobigfile
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAFCAJ49tmvAVrWAOdFFIFxWDRgjod6dt+fK4vHiLKcy4=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEINQlKSnn0NCXICMcJEcitbSzCmEp+fxdM2Z4GqpIhr9J
+        -----END PRIVATE KEY-----
+  fluss:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: fluss
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/fluss-server-next
+    host: fluss
+    image: jhnnsrs/fluss:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: flussmedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: i6w-qxv2kwt_^o(x8#i4o!5zp5vf#nw!4p3iqdq!ilso_u4jjy
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAyqhrZnzlTJL33pufqB0RA4YkhYIdTrAmx5fs9N/QtD8=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIBwr1D4jLJKxwpsTgbETSDUgea3egDRUFmYNYxcd/Mkb
+        -----END PRIVATE KEY-----
+  gateway:
+    auto_https: true
+    enabled: true
+    exposed_http_port: 18480
+    exposed_https_port: 18443
+    host: gateway
+    image: caddy:2.11.4
+    internal_port: 80
+    ssl: false
+    ssl_cert: null
+  global_admin: admin
+  global_admin_email: null
+  global_admin_password: 403cd5nguz1zn1ysvumtnkylhq7u4r0r6d75r7sc
+  global_description: null
+  internal_network: dry-morning
+  kabinet:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: kabinet
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/kabinet-server
+    host: kabinet
+    image: jhnnsrs/kabinet:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: kabinetmedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: d*yfwma(2i3jahc8@^9bg61(wioi4^lgqc4b4e1trbuv*orre#
+    ensured_repositories:
+    - jhnnsrs/ome:main
+    - jhnnsrs/renderer:main
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAK+2A+j1InSomDOUb1mrJCU1efSSSz+D1ROdVpz7ZfKc=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIDfQoFYjWP2BH8QA1BX81YRQcpQKHL5KZRee4kpE8zac
+        -----END PRIVATE KEY-----
+  kraph:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: kraph
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/kraph-server
+    host: kraph
+    image: jhnnsrs/kraph:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: kraphmedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: $ms0x5(%pao7d357urch7)7q0w^0#lz$5tspr#mn52u3zk&vex
+    zarr_bucket:
+      kind: local
+      bucket_name: kraphzarr
+    bigfile_bucket:
+      kind: local
+      bucket_name: kraphbigfile
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAF5xyRiAlt7RP/WedUoM5BIr1fQRNyRkEZdlqfRZdRPA=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIFeVbTVYX28PlHl8EpSGPjUvfY7rTkPwPUadJYzSVy5Q
+        -----END PRIVATE KEY-----
+  local_redis:
+    enabled: true
+    host: redis
+    image: redis:8.10.1
+    internal_port: 6379
+  mikro:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: mikro
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/mikro-server-next
+    host: mikro
+    image: jhnnsrs/mikro:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: mikromedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: '%^#fjfigoju6p&6zo0jtri%3bf8)v8a6g7($lehc0pxqej(%gc'
+    zarr_bucket:
+      kind: local
+      bucket_name: mikrozarr
+    parquet_bucket:
+      kind: local
+      bucket_name: mikroparquet
+    bigfile_bucket:
+      kind: local
+      bucket_name: mikrobigfile
+    fabriks_bucket:
+      kind: local
+      bucket_name: mikrofabriks
+    konnektion_bucket:
+      kind: local
+      bucket_name: mikrokonnektion
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAXvaZBvCLKSTuyTSLVe+xNJN+HDxPsoXmeW85/3uljvI=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIB8BD7iVdxP90aoOrthSOMapKzUEgH4ilMkunNpQCnIx
+        -----END PRIVATE KEY-----
+  minio:
+    access_key: 7pxpq6qjd39eov8ny3sswosliqk43lxwl3gj7fun
+    console_port: 9001
+    enabled: true
+    exposed_console_port: null
+    host: rustfs
+    image: rustfs/rustfs:latest
+    init_container_host: rustfs_init
+    init_container_image: jhnnsrs/init:latest
+    internal_port: 9000
+    mount: null
+    root_password: m5r12f5z4afr2cdfzdmd2jy82kl1slxtvqhvsmm9
+    root_user: small-snowflake
+    secret_key: jtj0kmaxx73l4lgubk95053prkxwwtdp5n4rps25
+    volume_name: rustfs_data
+  rekuest:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: rekuest
+    debug: false
+    enabled: true
+    github_repo: https://github.com/arkitektio/rekuest-server-next
+    host: rekuest
+    image: jhnnsrs/rekuest:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: rekuestmedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: ybz&p2t#wg&z&r1*%btm82ljnevyve#hgw5y7u^_wlnxq^7+%e
+    provenance_issuer: rekuest
+    provenance_kid: rekuest-prov-1
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEA/ave0/he+1MCWo5U7RqVJ3YqmYdWW/bKd4FXCNH2tj4=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEICupxiM1pCJh1UeFH+METPbEeevgCC+eE9cCKr9X2N6V
+        -----END PRIVATE KEY-----
+  rekuest_server: local
+  lovekit:
+    admin_config:
+      kind: global
+    allowed_hosts:
+    - '*'
+    auth_config:
+      kind: local
+    db_config:
+      kind: local
+      db: lovekit
+    debug: false
+    enabled: false
+    github_repo: https://github.com/arkitektio/lovekit-server
+    host: lovekit
+    image: jhnnsrs/lovekit:latest
+    internal_port: 80
+    media_bucket:
+      kind: local
+      bucket_name: lovekitmedia
+    mount_github: false
+    path_config:
+      kind: local
+    redis_config:
+      kind: local
+    secret_key: -g8t$7*968lrtj(p__zx7xc%3%3!v&ia28fzw_678zjnvnd)pg
+    instance_key_pair:
+      key_type: Ed25519
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAJmOnNcJwMGm6A0hXA6IYc81aNhJRuN0bJyv4B+1y+6o=
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIOBPDxUUR1Uamr93zAbsc6H8QqQoAVWpCTnx5xdg2X+U
+        -----END PRIVATE KEY-----

@@ -580,36 +580,41 @@ pub enum UpdateError {
 /// What a service's image says of the config it is about to be started on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reads {
-    /// It reads every key as written.
+    /// It reads every key as written (one under a former name included: a release may
+    /// rename a key within its major, and says so itself).
     Yes,
-    /// It does not: the config is invalid to it, or sets keys it does not read. With what
-    /// it printed.
+    /// It does not: the config sets keys it does not read. With what it printed.
     No(String),
-    /// It could not be asked — an image from before the question, or one that is no
-    /// Arkitekt service. Not a refusal: such an image is run as it always was.
+    /// It was not asked: an image from before the question, or one that is no Arkitekt
+    /// service. Such an image is run as it always was.
     Unasked,
+    /// It was asked and the asking failed — the command crashed, the config is invalid to
+    /// it, the container did not start. With what it printed. Not a refusal: whatever is
+    /// wrong will be loud when the service starts, which a key nobody reads never is.
+    Failed(String),
 }
 
-/// Reads the answer off `manage.py validate_settings --strict`: 0 is yes, 1 is the
-/// command's own no. Anything else is the command not existing or not knowing `--strict`
-/// (argparse exits 2), or the container not starting — none of which is an answer.
+/// `validate_settings --strict`'s own no (sysexits' `EX_CONFIG`).
+const NOT_READ: i32 = 78;
+
+fn last_lines(output: &str) -> String {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(12)..].join("\n")
+}
+
+/// Reads the answer off `manage.py validate_settings --strict`: 0 is yes, 78 the command's
+/// own no. 2 is argparse not knowing the command or the flag, 126 and 127 a container with
+/// no `python`: the question was never put. Anything else is the asking going wrong.
 pub fn reads_from(code: Option<i32>, output: &str) -> Reads {
     match code {
         Some(0) => Reads::Yes,
-        Some(1) => Reads::No(
-            output
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .rev()
-                .take(12)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        _ => Reads::Unasked,
+        Some(NOT_READ) => Reads::No(last_lines(output)),
+        Some(2 | 126 | 127) | None => Reads::Unasked,
+        Some(_) => Reads::Failed(last_lines(output)),
     }
 }
 
@@ -636,7 +641,14 @@ async fn reads_its_config(dir: &std::path::Path, service: &str) -> Reads {
         .output()
         .await;
     match output {
-        Ok(out) => reads_from(out.status.code(), &String::from_utf8_lossy(&out.stdout)),
+        Ok(out) => reads_from(
+            out.status.code(),
+            &format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        ),
         Err(_) => Reads::Unasked,
     }
 }
@@ -917,6 +929,10 @@ pub async fn apply(
                      this release."
                 )));
             }
+            Reads::Failed(said) => warn(format!(
+                "`{service}`'s new release could not be asked whether it reads its config; \
+                 it is updated all the same. It said:\n{said}"
+            )),
             Reads::Unasked => {}
         }
     }
@@ -1242,13 +1258,13 @@ mod tests {
         assert_eq!(digest_of("jhnnsrs/rekuest@sha256:abc"), "sha256:abc");
     }
 
-    /// `validate_settings --strict` exits 1 to refuse; an image that does not know the
-    /// flag (argparse: 2) or the command is not refusing anything.
+    /// Only `validate_settings --strict`'s own exit code refuses. An image that does not
+    /// know the flag was never asked, and a crash is said without stopping the update.
     #[test]
     fn only_the_commands_own_no_is_a_refusal() {
         assert_eq!(reads_from(Some(0), "Configuration valid"), Reads::Yes);
         assert_eq!(
-            reads_from(Some(1), "tree\n\nnot read: rekuest.service_agents\n"),
+            reads_from(Some(78), "tree\n\nnot read: rekuest.service_agents\n"),
             Reads::No("tree\nnot read: rekuest.service_agents".into())
         );
         assert_eq!(
@@ -1257,5 +1273,9 @@ mod tests {
         );
         assert_eq!(reads_from(Some(127), "python: not found"), Reads::Unasked);
         assert_eq!(reads_from(None, ""), Reads::Unasked);
+        assert_eq!(
+            reads_from(Some(1), "Traceback\nImportError: no module"),
+            Reads::Failed("Traceback\nImportError: no module".into())
+        );
     }
 }

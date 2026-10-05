@@ -12,6 +12,10 @@
 //! KONSTRUKTOR_E2E=1 cargo test -p konstruktor-core --test hub_upgrade -- --ignored --nocapture
 //! ```
 //!
+//! `KONSTRUKTOR_E2E_IMAGES` (`service=image` pairs, as in `hub_health`) updates onto those
+//! images instead of the seeded ones — a release that is not published yet. They are run as
+//! they are on this machine: with it set, the update fetches nothing.
+//!
 //! The fixture names its ports (18480, 18443), so two runs at once collide.
 
 use std::path::{Path, PathBuf};
@@ -180,13 +184,13 @@ fn create_organization(dir: &Path, slug: &str) {
     );
 }
 
-async fn update(dir: &Path) -> Result<updates::UpdateReport, updates::UpdateError> {
+async fn update(dir: &Path, pull: bool) -> Result<updates::UpdateReport, updates::UpdateError> {
     updates::apply(
         dir,
         &UpdateRequest {
             services: Vec::new(),
             advances: Vec::new(),
-            pull: true,
+            pull,
             backup_into: None,
             health_check: true,
         },
@@ -250,7 +254,7 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         .config
         .set_service_image("kraph", "jhnnsrs/kraph:no-such-release");
     profile::write_profile(&dir, &broken).unwrap();
-    let refused = update(&dir).await;
+    let refused = update(&dir, true).await;
     assert!(refused.is_err(), "an image that does not exist was fetched");
     assert_eq!(
         std::fs::read_to_string(&compose_file).unwrap(),
@@ -268,8 +272,28 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     std::fs::write(profile::profile_path(&dir), profile_text).unwrap();
 
     // --- the update ---------------------------------------------------------------------
-    let report = update(&dir).await.expect("the update runs");
-    assert_eq!(report.migrated.len(), 2, "{:?}", report.migrated);
+    let named = std::env::var("KONSTRUKTOR_E2E_IMAGES").unwrap_or_default();
+    let named: Vec<(&str, &str)> = named
+        .split(',')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .collect();
+    if !named.is_empty() {
+        let mut chosen = read_profile(&dir).unwrap();
+        for (service, image) in &named {
+            eprintln!("{service} is updated onto {image}");
+            chosen.config.set_service_image(service, image);
+        }
+        profile::write_profile(&dir, &chosen).unwrap();
+    }
+    let report = update(&dir, named.is_empty())
+        .await
+        .expect("the update runs");
+    assert_eq!(
+        report.migrated.len() as u32,
+        migrate::CURRENT_LAYOUT - 2,
+        "{:?}",
+        report.migrated
+    );
     assert!(report.refused.is_empty(), "{:?}", report.refused);
     for service in ["rekuest", "mikro", "fluss", "kabinet", "kraph"] {
         assert!(
@@ -280,15 +304,21 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     }
     assert_eq!(migrate::layout(&dir, &config), migrate::CURRENT_LAYOUT);
     let after = running_images(&dir);
-    // On the major the files were written for, not on wherever `latest` goes next.
+    // On the major the files were written for, not on wherever `latest` goes next —
+    // unless this run named an image, which somebody choosing one is left on.
     let seeded = konstruktor_core::config::hub::build_hub_config(&Default::default());
-    assert_eq!(Some(&after["rekuest"]), seeded.rekuest.image.as_ref());
-    assert_eq!(Some(&after["rekuest-takt"]), seeded.takt_image().as_ref());
+    let chosen = |service: &str| named.iter().any(|(name, _)| *name == service);
     assert_eq!(Some(&after["mikro"]), seeded.mikro.image.as_ref());
-    assert_eq!(
-        read_profile(&dir).unwrap().config.rekuest.image,
-        seeded.rekuest.image
-    );
+    if !chosen("rekuest") {
+        assert_eq!(Some(&after["rekuest"]), seeded.rekuest.image.as_ref());
+        assert_eq!(
+            read_profile(&dir).unwrap().config.rekuest.image,
+            seeded.rekuest.image
+        );
+    }
+    if !chosen("rekuest") && !chosen("rekuest-takt") {
+        assert_eq!(Some(&after["rekuest-takt"]), seeded.takt_image().as_ref());
+    }
 
     let results = healthy(&dir).await;
     let takt = results
