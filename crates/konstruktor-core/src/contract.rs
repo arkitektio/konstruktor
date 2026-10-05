@@ -3,7 +3,7 @@
 //! A hub's installer knows the hub: where the database is, which services run, which keys
 //! they trust. What a *service* is — what it needs, how this release of it spells its
 //! config — the service's own image says, through one entry point every image has
-//! (`python -m hub_contract <verb>`, the `hub-contract` package):
+//! (`python -m arkitekt_service <verb>`, the `arkitekt-service` package):
 //!
 //! - `describe`: what it needs from a hub and offers to it ([`Description`]);
 //! - `render`: this release's config, from the hub's facts ([`facts`]) with what the
@@ -32,11 +32,26 @@ const REFUSED: i32 = 78;
 
 pub const FACTS_DIR: &str = "facts";
 
+/// A permission or a role a service declares, with what it means.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Scope {
+    pub key: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// What a service needs a hub to provide.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Needs {
     #[serde(default)]
     pub storage: Vec<String>,
+    /// What a token may be allowed to do at the service, defined at the coordination
+    /// server when the hub enrols.
+    #[serde(default)]
+    pub scopes: Vec<Scope>,
+    /// The roles a member of an organization can hold at the service.
+    #[serde(default)]
+    pub roles: Vec<Scope>,
     #[serde(default)]
     pub instance_key: bool,
     #[serde(default)]
@@ -53,7 +68,7 @@ pub struct Offers {
     pub endpoints: BTreeMap<String, String>,
 }
 
-/// A service, as its image describes it (`hub_contract.description.Description`).
+/// A service, as its image describes it (`arkitekt_service.contract.description.Description`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Description {
     pub contract: u32,
@@ -81,7 +96,7 @@ pub async fn describe(image: &str) -> Option<Description> {
             image,
             "python",
             "-m",
-            "hub_contract",
+            "arkitekt_service",
             "describe",
         ])
         .stdin(std::process::Stdio::null())
@@ -134,7 +149,7 @@ pub async fn render(image: &str, facts: &Path, overrides: &Path) -> Rendered {
         args.push(format!("{}:/hub/overrides.yaml:ro", absolute(overrides)));
     }
     args.extend(
-        [image, "python", "-m", "hub_contract", "render"]
+        [image, "python", "-m", "arkitekt_service", "render"]
             .into_iter()
             .map(String::from),
     );
@@ -321,7 +336,7 @@ fn known_endpoints(id: ServiceId) -> BTreeMap<String, String> {
     }
 }
 
-/// What the hub tells the service `id` about itself (`hub_contract.facts.Facts`): the one
+/// What the hub tells the service `id` about itself (`arkitekt_service.contract.facts.Facts`): the one
 /// input its config is written from.
 ///
 /// Nothing here is in the service's vocabulary. It is read off what this installer already

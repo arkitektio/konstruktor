@@ -1665,7 +1665,9 @@ pub fn open(args: OpenArgs) -> Result<()> {
 pub struct UpdateArgs {
     #[command(flatten)]
     pub target: Target,
-    /// Only report what has moved upstream; change nothing.
+    /// Report what an update would do, and change nothing about the hub: the new releases
+    /// are fetched and asked for their version, the config keys they would be written
+    /// differently and the migrations they bring.
     #[arg(long)]
     pub check: bool,
     /// Only this service. By default every service with something newer is updated.
@@ -1894,6 +1896,57 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
             names.len(),
             names.join(", ")
         ));
+        ui::say("");
+        // The new releases are fetched to be asked: what version each is, whether it can be
+        // moved to, what of its config changes and which migrations it brings. The hub goes
+        // on running the builds written down for it.
+        ui::step("Fetching the new releases to ask them (the hub keeps running what it runs)…");
+        let services: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+        let previews = updates::preview(&dir, &services, &|event| match event {
+            updates::UpdateEvent::Step { title } => ui::step(&ui::dim(&format!("  {title}…"))),
+            updates::UpdateEvent::Warning { message } => ui::warn(&message),
+            _ => {}
+        })
+        .await?;
+        ui::say("");
+        for said in &previews {
+            let versions = match (&said.from, &said.to) {
+                (Some(from), Some(to)) if from == to => format!("{to} (a newer build of it)"),
+                (Some(from), Some(to)) => format!("{from} → {to}"),
+                (None, Some(to)) => format!("→ {to}"),
+                _ => "version not stated by its image".to_string(),
+            };
+            ui::step(&format!("{}  {}", ui::bold(&said.service), versions));
+            if let Some(reason) = &said.refused {
+                ui::fail(&format!("  would not be updated: {reason}"));
+            }
+            match said.config_changes.len() {
+                0 => {}
+                count => {
+                    ui::step(&ui::dim(&format!(
+                        "  config: {count} key(s) written differently"
+                    )));
+                    for key in &said.config_changes {
+                        ui::step(&ui::dim(&format!("    {key}")));
+                    }
+                }
+            }
+            match said.migrations.len() {
+                0 => {}
+                count => {
+                    ui::step(&ui::dim(&format!(
+                        "  database: {count} migration(s) to apply"
+                    )));
+                    for migration in &said.migrations {
+                        ui::step(&ui::dim(&format!("    {migration}")));
+                    }
+                }
+            }
+            for note in &said.notes {
+                ui::step(&ui::dim(&format!("  {note}")));
+            }
+        }
+        ui::say("");
         if !args.no_backup {
             ui::step(&ui::dim(
                 "A backup would be taken first — `--no-backup` skips it, `--backup-into` \

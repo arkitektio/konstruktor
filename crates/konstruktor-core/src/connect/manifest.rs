@@ -25,6 +25,23 @@ fn entries(pairs: &[(&str, &str)]) -> Vec<ManifestEntry> {
         .collect()
 }
 
+/// The scopes or roles a service's image declared for it, if it described itself.
+fn declared(
+    options: &HubManifestOptions,
+    host: &str,
+    which: impl Fn(&crate::contract::Description) -> &Vec<crate::contract::Scope>,
+) -> Option<Vec<ManifestEntry>> {
+    options.described.get(host).map(|said| {
+        which(said)
+            .iter()
+            .map(|scope| ManifestEntry {
+                key: scope.key.clone(),
+                description: scope.description.clone(),
+            })
+            .collect()
+    })
+}
+
 fn roles_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
     match id {
         ServiceId::Rekuest => &[
@@ -455,6 +472,11 @@ pub struct HubManifestOptions {
     /// it is the only non-tailnet address advertised.
     pub internal_host: Option<String>,
     pub expiration_seconds: Option<u64>,
+    /// What the services' own images said of themselves, by compose service
+    /// ([`crate::contract`]). The scopes and roles a service declares there are the ones
+    /// sent for it; a service that has not described itself — a hub being created, before
+    /// any image is on the machine — gets the ones this installer knows.
+    pub described: std::collections::BTreeMap<String, crate::contract::Description>,
 }
 
 /// The manifest identifier the object store is advertised under, as upstream names it.
@@ -515,8 +537,10 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                     version: "1.0.0".to_string(),
                     description: Some(description.to_string()),
                     logo: None,
-                    roles: entries(roles_of(id)),
-                    scopes: entries(scopes_of(id)),
+                    roles: declared(options, &block.host, |said| &said.needs.roles)
+                        .unwrap_or_else(|| entries(roles_of(id))),
+                    scopes: declared(options, &block.host, |said| &said.needs.scopes)
+                        .unwrap_or_else(|| entries(scopes_of(id))),
                     node_id: options.node_id.clone(),
                     instance_id: "default".to_string(),
                     public_sources: vec![PublicSource {
@@ -1009,5 +1033,61 @@ mod tests {
                 .unwrap_or_else(|| panic!("{} has no internal alias", instance.identifier));
             assert_eq!(internal.scope, AliasScope::Local);
         }
+    }
+
+    /// What a service's image declares is what the coordination server is told; the table
+    /// here only stands in until an image has spoken.
+    #[test]
+    fn a_service_that_described_itself_is_announced_with_its_own_scopes() {
+        use crate::contract::{Description, Needs, Scope};
+
+        let config = build_hub_config(&HubConfigOptions::default());
+        let said = Description {
+            contract: 1,
+            name: "mikro".into(),
+            needs: Needs {
+                scopes: vec![Scope {
+                    key: "mikro_annotate".into(),
+                    description: "Annotate images".into(),
+                }],
+                ..Needs::default()
+            },
+            ..Description::default()
+        };
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                described: [("mikro".to_string(), said)].into(),
+                ..Default::default()
+            },
+        );
+        let scopes = |identifier: &str| -> Vec<String> {
+            request
+                .hub
+                .instances
+                .iter()
+                .find(|instance| instance.manifest.identifier == identifier)
+                .map(|instance| {
+                    instance
+                        .manifest
+                        .scopes
+                        .iter()
+                        .map(|s| s.key.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(scopes("live.arkitekt.mikro"), ["mikro_annotate"]);
+        // It declared no roles: none are invented for it.
+        assert!(request
+            .hub
+            .instances
+            .iter()
+            .find(|instance| instance.manifest.identifier == "live.arkitekt.mikro")
+            .unwrap()
+            .manifest
+            .roles
+            .is_empty());
+        assert!(scopes("live.arkitekt.fluss").contains(&"fluss_execute".to_string()));
     }
 }

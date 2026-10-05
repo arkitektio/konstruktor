@@ -246,6 +246,10 @@ async fn a_running_hub_of_0_13() -> (PathBuf, Teardown) {
     (dir, teardown)
 }
 
+fn chosen_before(service: &str, named: &[(String, String)]) -> bool {
+    named.iter().any(|(name, _)| name == service)
+}
+
 /// `service=image` pairs from an environment variable.
 fn images_named(var: &str) -> Vec<(String, String)> {
     std::env::var(var)
@@ -308,6 +312,54 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         }
         profile::write_profile(&dir, &chosen).unwrap();
     }
+    // --- what the update would do, asked first -----------------------------------------
+    // The releases are fetched and asked; nothing of the hub is written or replaced.
+    let hub_before = (
+        std::fs::read_to_string(&compose_file).unwrap(),
+        std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
+        running_images(&dir),
+    );
+    let asked: Vec<String> = ["rekuest", "mikro", "fluss", "kabinet", "kraph"]
+        .map(String::from)
+        .to_vec();
+    let previews = updates::preview(&dir, &asked, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("the preview runs");
+    eprintln!("{previews:#?}");
+    assert_eq!(
+        (
+            std::fs::read_to_string(&compose_file).unwrap(),
+            std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
+            running_images(&dir),
+        ),
+        hub_before,
+        "asking what an update would do changed the hub"
+    );
+    assert!(!dir.join(".konstruktor/preview").exists());
+    let of = |service: &str| {
+        previews
+            .iter()
+            .find(|said| said.service == service)
+            .unwrap()
+    };
+    assert_eq!(of("rekuest").from.as_deref(), Some("5.2.0"));
+    assert!(of("mikro").to.is_some(), "{:?}", of("mikro"));
+    if chosen_before("rekuest", &named) {
+        // A release that describes itself says what of its config changes — the two lists
+        // Rekuest 6 reads — and which migrations it brings.
+        let rekuest = of("rekuest");
+        assert_eq!(rekuest.refused, None);
+        assert!(
+            rekuest
+                .config_changes
+                .iter()
+                .any(|key| key.starts_with("rekuest.services")),
+            "{:?}",
+            rekuest.config_changes
+        );
+        assert!(!rekuest.migrations.is_empty(), "{:?}", rekuest.notes);
+    }
+
     let report = update(&dir, true).await.expect("the update runs");
     assert_eq!(
         report.migrated.len() as u32,

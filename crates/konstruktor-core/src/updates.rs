@@ -863,6 +863,342 @@ async fn upgrade(dir: &std::path::Path, service: &str, from: &str, to: &str) -> 
     }
 }
 
+/// What an update would do to one service, worked out without changing the hub.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ServicePreview {
+    pub service: String,
+    /// The version it runs, and the one its channel points at now, where the images say.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Why the update would leave it where it is, if it would.
+    pub refused: Option<String>,
+    /// The keys of its config that would be written differently, as dotted paths. Never
+    /// their values: a config holds the service's secrets.
+    pub config_changes: Vec<String>,
+    /// The database migrations its new release would apply, in order.
+    pub migrations: Vec<String>,
+    /// What could not be worked out, and why.
+    pub notes: Vec<String>,
+}
+
+/// The dotted paths at which two config documents differ.
+pub fn changed_keys(before: &serde_norway::Value, after: &serde_norway::Value) -> Vec<String> {
+    fn walk(
+        before: Option<&serde_norway::Value>,
+        after: Option<&serde_norway::Value>,
+        path: &str,
+        out: &mut Vec<String>,
+    ) {
+        match (before, after) {
+            (
+                Some(serde_norway::Value::Mapping(before)),
+                Some(serde_norway::Value::Mapping(after)),
+            ) => {
+                let mut keys: Vec<&serde_norway::Value> =
+                    before.keys().chain(after.keys()).collect();
+                keys.sort_by_key(|key| key.as_str().unwrap_or_default().to_string());
+                keys.dedup();
+                for key in keys {
+                    let name = key.as_str().unwrap_or("?");
+                    let inner = match path.is_empty() {
+                        true => name.to_string(),
+                        false => format!("{path}.{name}"),
+                    };
+                    walk(before.get(key), after.get(key), &inner, out);
+                }
+            }
+            (before, after) if before != after => out.push(match (before, after) {
+                (None, _) => format!("{path} (new)"),
+                (_, None) => format!("{path} (gone)"),
+                _ => path.to_string(),
+            }),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(Some(before), Some(after), "", &mut out);
+    out
+}
+
+/// The migrations `manage.py migrate --plan` lists: the names it prints at the margin,
+/// under which it indents what each does.
+pub fn planned_migrations(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .skip_while(|line| !line.starts_with("Planned operations"))
+        .skip(1)
+        .filter(|line| !line.starts_with(' ') && !line.trim().is_empty())
+        .filter(|line| line.contains('.') && !line.contains(' '))
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+/// What updating `services` would do, without doing it.
+///
+/// The one thing this changes is which images are on the machine: each service's channel
+/// is fetched, since a release cannot be asked anything before it is here. The hub keeps
+/// running the builds written down for it. Then each new release is asked what an update
+/// would ask it — whether it can be moved to from what runs, beside what else would run —
+/// and has its config written for it into a scratch file and its migrations listed against
+/// the running database, neither of which touches the hub's own files or data.
+pub async fn preview(
+    dir: &std::path::Path,
+    services: &[String],
+    on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
+) -> Result<Vec<ServicePreview>, UpdateError> {
+    Box::pin(preview_on(dir, services, on_event)).await
+}
+
+async fn preview_on(
+    dir: &std::path::Path,
+    services: &[String],
+    on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
+) -> Result<Vec<ServicePreview>, UpdateError> {
+    let step = |title: String| on_event(UpdateEvent::Step { title });
+    let line = |l: crate::compose::ComposeLine| {
+        on_event(UpdateEvent::Line {
+            line: l.line,
+            stderr: l.stderr,
+        })
+    };
+    let mut config = crate::profile::read_profile(dir)?.config;
+    // What a layout move would bring along is part of what is previewed.
+    if !crate::migrate::pending(dir, &config).is_empty() {
+        for (service, image) in crate::migrate::caught_up_images(&config) {
+            config.set_service_image(&service, &image);
+        }
+    }
+    let channels: std::collections::BTreeMap<String, String> =
+        config.stack_images().into_iter().collect();
+    let built_here: Vec<String> = crate::docker::image_states(&config.stack_images())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|state| state.present && state.repo_digests.is_empty())
+        .map(|state| state.service)
+        .collect();
+    let is_service = |name: &str| {
+        config
+            .enabled_services()
+            .into_iter()
+            .find(|id| config.service(*id).host == name)
+    };
+
+    // --- fetch ---------------------------------------------------------------------------
+    let mut previews: Vec<ServicePreview> = Vec::new();
+    for service in services {
+        let mut said = ServicePreview {
+            service: service.clone(),
+            ..ServicePreview::default()
+        };
+        let companions = crate::generate::compose::companions(&config, service);
+        for name in std::iter::once(service).chain(&companions) {
+            let Some(image) = channels.get(name).filter(|_| !built_here.contains(name)) else {
+                continue;
+            };
+            step(format!("Fetching {name}"));
+            let pull = vec!["pull".to_string(), image.clone()];
+            if let Err(error) = crate::compose::run_streamed(dir, pull, &line).await {
+                said.notes.push(format!(
+                    "`{name}` could not be fetched, so nothing more is known: {}",
+                    last_lines(&error)
+                ));
+            }
+        }
+        said.from = running_version(dir, service).await;
+        said.to = match channels.get(service) {
+            Some(image) => crate::docker::image_label(image, VERSION_LABEL).await,
+            None => None,
+        };
+        previews.push(said);
+    }
+
+    // --- ask each release ------------------------------------------------------------------
+    let mut reached: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (service, _) in config.stack_images() {
+        let version = match previews.iter().find(|said| said.service == service) {
+            Some(said) => said.to.clone(),
+            None => running_version(dir, &service).await,
+        };
+        if let Some(version) = version {
+            reached.insert(service, version);
+        }
+    }
+    let identity = crate::credentials::read_credentials(dir)
+        .map(|credentials| credentials.issued_identity())
+        .unwrap_or_default();
+    let mut described = crate::contract::described(dir, &config).await;
+    let mut asked: Vec<(String, crate::catalog::ServiceId, String)> = Vec::new();
+    for said in &previews {
+        let (Some(id), Some(image)) = (is_service(&said.service), channels.get(&said.service))
+        else {
+            continue;
+        };
+        match crate::contract::describe(image).await {
+            Some(description) => {
+                described.insert(said.service.clone(), description);
+                asked.push((said.service.clone(), id, image.clone()));
+            }
+            None => {
+                described.remove(&said.service);
+            }
+        }
+    }
+    let scratch = dir.join(".konstruktor").join("preview");
+    for said in &mut previews {
+        let Some((_, id, image)) = asked.iter().find(|(name, _, _)| *name == said.service) else {
+            if is_service(&said.service).is_some() && said.notes.is_empty() {
+                said.notes.push(
+                    "its image does not describe itself, so its config stays the one \
+                     generated for it and is not previewed"
+                        .to_string(),
+                );
+            }
+            continue;
+        };
+        let description = &described[&said.service];
+        if let (Some(oldest), Some(from)) =
+            (description.upgrade_from.as_deref(), said.from.as_deref())
+        {
+            if !crate::contract::at_least(from, oldest) {
+                said.refused = Some(format!(
+                    "it runs {from}, and this release can only be moved to from {oldest} or \
+                     newer: it has to stop at a release in between first"
+                ));
+            }
+        }
+        if said.refused.is_none() {
+            said.refused = crate::contract::unmet(description, &reached);
+        }
+
+        // Its config, as this release would write it — into a scratch file, never over
+        // the one the running service reads.
+        let facts =
+            crate::generate::dump(&crate::contract::facts(&config, *id, &identity, &described));
+        let facts_file = scratch.join(format!("{}.facts.yaml", said.service));
+        let written =
+            std::fs::create_dir_all(&scratch).and_then(|()| std::fs::write(&facts_file, &facts));
+        if let Err(error) = written {
+            said.notes
+                .push(format!("its config could not be previewed: {error}"));
+            continue;
+        }
+        let overrides = crate::overrides::path(dir, &said.service);
+        let rendered = match crate::contract::render(image, &facts_file, &overrides).await {
+            crate::contract::Rendered::Config(text) => text,
+            crate::contract::Rendered::Refused(why) => {
+                said.refused.get_or_insert(why);
+                continue;
+            }
+            crate::contract::Rendered::Failed(why) => {
+                said.notes
+                    .push(format!("its config could not be previewed: {why}"));
+                continue;
+            }
+        };
+        let current = std::fs::read_to_string(dir.join(format!("configs/{}.yaml", said.service)))
+            .ok()
+            .and_then(|text| serde_norway::from_str::<serde_norway::Value>(&text).ok());
+        if let (Some(current), Ok(new)) = (
+            current,
+            serde_norway::from_str::<serde_norway::Value>(&rendered),
+        ) {
+            said.config_changes = changed_keys(&current, &new);
+        }
+
+        // Its migrations, against the database as it is: read, not applied. Run where the
+        // service's container is, on the config just written for the new release.
+        let config_file = scratch.join(format!("{}.yaml", said.service));
+        let networks = match std::fs::write(&config_file, &rendered) {
+            Ok(()) => container_networks(dir, &said.service).await,
+            Err(_) => Vec::new(),
+        };
+        let Some(network) = networks.first() else {
+            said.notes.push(
+                "its pending migrations are not listed: the hub is not running, and they \
+                 are read off its database"
+                    .to_string(),
+            );
+            continue;
+        };
+        let absolute = std::fs::canonicalize(&config_file).unwrap_or(config_file.clone());
+        let plan = crate::engine_probe::engine()
+            .async_command()
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                network,
+                "-v",
+                &format!("{}:/workspace/config.yaml:ro", absolute.to_string_lossy()),
+                image,
+                "python",
+                "manage.py",
+                "migrate",
+                "--plan",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        match plan {
+            Ok(out) if out.status.success() => {
+                said.migrations = planned_migrations(&String::from_utf8_lossy(&out.stdout));
+            }
+            Ok(out) => said.notes.push(format!(
+                "its pending migrations could not be listed: {}",
+                last_lines(&String::from_utf8_lossy(&out.stderr))
+            )),
+            Err(error) => said.notes.push(format!(
+                "its pending migrations could not be listed: {error}"
+            )),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    Ok(previews)
+}
+
+/// The networks `service`'s container is attached to; empty when it has none.
+async fn container_networks(dir: &std::path::Path, service: &str) -> Vec<String> {
+    let engine = crate::engine_probe::engine();
+    let Some(container) = engine
+        .async_command()
+        .args(["compose", "ps", "--status", "running", "-q", service])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()
+        .and_then(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .map(|line| line.trim().to_string())
+        })
+        .filter(|id| !id.is_empty())
+    else {
+        return Vec::new();
+    };
+    engine
+        .async_command()
+        .args([
+            "inspect",
+            "--format",
+            "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}\n{{end}}",
+            &container,
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Applies an update: back up, record what is running and keep a copy of the files, fetch
 /// what each service's channel points at now, write those builds and the files, and only
 /// then recreate the services, record again, and check it all came back.
@@ -1898,5 +2234,44 @@ mod tests {
         let mut unpinned = check("fluss", "sha256:newer");
         behind_its_pin(&mut unpinned, &pins);
         assert_eq!(unpinned.state, UpstreamState::Current);
+    }
+
+    /// The paths that differ are named, never what is at them: a config holds secrets.
+    #[test]
+    fn a_config_preview_names_keys_and_shows_no_values() {
+        let before: serde_norway::Value = serde_norway::from_str(
+            "django: {secret_key: aaa, debug: false}\nrekuest: {service_agents: [1]}\nsame: 1\n",
+        )
+        .unwrap();
+        let after: serde_norway::Value = serde_norway::from_str(
+            "django: {secret_key: bbb, debug: false}\nrekuest: {services: [1], hook_agents: []}\nsame: 1\n",
+        )
+        .unwrap();
+        assert_eq!(
+            changed_keys(&before, &after),
+            [
+                "django.secret_key",
+                "rekuest.hook_agents (new)",
+                "rekuest.service_agents (gone)",
+                "rekuest.services (new)"
+            ]
+        );
+        assert_eq!(changed_keys(&before, &before), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_migrations_a_release_would_apply_are_read_off_its_plan() {
+        let plan = "17:07:55 INFO embeddings.engine: loaded\nPlanned operations:\nfacade.0011_drop_lease_epoch\n    Remove field lease_epoch from task\nauthentikate.0007_user_claims\n    Add field x to user\n";
+        assert_eq!(
+            planned_migrations(plan),
+            [
+                "facade.0011_drop_lease_epoch",
+                "authentikate.0007_user_claims"
+            ]
+        );
+        assert_eq!(
+            planned_migrations("Planned operations:\n  No planned migration operations.\n"),
+            Vec::<String>::new()
+        );
     }
 }

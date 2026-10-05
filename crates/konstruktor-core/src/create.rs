@@ -335,6 +335,8 @@ pub async fn create_hub(
             // reach it only as `gateway`. Scope local, so clients elsewhere skip it.
             internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
+            // A hub being created has no image on the machine to ask yet.
+            described: Default::default(),
         },
     );
 
@@ -981,6 +983,13 @@ pub async fn reauthorize(
             mesh_alias: on_mesh,
             internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
+            // What the services' images have said of themselves on this hub: their own
+            // scopes and roles, where they have.
+            described: crate::lock::read(&answers.dir)
+                .described
+                .into_iter()
+                .filter_map(|(service, known)| Some((service, known.description?)))
+                .collect(),
         },
     );
 
