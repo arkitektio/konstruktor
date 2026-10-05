@@ -294,6 +294,10 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
     assert_eq!(running_images(&dir), before, "a container was replaced");
     std::fs::write(profile::profile_path(&dir), profile_text).unwrap();
 
+    // What an operator set for this hub has to be in the config the new release runs on.
+    konstruktor_core::overrides::set(&dir, "mikro", "django.log_level", "WARNING")
+        .expect("the override is kept");
+
     // --- the update ---------------------------------------------------------------------
     let named = images_named("KONSTRUKTOR_E2E_IMAGES");
     if !named.is_empty() {
@@ -320,6 +324,14 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         );
     }
     assert_eq!(migrate::layout(&dir, &config), migrate::CURRENT_LAYOUT);
+    let mikro: serde_norway::Value =
+        serde_norway::from_str(&std::fs::read_to_string(dir.join("configs/mikro.yaml")).unwrap())
+            .unwrap();
+    assert_eq!(
+        mikro["django"]["log_level"].as_str(),
+        Some("WARNING"),
+        "what the operator set did not survive the update"
+    );
     let after = running_images(&dir);
     // On the major the files were written for, not on wherever `latest` goes next —
     // unless this run named an image, which somebody choosing one is left on.
@@ -490,6 +502,79 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         .expect("the update runs");
     assert_eq!(report.updated, ["kraph"]);
     assert!(report.refused.is_empty(), "{:?}", report.refused);
+
+    // --- back to an earlier build, and forward again -----------------------------------------
+    // Kraph is put on the build before the one its channel points at, as a hub that has
+    // not been updated for a while is; an update moves it, a rollback puts it back and
+    // holds it there, and released it moves on.
+    let channel = seeded.kraph.image.clone().unwrap();
+    let earlier =
+        konstruktor_core::pins::resolve(&[("kraph".into(), "jhnnsrs/kraph:1.1.0".into())])
+            .await
+            .remove("kraph")
+            .and_then(|pin| pin.digest)
+            .expect("kraph 1.1.0 is on this machine");
+    let newest = konstruktor_core::lock::read(&dir).pins["kraph"]
+        .digest
+        .clone()
+        .unwrap();
+    assert_ne!(earlier, newest, "kraph's channel is no further than 1.1.0");
+    konstruktor_core::pins::record(
+        &dir,
+        [(
+            "kraph".to_string(),
+            konstruktor_core::lock::Pin {
+                image: channel.clone(),
+                digest: Some(earlier.clone()),
+            },
+        )]
+        .into(),
+    )
+    .unwrap();
+    profile::rewrite(&dir, read_profile(&dir).unwrap().config, &[]).unwrap();
+    assert!(compose(&dir, &["up", "-d", "--no-deps", "kraph"])
+        .status
+        .success());
+    let runs = |dir: &Path| running_images(dir)["kraph"].clone();
+    assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
+
+    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("the update runs");
+    assert_eq!(report.updated, ["kraph"]);
+    assert_eq!(runs(&dir), format!("{channel}@{newest}"));
+
+    let back = konstruktor_core::rollback::plan(&dir).expect("there is a state to go back to");
+    assert_eq!(
+        back.changes
+            .iter()
+            .map(|change| (change.service.as_str(), change.to.clone()))
+            .collect::<Vec<_>>(),
+        [("kraph", format!("{channel}@{earlier}"))]
+    );
+    konstruktor_core::rollback::run(&dir, &back, &|line| eprintln!("  {}", line.line))
+        .await
+        .expect("the rollback runs");
+    assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
+    assert_eq!(
+        read_profile(&dir).unwrap().config.kraph.image,
+        Some(channel.clone()),
+        "the profile still follows its channel"
+    );
+    // Held there: an update does not undo the rollback.
+    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("an update of a rolled-back hub runs");
+    assert!(report.updated.is_empty(), "{:?}", report.updated);
+    assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
+    // Released, it moves on.
+    konstruktor_core::freeze::release(&dir, &["kraph".to_string()]).unwrap();
+    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("the update runs");
+    assert_eq!(report.updated, ["kraph"]);
+    assert_eq!(runs(&dir), format!("{channel}@{newest}"));
+    healthy(&dir).await;
 }
 
 /// A release whose own upgrade fails stops the update before anything is replaced: the

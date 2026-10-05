@@ -1,5 +1,6 @@
 mod authorize;
 mod compose_cmd;
+mod config_cmd;
 mod coord;
 mod create;
 mod engine;
@@ -75,6 +76,7 @@ Change a hub:
   superuser        Create an admin account in one service
   checkout         List or switch the branches of a dev hub's source checkouts
   compose          Show, validate, edit or reset its compose file
+  config           Show or set what a service is configured with beyond defaults
   hub regenerate   Rewrite its generated files from its profile
   check            Check that every service answers on every advertised address
 
@@ -215,6 +217,9 @@ enum Command {
     /// Show, validate, edit or reset a hub's compose file.
     #[command(subcommand)]
     Compose(compose_cmd::ComposeCommand),
+    /// Show or change what was set for a hub's services beyond what is generated.
+    #[command(subcommand)]
+    Config(config_cmd::ConfigCommand),
     /// Check that every service answers on every address the hub advertises.
     // `gateway` is what this was called, which read as a command that manages the
     // gateway rather than one that asks through it.
@@ -433,6 +438,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::HubReport(args) => hub_report(args).await,
         Command::Check(target) => manage::gateway(&target, json).await,
         Command::Compose(command) => compose_cmd::run(command).await,
+        Command::Config(command) => config_cmd::run(command).await,
         Command::SelfCmd(command) => self_cmd::run(command),
     }
 }

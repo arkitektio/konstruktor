@@ -116,16 +116,15 @@ pub fn reason(frozen: &BTreeMap<String, Frozen>, service: &str) -> Option<String
     })
 }
 
-/// Forgets the freeze of `services`: for a rollback, which has just put them on another
-/// build than the one they were frozen on.
-pub fn forget(dir: &Path, services: &[String]) -> std::io::Result<()> {
+/// Marks exactly `services` — no companions added, no check against the profile — as left
+/// alone: for a rollback, which names every service it put back itself.
+pub fn hold_exactly(dir: &Path, services: &[String]) -> std::io::Result<()> {
     let mut held = lock::read(dir);
-    let before = held.frozen.len();
-    held.frozen.retain(|service, _| !services.contains(service));
-    if held.frozen.len() != before {
-        lock::write(dir, &held)?;
+    let at = lock::now();
+    for service in services {
+        held.frozen.entry(service.clone()).or_insert(Frozen { at });
     }
-    Ok(())
+    lock::write(dir, &held)
 }
 
 #[cfg(test)]

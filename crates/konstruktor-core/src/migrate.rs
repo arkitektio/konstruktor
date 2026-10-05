@@ -297,11 +297,13 @@ pub fn hand_edited(dir: &Path) -> Vec<String> {
 
 /// Writes a hub's generated files and records them: the layout they have, and each file's
 /// hash. The compose file is written with the builds the lock holds for this profile
-/// ([`crate::pins`]), so every path that regenerates keeps the hub on them without knowing.
+/// ([`crate::pins`]), and each service's config with what the operator set for it laid over
+/// ([`crate::overrides`]), so every path that regenerates keeps both without knowing.
 /// A file the record held and the generator no longer writes is removed.
 pub fn write_hub(dir: &Path, config: &HubConfig, files: &GeneratedFiles) -> std::io::Result<()> {
     let mut written: BTreeMap<String, String> = files.clone();
     crate::pins::apply(&mut written, config, &lock::read(dir).pins);
+    crate::overrides::apply(dir, &mut written);
     crate::generate::write::write_generated_files(dir, &written)?;
     for stale in lock::stamp(dir, CURRENT_LAYOUT, &written)? {
         let _ = std::fs::remove_file(dir.join(stale));

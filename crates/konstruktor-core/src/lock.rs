@@ -70,6 +70,10 @@ pub struct Entry {
     /// Only an entry written before an update has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<String>,
+    /// The backup of the hub's data taken at this moment: what a rollback to this entry
+    /// can put the data back from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<String>,
 }
 
 /// A service an update leaves alone: see [`crate::freeze`].
@@ -198,9 +202,17 @@ pub async fn record(
     reason: &str,
     now: u64,
 ) -> std::io::Result<bool> {
-    let services = snapshot(config).await;
     let mut lock = read(dir);
     lock.version = 1;
+    // What the hub runs is the build written down for it; a tag says only what this
+    // machine last fetched of it, which may be further along.
+    let mut services = snapshot(config).await;
+    let named: BTreeMap<String, String> = config.stack_images().into_iter().collect();
+    for (service, pin) in &lock.pins {
+        if named.get(service) == Some(&pin.image) && pin.digest.is_some() {
+            services.insert(service.clone(), pin.clone());
+        }
+    }
     if lock
         .current()
         .is_some_and(|entry| entry.services == services)
@@ -212,6 +224,7 @@ pub async fn record(
         reason: reason.to_string(),
         services,
         files: None,
+        backup: None,
     });
     // A long-lived hub updated weekly would otherwise grow this file forever. Twenty is
     // more history than any rollback reaches back through.
@@ -257,6 +270,16 @@ pub fn stamp(
     Ok(stale)
 }
 
+/// Names the backup of the data that belongs to what the hub is running now.
+pub fn attach_backup(dir: &Path, backup: &str) -> std::io::Result<()> {
+    let mut lock = read(dir);
+    if let Some(entry) = lock.history.last_mut() {
+        entry.backup = Some(backup.to_string());
+        write(dir, &lock)?;
+    }
+    Ok(())
+}
+
 /// Names the copy of the files that belongs to what the hub is running now.
 pub fn attach_files(dir: &Path, generation: &str) -> std::io::Result<()> {
     let mut lock = read(dir);
@@ -297,6 +320,7 @@ mod tests {
                 },
             )]),
             files: None,
+            backup: None,
         }
     }
 

@@ -8,10 +8,12 @@
 //! backup `update` takes first. Both front ends have to say so before doing it; there is
 //! no wording of this that makes it safe to leave unsaid.
 //!
-//! The mechanism is a profile rewrite. Generation reads `config.<service>.image`, so the
-//! only way to put a container back on an older image is to write that image into the
-//! profile and regenerate — the same sequence `create::reauthorize` performs, for the same
-//! reason.
+//! The mechanism is the lock. A hub runs the build written down for each service
+//! ([`crate::pins`]), so going back is writing down the earlier build and generating the
+//! files with it — the profile keeps naming the channel the service follows. And since the
+//! next `update` would move it straight forward again, a service that was put back is
+//! frozen ([`crate::freeze`]): `unfreeze`, then `update`, is how it moves on once whatever
+//! was wrong with the newer release is fixed.
 //!
 //! Unless the update being undone moved the hub's files to another layout
 //! ([`crate::migrate`]): then what is generated today is not what the older images read,
@@ -68,6 +70,9 @@ pub struct RollbackPlan {
     /// The kept copy of the hub's files that goes back with the images: set when the
     /// state returned to ran on files of another layout than the ones on disk.
     pub files: Option<String>,
+    /// The backup of the data taken when the state returned to was recorded: what puts
+    /// the database back, which this does not.
+    pub backup: Option<String>,
 }
 
 /// The previous state, and what returning to it would change.
@@ -78,7 +83,7 @@ pub fn plan(dir: &Path) -> Result<RollbackPlan, RollbackError> {
     let history = lock::read(dir);
     let previous = history.previous().ok_or(RollbackError::NoHistory)?;
 
-    let (changes, unrollable) = changes_against(&config, previous);
+    let (changes, unrollable) = changes_against(&config, &history.pins, previous);
     if changes.is_empty() {
         return Err(RollbackError::NothingToDo);
     }
@@ -107,22 +112,15 @@ pub fn plan(dir: &Path) -> Result<RollbackPlan, RollbackError> {
         crate::generations::layout(dir, name, &config)
             .is_some_and(|kept| kept != crate::migrate::layout(dir, &config))
     });
-    let frozen = crate::freeze::frozen(dir);
-    let thawed: Vec<&str> = changes
-        .iter()
-        .map(|change| change.service.as_str())
-        .filter(|service| frozen.contains_key(*service))
-        .collect();
-    if !thawed.is_empty() {
-        warnings.push(format!(
-            "{} is frozen on the build it runs now; going back to an earlier one lifts \
-             that. `konstruktor freeze` holds it on the earlier build afterwards",
-            thawed.join(", ")
-        ));
-    }
+    warnings.push(
+        "what is put back is frozen, or the next update would move it forward again: \
+         `konstruktor unfreeze`, then `konstruktor update`, when it should move on"
+            .to_string(),
+    );
     if files.is_some() {
         warnings.push(
-            "the update being undone rewrote this hub's files for the newer releases; the              files it kept from before are put back with the images"
+            "the update being undone rewrote this hub's files for the newer releases; the \
+             files it kept from before are put back with the images"
                 .to_string(),
         );
     }
@@ -134,15 +132,24 @@ pub fn plan(dir: &Path) -> Result<RollbackPlan, RollbackError> {
         unrollable,
         warnings,
         files,
+        backup: previous.backup.clone(),
     })
 }
 
 /// Which services the recorded state would actually move, and which it cannot.
-fn changes_against(config: &HubConfig, previous: &Entry) -> (Vec<Change>, Vec<String>) {
+fn changes_against(
+    config: &HubConfig,
+    pins: &std::collections::BTreeMap<String, lock::Pin>,
+    previous: &Entry,
+) -> (Vec<Change>, Vec<String>) {
     let mut changes = Vec::new();
     let mut unrollable = Vec::new();
+    // What each service runs now: the build written down for it, or — with none — what
+    // the profile names.
+    let runs = crate::pins::references(config, pins);
 
-    for (service, current) in config.stack_images() {
+    for (service, named) in config.stack_images() {
+        let current = runs.get(&service).cloned().unwrap_or(named);
         let Some(pin) = previous.services.get(&service) else {
             continue;
         };
@@ -165,28 +172,62 @@ fn changes_against(config: &HubConfig, previous: &Entry) -> (Vec<Change>, Vec<St
     (changes, unrollable)
 }
 
-/// Writes the older images into the profile and regenerates the deployment from it — or,
-/// when the plan names a kept copy of the files, puts that back and writes the images into
-/// it.
+/// Writes the earlier builds down and generates the hub's files with them — or, when the
+/// plan names a kept copy of the files, puts that back and writes the images into it — and
+/// freezes what was put back.
 ///
-/// Recreating the containers is the caller's — nothing here starts or stops anything. The
-/// write itself is [`crate::profile::rewrite_images`], shared with `update --infra`, which
-/// moves images in the other direction.
+/// Recreating the containers is the caller's — nothing here starts or stops anything.
 pub fn apply(dir: &Path, plan: &RollbackPlan) -> Result<(), RollbackError> {
-    let images: Vec<(String, String)> = plan
+    let moved: Vec<String> = plan
         .changes
         .iter()
-        .map(|change| (change.service.clone(), change.to.clone()))
+        .map(|change| change.service.clone())
         .collect();
     match &plan.files {
-        Some(name) => restore_files(dir, name, &images),
-        None => crate::profile::rewrite_images(dir, &images)
-            .map_err(|e| RollbackError::Profile(e.to_string())),
-    }?;
-    // A service put back on another build is no longer held on the one it was frozen on.
-    let moved: Vec<String> = images.into_iter().map(|(service, _)| service).collect();
-    crate::freeze::forget(dir, &moved)?;
+        Some(name) => {
+            let images: Vec<(String, String)> = plan
+                .changes
+                .iter()
+                .map(|change| (change.service.clone(), change.to.clone()))
+                .collect();
+            restore_files(dir, name, &images)?;
+        }
+        None => pin_back(dir, plan)?,
+    }
+    crate::freeze::hold_exactly(dir, &moved)?;
     Ok(())
+}
+
+/// Writes each change's earlier build into the lock as the service's pin, under the
+/// channel it was a build of, and regenerates. A profile that names something else for the
+/// service — a channel that moved since, a digest an earlier rollback left there — is put
+/// back on that channel.
+fn pin_back(dir: &Path, plan: &RollbackPlan) -> Result<(), RollbackError> {
+    let config = read_profile(dir)
+        .map(|profile| profile.config)
+        .map_err(|e| RollbackError::Profile(e.to_string()))?;
+    let named: std::collections::BTreeMap<String, String> =
+        config.stack_images().into_iter().collect();
+    let mut channels: Vec<(String, String)> = Vec::new();
+    let mut held = lock::read(dir);
+    for change in &plan.changes {
+        let Some((channel, digest)) = change.to.split_once('@') else {
+            continue;
+        };
+        if named.get(&change.service).map(String::as_str) != Some(channel) {
+            channels.push((change.service.clone(), channel.to_string()));
+        }
+        held.pins.insert(
+            change.service.clone(),
+            lock::Pin {
+                image: channel.to_string(),
+                digest: Some(digest.to_string()),
+            },
+        );
+    }
+    lock::write(dir, &held)?;
+    crate::profile::rewrite_images(dir, &channels)
+        .map_err(|e| RollbackError::Profile(e.to_string()))
 }
 
 /// Puts a kept copy of the files back and points it at `images`. Nothing is generated: the
@@ -318,6 +359,7 @@ mod tests {
                 })
                 .collect(),
             files: None,
+            backup: None,
         }
     }
 
@@ -338,7 +380,7 @@ mod tests {
             ("mikro", "jhnnsrs/mikro:next", None),
         ]);
 
-        let (changes, unrollable) = changes_against(&config, &entry);
+        let (changes, unrollable) = changes_against(&config, &BTreeMap::new(), &entry);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].service, "rekuest");
         assert_eq!(changes[0].to, "jhnnsrs/rekuest:next@sha256:old");
@@ -371,6 +413,7 @@ mod tests {
                 reason: "updated".into(),
                 services: BTreeMap::new(),
                 files: None,
+                backup: None,
             }],
             ..Default::default()
         };
@@ -433,6 +476,63 @@ mod tests {
             read_profile(&dir).unwrap().config.rekuest.image.as_deref(),
             Some("jhnnsrs/rekuest:latest@sha256:old")
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Going back is writing the earlier build down: the profile keeps its channel, the
+    /// compose file names the build, and what was put back is frozen so that the next
+    /// update does not undo the rollback.
+    #[test]
+    fn an_earlier_build_is_written_down_and_held() {
+        let dir = std::env::temp_dir().join(format!(
+            "konstruktor-rollback-pins-{}-{}",
+            std::process::id(),
+            lock::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = config();
+        let channel = config.rekuest.image.clone().unwrap();
+        crate::profile::rewrite(&dir, config.clone(), &[]).unwrap();
+        // It ran `old`, was updated to `new`, and runs `new` now.
+        let mut held = lock::read(&dir);
+        held.history
+            .push(previous(&[("rekuest", &channel, Some("sha256:old"))]));
+        held.history.push(Entry {
+            reason: "updated".into(),
+            ..previous(&[("rekuest", &channel, Some("sha256:new"))])
+        });
+        held.pins.insert(
+            "rekuest".into(),
+            Pin {
+                image: channel.clone(),
+                digest: Some("sha256:new".into()),
+            },
+        );
+        lock::write(&dir, &held).unwrap();
+        crate::profile::rewrite(&dir, config.clone(), &[]).unwrap();
+
+        let plan = plan(&dir).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].from, format!("{channel}@sha256:new"));
+        assert_eq!(plan.changes[0].to, format!("{channel}@sha256:old"));
+        apply(&dir, &plan).unwrap();
+
+        assert_eq!(
+            read_profile(&dir).unwrap().config.rekuest.image.as_deref(),
+            Some(channel.as_str()),
+            "the profile keeps the channel"
+        );
+        let compose = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
+        assert!(
+            compose.contains(&format!("image: {channel}@sha256:old\n")),
+            "{compose}"
+        );
+        assert_eq!(
+            crate::freeze::frozen(&dir).keys().collect::<Vec<_>>(),
+            ["rekuest"]
+        );
+        // Where it is now is where the record says it was: nothing left to put back.
+        assert!(matches!(super::plan(&dir), Err(RollbackError::NothingToDo)));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -2081,6 +2081,9 @@ pub struct RollbackArgs {
     /// Show what would be put back, and change nothing.
     #[arg(long)]
     pub check: bool,
+    /// Put the data back as well, from the backup taken before the update being undone.
+    #[arg(long)]
+    pub with_data: bool,
     /// Answer yes to every confirmation. Required when this is not a terminal.
     #[arg(long, short = 'y')]
     pub yes: bool,
@@ -2168,9 +2171,35 @@ pub async fn rollback(args: RollbackArgs, json: bool) -> Result<()> {
             .join(", ")
     ));
     ui::step(&ui::dim(
-        "The database was not touched. If the update migrated it, restore the backup \
-         taken before the update.",
+        "They are frozen where they are: `konstruktor unfreeze`, then `konstruktor update`, \
+         moves them on.",
     ));
+    match (&plan.backup, args.with_data) {
+        (Some(backup), true) => {
+            ui::say("");
+            ui::step("Putting the data back from the backup taken before that update.");
+            return Box::pin(restore(RestoreArgs {
+                backup: backup.into(),
+                in_deployment: Some(dir.to_string_lossy().to_string()),
+                raw: false,
+                skip_postgres: false,
+                skip_minio: false,
+                yes: args.yes,
+            }))
+            .await;
+        }
+        (Some(backup), false) => ui::step(&ui::dim(&format!(
+            "The database was not touched. If the update migrated it: `konstruktor restore \
+             {backup}`, or `rollback --with-data` in one go."
+        ))),
+        (None, true) => bail!(
+            "the images are back, but no backup was taken before that update, so there is \
+             no data to put back"
+        ),
+        (None, false) => ui::step(&ui::dim(
+            "The database was not touched, and no backup was taken before that update.",
+        )),
+    }
     ui::say("");
     Ok(())
 }

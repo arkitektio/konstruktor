@@ -673,7 +673,7 @@ pub fn reads_from(code: Option<i32>, output: &str) -> Reads {
 /// Asks the image `service` would be recreated onto whether it reads the config generated
 /// for it, in a container of its own that touches nothing: no dependencies started, no
 /// database asked.
-async fn reads_its_config(dir: &std::path::Path, service: &str) -> Reads {
+pub async fn reads_its_config(dir: &std::path::Path, service: &str) -> Reads {
     let output = crate::engine_probe::engine()
         .async_command()
         .args([
@@ -803,6 +803,25 @@ async fn ships_an_upgrade(dir: &std::path::Path, service: &str) -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
+/// The new release's database migrations, as a command of their own in a container of the
+/// new image. The services also migrate when they start, which then finds nothing to do.
+fn migrate(service: &str) -> Vec<String> {
+    [
+        "compose",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        service,
+        "python",
+        "manage.py",
+        "migrate",
+        "--noinput",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
 /// Runs the new release's own upgrade — what it has to do to its data between the two
 /// versions, which only it knows — in a container of the new image. The service's own
 /// container is stopped by the caller: the old code must not be writing meanwhile.
@@ -868,6 +887,15 @@ async fn upgrade(dir: &std::path::Path, service: &str, from: &str, to: &str) -> 
 /// A refused service is reported and skipped, not an error: the rest still move. The
 /// caller decides what a partial update means for its exit code.
 pub async fn apply(
+    dir: &std::path::Path,
+    request: &UpdateRequest,
+    on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
+) -> Result<UpdateReport, UpdateError> {
+    // On the heap: the sequence is long, and its state does not fit a caller's stack.
+    Box::pin(apply_on(dir, request, on_event)).await
+}
+
+async fn apply_on(
     dir: &std::path::Path,
     request: &UpdateRequest,
     on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
@@ -958,6 +986,9 @@ pub async fn apply(
             "could not record what this hub is running ({error}) — rollback will have \
              nothing to go back to"
         ));
+    }
+    if let Some(backup) = &report.backup {
+        let _ = lock::attach_backup(dir, backup);
     }
     let kept = match crate::generations::take(dir, at) {
         Ok(name) => {
@@ -1138,6 +1169,7 @@ pub async fn apply(
         .flat_map(|(service, companions)| std::iter::once(service).chain(companions))
         .filter_map(|name| Some((name.clone(), channels.get(name)?.clone())))
         .collect();
+    let builds_before = lock::read(dir).pins;
     let mut builds = crate::pins::resolve(&fetched).await;
     let untouched: Vec<(String, String)> = crate::pins::unpinned(&config, &lock::read(dir).pins)
         .into_iter()
@@ -1233,27 +1265,48 @@ pub async fn apply(
     // Asked before anything is stopped or recreated: afterwards the answer is always yes.
     let was_running = running(dir).await;
 
-    // --- what each release has to do to its own data -------------------------------------
-    // Between two versions, and only the release knows what. It must not run while the
-    // old code still writes, so everything that writes that service's data is stopped
-    // first — the service and what moves with it — and every upgrade runs before a single
-    // container is replaced: a failure then still has a hub to go back to, old builds on
-    // old files, started again as it was.
-    let mut upgrading: Vec<(String, String, String)> = Vec::new();
+    // --- migrations, and what each release has to do to its own data ---------------------
+    // A service whose build changes has its database brought to the new release *before*
+    // its container is replaced, as a step with an answer — not inside the new container's
+    // start, where a migration that fails is a crash loop somebody notices later. After the
+    // schema, whatever the release itself has to do to its data between the two versions,
+    // which only it knows (`manage.py upgrade`).
+    //
+    // Neither may run while the old code still writes, so everything that writes that
+    // service's data is stopped first — the service and what moves with it — and all of it
+    // happens before a single container is replaced: a failure then still has a hub to go
+    // back to, old builds on old files, started again as it was.
+    let builds_now = lock::read(dir).pins;
+    let is_service = |name: &str| {
+        config
+            .enabled_services()
+            .into_iter()
+            .any(|id| config.service(id).host == name)
+    };
+    let mut preparing: Vec<(String, Option<(String, String)>)> = Vec::new();
     for (service, _) in &moving {
+        // The same build as before has nothing to migrate, and is not stopped for it.
+        let same_build = builds_before
+            .get(service)
+            .zip(builds_now.get(service))
+            .is_some_and(|(before, now)| before == now);
+        if !is_service(service) || same_build {
+            continue;
+        }
         let reached = match channels.get(service) {
             Some(image) => crate::docker::image_label(image, VERSION_LABEL).await,
             None => None,
         };
-        if let (Some(from), Some(to)) = (running_version(dir, service).await, reached) {
-            // Asked while the old container still serves: only a release that ships an
-            // upgrade costs its service a stop.
-            if from != to && ships_an_upgrade(dir, service).await {
-                upgrading.push((service.clone(), from, to));
+        let versions = match (running_version(dir, service).await, reached) {
+            // Asked while the old container still serves.
+            (Some(from), Some(to)) if from != to && ships_an_upgrade(dir, service).await => {
+                Some((from, to))
             }
-        }
+            _ => None,
+        };
+        preparing.push((service.clone(), versions));
     }
-    if !upgrading.is_empty() {
+    if !preparing.is_empty() {
         let is_up = |name: String| async move {
             crate::engine_probe::engine()
                 .async_command()
@@ -1265,7 +1318,7 @@ pub async fn apply(
                 .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
         };
         let mut stopped: Vec<String> = Vec::new();
-        for (service, _, _) in &upgrading {
+        for (service, _) in &preparing {
             let writers = moving
                 .iter()
                 .find(|(name, _)| name == service)
@@ -1277,7 +1330,7 @@ pub async fn apply(
                 }
             }
         }
-        // The upgrade talks to the database, which a stopped hub does not run.
+        // Both talk to the database, which a stopped hub does not run.
         let database_was_up = is_up(DB_COMPOSE_SERVICE.to_string()).await;
         let compose = |verb: &str, names: &[String]| {
             let mut argv = vec!["compose".to_string(), verb.to_string()];
@@ -1297,7 +1350,7 @@ pub async fn apply(
             }
         };
         if !stopped.is_empty() {
-            step(format!("Stopping {} for its upgrade", stopped.join(", ")));
+            step(format!("Stopping {} to migrate", stopped.join(", ")));
             if let Err(error) =
                 crate::compose::run_streamed(dir, compose("stop", &stopped), &line).await
             {
@@ -1325,7 +1378,27 @@ pub async fn apply(
                 return Err(UpdateError::Compose(error));
             }
         }
-        for (service, from, to) in &upgrading {
+        let undone = "This hub runs the builds it ran, on the files it had. What was done to \
+                      the database before the failure is not undone — a migration is applied \
+                      whole or not at all, the ones before it stay — and the data as it was \
+                      is in the backup.";
+        for (service, versions) in &preparing {
+            step(format!("Migrating {service}'s database"));
+            if let Err(said) = crate::compose::run_streamed(dir, migrate(service), &line).await {
+                undo(
+                    format!("`{service}`'s database could not be migrated"),
+                    stopped,
+                )
+                .await;
+                return Err(UpdateError::Migration(format!(
+                    "the update was stopped before anything was replaced: the database of \
+                     `{service}` could not be migrated to its new release. It said:\n{}\n{undone}",
+                    last_lines(&said)
+                )));
+            }
+            let Some((from, to)) = versions else {
+                continue;
+            };
             step(format!("{service} upgrades itself from {from} to {to}"));
             if let Upgraded::Failed(said) = upgrade(dir, service, from, to).await {
                 undo(
@@ -1335,10 +1408,7 @@ pub async fn apply(
                 .await;
                 return Err(UpdateError::Migration(format!(
                     "the update was stopped before anything was replaced: `{service}` \
-                     could not upgrade itself from {from} to {to}. It said:\n{said}\nThis \
-                     hub runs the builds it ran, on the files it had. What the upgrade \
-                     did to the data before it failed is not undone: an upgrade is \
-                     written to be run again, and the data as it was is in the backup."
+                     could not upgrade itself from {from} to {to}. It said:\n{said}\n{undone}"
                 )));
             }
         }
@@ -1391,7 +1461,7 @@ pub async fn apply(
         .into_iter()
         .filter(|name| !recreated.contains(name))
         .collect();
-        crate::services::apply_services(dir, &restart, &line)
+        Box::pin(crate::services::apply_services(dir, &restart, &line))
             .await
             .map_err(|error| UpdateError::Compose(error.to_string()))?;
     }
