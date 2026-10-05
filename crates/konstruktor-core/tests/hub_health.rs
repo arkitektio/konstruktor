@@ -14,6 +14,11 @@
 //! `KONSTRUKTOR_E2E_PROVISION_SECS` (default 180) is how long Rekuest then gets to provision
 //! a HookAgent for every hooked service.
 //!
+//! `KONSTRUKTOR_E2E_IMAGES` runs the hub on other images than the seeded ones, as
+//! `service=image` pairs separated by commas (`rekuest=jhnnsrs/rekuest:6.1.0-rc.1`; takt
+//! follows Rekuest unless `rekuest-takt=` names its own). It is how a service asks, before
+//! a release is published, whether a hub written by this Konstruktor runs on it.
+//!
 //! No coordination server is involved: the hub is generated directly, the way
 //! `create_hub` does after the authorization, with a default issued identity.
 //!
@@ -103,13 +108,25 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         return;
     }
 
-    let config = build_hub_config(&HubConfigOptions {
+    let mut config = build_hub_config(&HubConfigOptions {
         device_id: "e2e".into(),
         coord_server: "go.arkitekt.live".into(),
         http_port: Some(free_port()),
         https_port: Some(free_port()),
         ..Default::default()
     });
+    for pair in std::env::var("KONSTRUKTOR_E2E_IMAGES")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|pair| !pair.trim().is_empty())
+    {
+        let (service, image) = pair
+            .trim()
+            .split_once('=')
+            .expect("KONSTRUKTOR_E2E_IMAGES is service=image pairs");
+        eprintln!("{service} runs {image}");
+        config.set_service_image(service, image);
+    }
     let files = generate_hub_files(&config, &IssuedIdentity::default());
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hub-e2e");
@@ -125,7 +142,8 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     let _teardown = Teardown(dir.clone());
     // Fetched first: `up` runs whatever a tag last resolved to on this machine, and a run
     // against last week's `latest` proves nothing about today's.
-    let pull = compose(&dir, &["pull", "--quiet"]);
+    // `--ignore-pull-failures`: an image under test may exist on this machine alone.
+    let pull = compose(&dir, &["pull", "--quiet", "--ignore-pull-failures"]);
     assert!(
         pull.status.success(),
         "docker compose pull failed:\n{}",
