@@ -11,18 +11,24 @@
 //! is the root of trust, not a claimant. It also runs Lok, which
 //! [`crate::generate::service`] notes a hub deliberately never does.
 //!
-//! # The generator is not written yet
+//! # Half written
 //!
-//! Everything here except [`create_coord`] is real: the folder is recognised as a
-//! deployment, the registry records it, and the lifecycle commands drive it like any other
-//! compose project. What is missing is the part that writes the stack, because nothing in
-//! this repository describes one — there is no Lok image pinned anywhere, no config schema
-//! to generate against, and no answer to whether it needs Postgres, Redis or a Caddy
-//! gateway in front of it.
+//! Lok itself is generated: [`crate::generate::lok`] writes its config, its compose
+//! service and its routes on the gateway, and a hub that runs its own — `hub create
+//! --server local` — is a working stack, started and used end to end by the
+//! `hub_local` test. That hub needs nobody's approval, because Konstruktor writes the
+//! hub's manifest straight into Lok's config.
 //!
-//! Guessing at that would produce a compose file that looks right and does not work, which
-//! is worse than the honest error [`create_coord`] returns today. See its doc comment for
-//! exactly what is needed to finish it.
+//! A coordination server *on its own* is a different promise: other hubs authorize
+//! against it, which means somebody opens the page Lok sends them to and accepts. That
+//! page is not Lok's. Lok advertises it at the root of its address (`/hubconfigure/…`,
+//! `/configure/…`) and expects the account frontend to be served there — and nothing in
+//! this repository says which image that is, or how it is told where Lok lives.
+//!
+//! So everything here except [`create_coord`] is real — the folder is recognised as a
+//! deployment, the registry records it, the lifecycle commands drive it — and
+//! [`create_coord`] still returns an honest error. A stack without the frontend would
+//! look right and accept nobody, which is worse.
 
 use std::path::{Path, PathBuf};
 
@@ -86,13 +92,13 @@ pub enum CoordError {
     /// a bare "unimplemented", so the message a user sees is the same one a maintainer
     /// would need to act on.
     #[error(
-        "Konstruktor cannot generate a coordination server yet.\n\n\
-         The command path is here — a coordination server is a first-class deployment, \
-         and `status`, `up`, `stop`, `logs`, `ps`, `restart`, `destroy`, `purge` and \
-         `forget` all work on one. What is missing is the stack itself, which needs: the \
-         Lok image and tag to pin, Lok's config schema, whether it runs behind a Caddy \
-         gateway like a hub does, and which of Postgres, Redis and object storage it \
-         needs beside it.\n\n\
+        "Konstruktor cannot generate a coordination server on its own yet.\n\n\
+         It can generate a hub that runs one: `konstruktor hub create --server local` \
+         writes a stack with its own coordination server, which nobody has to accept and \
+         which needs no network.\n\n\
+         What is missing for a coordination server that *other* hubs authorize against is \
+         the account frontend — the page somebody opens to accept a hub. Lok expects it at \
+         the root of its address, and which image serves it is not known here.\n\n\
          Until then, point hubs at a coordination server you already run with \
          `konstruktor hub create --server <address>`."
     )]
@@ -107,9 +113,11 @@ pub enum CoordError {
 ///
 /// # Not implemented
 ///
-/// Returns [`CoordError::NotImplemented`]. To finish it, this needs to mirror
-/// [`crate::engine::create_engine`]: build the compose document and Lok's config, hand
-/// them to [`crate::generate::write::write_generated_files`], and register the folder with
+/// Returns [`CoordError::NotImplemented`]. The Lok half exists — see
+/// [`crate::generate::lok`], which a self-contained hub is built from. To finish this, add
+/// the account frontend to that stack (its image, its route at the gateway's root, and
+/// Lok's `kontrol_frontend_url`), build a profile with no services, hand the files to
+/// [`crate::generate::write::write_generated_files`], and register the folder with
 /// [`registry::register_kind`] under [`COORD_KIND`] — writing [`COORD_CONFIG_FILE`], which
 /// is what makes the folder recognisable afterwards.
 ///

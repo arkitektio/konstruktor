@@ -53,7 +53,7 @@ async fn notices_a_sidecar_that_lost_a_network() {
     write_profile(&dir, &hub_profile(config.clone())).unwrap();
     write_generated_files(
         &dir,
-        &generate_hub_files(&config, &IssuedIdentity::default()),
+        &generate_hub_files(&config, &IssuedIdentity::default(), &Default::default()),
     )
     .unwrap();
 

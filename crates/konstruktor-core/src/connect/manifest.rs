@@ -365,7 +365,7 @@ pub fn advertised_port(config: &HubConfig) -> u16 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvertisedHost {
     pub host: String,
     pub kind: HostCategory,
@@ -533,7 +533,12 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                 identifier: name.to_string(),
                 description: Some(description.to_string()),
                 manifest: ServiceManifest {
-                    identifier: format!("live.arkitekt.{}", id.as_str()),
+                    // The image's own word for it, once it described itself.
+                    identifier: options
+                        .described
+                        .get(&block.host)
+                        .map(|said| said.identifier.clone())
+                        .unwrap_or_else(|| format!("live.arkitekt.{}", id.as_str())),
                     version: "1.0.0".to_string(),
                     description: Some(description.to_string()),
                     logo: None,
@@ -1052,6 +1057,7 @@ mod tests {
                 }],
                 ..Needs::default()
             },
+            identifier: "live.arkitekt.mikro".into(),
             ..Description::default()
         };
         let request = build_hub_request(

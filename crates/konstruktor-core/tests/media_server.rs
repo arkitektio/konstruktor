@@ -45,7 +45,7 @@ fn a_hub_with_lovekit_runs_a_media_server() {
         .running_livekit()
         .expect("minted with Lovekit")
         .clone();
-    let files = generate_hub_files(&config, &IssuedIdentity::default());
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
 
     // LiveKit's own config: the one key pair, the ports, and the address it announces.
     let media = yaml(&files, "configs/livekit.yaml");
@@ -109,6 +109,7 @@ fn a_hub_without_lovekit_generates_none_of_it() {
     let files = generate_hub_files(
         &hub(vec![ServiceId::Mikro], None),
         &IssuedIdentity::default(),
+        &Default::default(),
     );
     assert!(!files.contains_key("configs/livekit.yaml"));
     let everything: String = files.values().cloned().collect();
@@ -132,7 +133,7 @@ fn a_mesh_only_hub_publishes_none_of_the_media_ports() {
     config.mesh.as_mut().expect("a mesh").mesh_only = true;
     config.gateway.exposed_http_port = None;
     config.gateway.exposed_https_port = None;
-    let files = generate_hub_files(&config, &IssuedIdentity::default());
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
 
     let compose = yaml(&files, "docker-compose.yaml");
     assert!(compose["services"]["livekit"]["image"].is_string());
@@ -149,6 +150,7 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
     let files = generate_hub_files(
         &hub(vec![ServiceId::Dokuments, ServiceId::Lokate], None),
         &IssuedIdentity::default(),
+        &Default::default(),
     );
 
     // What each is told of the hub — its own image writes its config from that.
@@ -210,7 +212,7 @@ fn docker_accepts_a_hub_running_every_service() {
         ),
     ] {
         let config = hub(SERVICE_IDS.to_vec(), mesh);
-        let files = generate_hub_files(&config, &IssuedIdentity::default());
+        let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
         let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(label);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");

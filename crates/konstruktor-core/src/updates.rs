@@ -714,52 +714,39 @@ pub fn upgraded_from(code: Option<i32>, output: &str) -> Upgraded {
     }
 }
 
-/// Whether the release `service` is about to run ships an upgrade command at all. Asked
-/// while the old container still serves: only a release that has one costs the service a
-/// stop.
-async fn ships_an_upgrade(dir: &std::path::Path, service: &str) -> bool {
-    crate::engine_probe::engine()
-        .async_command()
-        .args([
-            "compose",
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            service,
-            "python",
-            "manage.py",
-            "help",
-            "upgrade",
-        ])
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .is_ok_and(|out| out.status.success())
+/// The upgrade the release `service` is about to run ships, if it ships one: the job its image
+/// offers under that name. Asked while the old container still serves: only a release that
+/// has one costs the service a stop.
+async fn its_upgrade(
+    dir: &std::path::Path,
+    config: &crate::config::hub::HubConfig,
+    service: &str,
+) -> Option<crate::contract::Job> {
+    crate::contract::description_of(dir, config, service)
+        .await?
+        .jobs
+        .remove(UPGRADE_JOB)
 }
+
+/// The job a release offers for what it has to do to its data between two versions.
+const UPGRADE_JOB: &str = "upgrade";
+/// The job that lists the migrations a release would apply, and applies none.
+const PLAN_JOB: &str = "plan";
 
 /// Runs the new release's own upgrade — what it has to do to its data between the two
 /// versions, which only it knows — in a container of the new image. The service's own
 /// container is stopped by the caller: the old code must not be writing meanwhile.
-async fn upgrade(dir: &std::path::Path, service: &str, from: &str, to: &str) -> Upgraded {
+async fn upgrade(
+    dir: &std::path::Path,
+    service: &str,
+    job: &crate::contract::Job,
+    from: &str,
+    to: &str,
+) -> Upgraded {
+    let between = ["--from", from, "--to", to].map(String::from);
     let output = crate::engine_probe::engine()
         .async_command()
-        .args([
-            "compose",
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            service,
-            "python",
-            "manage.py",
-            "upgrade",
-            "--from",
-            from,
-            "--to",
-            to,
-        ])
+        .args(crate::contract::job_command(service, job, &between))
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
         .output()
@@ -998,7 +985,14 @@ async fn preview_on(
             continue;
         }
         let overrides = crate::overrides::path(dir, &said.service);
-        let rendered = match crate::contract::render(image, &facts_file, &overrides).await {
+        let rendered = match crate::contract::render(
+            image,
+            &description.render,
+            &facts_file,
+            &overrides,
+        )
+        .await
+        {
             crate::contract::Rendered::Config(text) => text,
             crate::contract::Rendered::Refused(why) => {
                 said.refused.get_or_insert(why);
@@ -1036,21 +1030,28 @@ async fn preview_on(
             continue;
         };
         let absolute = std::fs::canonicalize(&config_file).unwrap_or(config_file.clone());
+        // What lists them is a job the release offers; one that offers none has no plan.
+        let Some(listing) = description.jobs.get(PLAN_JOB) else {
+            said.notes
+                .push("its pending migrations are not listed: this release offers no plan".into());
+            continue;
+        };
         let plan = crate::engine_probe::engine()
             .async_command()
-            .args([
-                "run",
-                "--rm",
-                "--network",
-                network,
-                "-v",
-                &format!("{}:/workspace/config.yaml:ro", absolute.to_string_lossy()),
-                image,
-                "python",
-                "manage.py",
-                "migrate",
-                "--plan",
-            ])
+            .args(
+                [
+                    "run",
+                    "--rm",
+                    "--network",
+                    network,
+                    "-v",
+                    &format!("{}:/workspace/config.yaml:ro", absolute.to_string_lossy()),
+                    image,
+                ]
+                .into_iter()
+                .map(String::from)
+                .chain(listing.command.iter().cloned()),
+            )
             .stdin(std::process::Stdio::null())
             .output()
             .await;
@@ -1564,7 +1565,7 @@ async fn apply_on(
             .into_iter()
             .any(|id| config.service(id).host == name)
     };
-    let mut preparing: Vec<(String, Option<(String, String)>)> = Vec::new();
+    let mut preparing: Vec<(String, Option<(String, String, crate::contract::Job)>)> = Vec::new();
     for (service, _) in &moving {
         // The same build as before has nothing to migrate, and is not stopped for it.
         let same_build = builds_before
@@ -1580,9 +1581,9 @@ async fn apply_on(
         };
         let versions = match (running_version(dir, service).await, reached) {
             // Asked while the old container still serves.
-            (Some(from), Some(to)) if from != to && ships_an_upgrade(dir, service).await => {
-                Some((from, to))
-            }
+            (Some(from), Some(to)) if from != to => its_upgrade(dir, &config, service)
+                .await
+                .map(|job| (from, to, job)),
             _ => None,
         };
         preparing.push((service.clone(), versions));
@@ -1665,9 +1666,18 @@ async fn apply_on(
                       is in the backup.";
         for (service, versions) in &preparing {
             step(format!("Migrating {service}'s database"));
-            if let Err(said) =
-                crate::compose::run_streamed(dir, crate::contract::prepare(service), &line).await
-            {
+            // The job the build about to run declares; one with nothing to prepare has none.
+            let migrated = match crate::contract::migrate_job(dir, &config, service).await {
+                Some(job) => crate::compose::run_streamed(
+                    dir,
+                    crate::contract::prepare(service, &job),
+                    &line,
+                )
+                .await
+                .map(|_| ()),
+                None => Ok(()),
+            };
+            if let Err(said) = migrated {
                 undo(
                     format!("`{service}`'s database could not be migrated"),
                     stopped,
@@ -1681,11 +1691,11 @@ async fn apply_on(
             }
             // Prepared for this build: the start that follows does not do it again.
             crate::contract::prepared_for_its_build(dir, &config, service).await;
-            let Some((from, to)) = versions else {
+            let Some((from, to, job)) = versions else {
                 continue;
             };
             step(format!("{service} upgrades itself from {from} to {to}"));
-            if let Upgraded::Failed(said) = upgrade(dir, service, from, to).await {
+            if let Upgraded::Failed(said) = upgrade(dir, service, job, from, to).await {
                 undo(
                     format!("`{service}` could not upgrade itself from {from} to {to}"),
                     stopped,

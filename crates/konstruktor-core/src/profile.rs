@@ -115,7 +115,8 @@ pub fn rewrite(
     let identity = crate::credentials::read_credentials(dir)
         .map(|credentials| credentials.issued_identity())
         .unwrap_or_default();
-    let files = crate::generate::generate_hub_files(&config, &identity);
+    let files =
+        crate::generate::generate_hub_files(&config, &identity, &crate::contract::known(dir));
 
     write_profile(dir, &hub_profile(config.clone()))?;
     crate::migrate::write_hub(dir, &config, &files)?;

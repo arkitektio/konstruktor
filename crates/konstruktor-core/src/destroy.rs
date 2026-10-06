@@ -217,7 +217,11 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
         path: dir.display().to_string(),
         name: record.name.clone(),
         checkouts: checkouts(&dir),
-        was_authorized: record.identifier.is_some(),
+        // A self-contained hub also has an identifier, but it is registered in its own
+        // coordination server — which goes with the rest of it.
+        was_authorized: record.identifier.is_some()
+            && record.coord_server.as_deref().map(str::trim)
+                != Some(crate::config::hub::LOCAL_COORD_SERVER),
         // By the credentials rather than the record: they are what the server is asked
         // with, and a delete that already removed the hub there has moved them aside.
         will_deregister: kind == profile::DeploymentKind::Hub

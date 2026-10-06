@@ -38,7 +38,7 @@ fn write_and_validate_with(mesh: Option<MeshOptions>, reporter: bool, label: &st
     if reporter {
         config.reporter = Some(ReporterBlock::default());
     }
-    let files = generate_hub_files(&config, &IssuedIdentity::default());
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(label);
     let _ = std::fs::remove_dir_all(&dir);
@@ -137,5 +137,39 @@ fn docker_accepts_a_meshed_project_with_a_reporter() {
         }),
         true,
         "meshed-reporter",
+    );
+}
+
+/// A self-contained hub: Lok beside the services, and one published port.
+#[test]
+fn docker_accepts_a_self_contained_project() {
+    use konstruktor_core::config::hub::LOCAL_COORD_SERVER;
+
+    if !docker_compose_available() {
+        eprintln!("skipping self-contained: no docker compose on this machine");
+        return;
+    }
+    let config = build_hub_config(&HubConfigOptions {
+        device_id: "device".into(),
+        coord_server: LOCAL_COORD_SERVER.into(),
+        https_port: None,
+        ..Default::default()
+    });
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
+
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("self-contained");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    write_generated_files(&dir, &files).expect("files are written");
+
+    let output = konstruktor_core::docker::command()
+        .args(["compose", "config", "-q"])
+        .current_dir(&dir)
+        .output()
+        .expect("docker runs");
+    assert!(
+        output.status.success(),
+        "docker compose rejected the self-contained project:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }

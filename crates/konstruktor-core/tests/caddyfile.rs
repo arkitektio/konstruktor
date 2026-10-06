@@ -81,7 +81,13 @@ fn caddyfile_for(fixture: &str) -> String {
     let minio_host = str_at(&config, "minio", "host").to_string();
     let minio_port = config["minio"]["internal_port"].as_u64().expect("a port") as u16;
     // The golden hubs run no Lovekit, so the gateway serves no site beyond their own.
-    build_caddyfile(&services, &minio_host, minio_port, &GatewaySites::default())
+    build_caddyfile(
+        &services,
+        None,
+        &minio_host,
+        minio_port,
+        &GatewaySites::default(),
+    )
 }
 
 #[track_caller]

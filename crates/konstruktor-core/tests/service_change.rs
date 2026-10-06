@@ -119,7 +119,7 @@ async fn change_and_apply(dir: &Path, add: &[ServiceId], remove: &[ServiceId]) -
     config.ensure_service_secrets();
 
     let before = services::snapshot_configs(dir);
-    let files = generate_hub_files(&config, &IssuedIdentity::default());
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
     write_profile(dir, &hub_profile(config.clone())).expect("profile is written");
     konstruktor_core::migrate::write_hub(dir, &config, &files).expect("files are written");
     let changed = services::changed_configs(&before, &services::snapshot_configs(dir));
@@ -245,7 +245,7 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
     konstruktor_core::migrate::write_hub(
         &dir,
         &config,
-        &generate_hub_files(&config, &IssuedIdentity::default()),
+        &generate_hub_files(&config, &IssuedIdentity::default(), &Default::default()),
     )
     .expect("files are written");
 

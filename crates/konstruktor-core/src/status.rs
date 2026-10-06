@@ -290,9 +290,12 @@ pub fn hub_view(dir: &std::path::Path) -> Result<HubView, crate::profile::Profil
             .filter(|m| m.enabled)
             .map(|m| m.hostname.clone()),
         advertised_port: crate::connect::manifest::advertised_port(config),
+        // From the grant — or, on a hub that runs its own coordination server and so has
+        // no grant, from where that server was told the hub is.
         advertised_hosts: creds
             .as_ref()
             .map(|c| c.advertised_hosts.clone())
+            .or_else(|| config.running_lok().map(|lok| lok.advertised_hosts.clone()))
             .unwrap_or_default(),
         profile,
     })

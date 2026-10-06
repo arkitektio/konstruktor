@@ -6,7 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::catalog::ServiceId;
 use crate::config::hub::{
-    build_hub_config, trusted_origins, HubConfig, HubConfigOptions, ServiceOptions, StorageMode,
+    build_hub_config, trusted_origins, HubConfig, HubConfigOptions, LokOptions, ServiceOptions,
+    StorageMode, LOCAL_COORD_SERVER,
 };
 use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshOptions};
 use crate::connect::authorize::{self, HubAuthorizationError};
@@ -99,6 +100,64 @@ pub struct HubAnswers {
     /// (the default, and the fast one) or bind mounts in the deployment folder.
     #[serde(default)]
     pub storage: StorageMode,
+    /// Images to run instead of the ones a new hub is seeded with, by compose service —
+    /// `rekuest` → `jhnnsrs/rekuest:1.2.3`. For pinning what a test suite runs against,
+    /// so an upstream `latest` that moved cannot fail a build it has nothing to do with.
+    #[serde(default)]
+    pub images: BTreeMap<String, String>,
+    /// The same, for the services this hub happens to run: an entry naming one it does
+    /// not is skipped rather than refused. This is what `$KONSTRUKTOR_IMAGES` fills —
+    /// set once for a whole test run, in which different hubs run different services.
+    #[serde(default)]
+    pub default_images: BTreeMap<String, String>,
+    /// What images said of themselves when they were asked which service they are
+    /// (`--service-image`), by image: they are not asked a second time.
+    #[serde(skip)]
+    pub described: BTreeMap<String, crate::contract::Description>,
+    /// What the coordination server is seeded with, on a self-contained hub
+    /// (`coord_server: local`). Ignored on any other.
+    #[serde(default)]
+    pub seed: SeedAnswers,
+}
+
+/// The account, the organization and the redeem tokens a self-contained hub's own
+/// coordination server starts out with. Everything has a default, so a hub created with
+/// none of it said is still one an app can connect to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedAnswers {
+    #[serde(default = "demo")]
+    pub organization: String,
+    #[serde(default = "demo")]
+    pub user: String,
+    /// Left out, a strong one is generated.
+    #[serde(default)]
+    pub user_password: Option<String>,
+    /// Tokens to provision as given — for a caller that has to know them beforehand.
+    #[serde(default)]
+    pub redeem_tokens: Vec<String>,
+    /// How many more to mint. One app redeems one token, so this is how many apps can
+    /// connect unattended.
+    #[serde(default = "one")]
+    pub generated_redeem_tokens: usize,
+}
+
+impl Default for SeedAnswers {
+    fn default() -> Self {
+        Self {
+            organization: demo(),
+            user: demo(),
+            user_password: None,
+            redeem_tokens: Vec::new(),
+            generated_redeem_tokens: one(),
+        }
+    }
+}
+
+fn demo() -> String {
+    "demo".into()
+}
+fn one() -> usize {
+    1
 }
 
 fn local() -> String {
@@ -209,7 +268,9 @@ pub enum CreateError {
 pub struct CreatedHub {
     pub path: PathBuf,
     pub config: HubConfig,
-    pub credentials: HubCredentials,
+    /// The grant, on a hub a coordination server accepted. A self-contained hub has none:
+    /// it runs that server, and nobody was asked.
+    pub credentials: Option<HubCredentials>,
     /// Whether a mesh key was actually granted.
     pub mesh_granted: bool,
 }
@@ -219,6 +280,10 @@ pub struct CreatedHub {
 /// The ordering is load-bearing. `build_hub_config` mints fresh secrets and a fresh
 /// Ed25519 pair, so it runs exactly once: calling it again to fold in a mesh key would
 /// describe a different hub than the one the coordination server accepted.
+///
+/// A self-contained hub (`coord_server: local`) skips the authorization, and with it the
+/// only step that needs a person or a network: it runs the coordination server itself, so
+/// there is nobody to ask. Everything else is the same path.
 pub async fn create_hub(
     answers: &HubAnswers,
     cancel: &CancellationToken,
@@ -226,6 +291,10 @@ pub async fn create_hub(
 ) -> Result<CreatedHub, CreateError> {
     validate_identifier(&answers.identifier)?;
     validate_service_options(&answers.service_options)?;
+    let self_contained = answers.coord_server.trim() == LOCAL_COORD_SERVER;
+    if self_contained {
+        validate_self_contained(answers)?;
+    }
     if answers.mesh_only && answers.mesh_mode == MeshMode::None {
         return Err(CreateError::Answers(
             "A mesh-only hub needs a mesh — choose a way to join one, or advertise \
@@ -281,6 +350,10 @@ pub async fn create_hub(
     // there is no port to open, forward, or collide with something else on this machine.
     let (http_port, https_port) = if answers.mesh_only {
         (None, None)
+    } else if self_contained && !answers.ssl {
+        // One port: a hub that serves plain HTTP listens on nothing else, and a caller
+        // that picked a free port for it should not have to pick a second one to waste.
+        (Some(answers.http_port), None)
     } else {
         (Some(answers.http_port), Some(answers.https_port))
     };
@@ -305,6 +378,7 @@ pub async fn create_hub(
         global_admin_password: answers.global_admin_password.clone(),
         global_description: answers.global_description.clone(),
         mesh: manual_mesh,
+        lok: self_contained.then(|| seeded_lok(answers, &hosts)),
         dev_hub: answers.dev_hub,
         service_options: answers.service_options.clone(),
         storage: answers.storage,
@@ -313,7 +387,251 @@ pub async fn create_hub(
     // LiveKit announces one of the addresses the hub is about to advertise.
     config.place_livekit(&host_names(&hosts));
 
-    // --- authorize ----------------------------------------------------------
+    // Before the authorization and before anything is generated: the images are part of
+    // what the hub *is*, and every later path reads them back out of the profile.
+    let mut config = config;
+    let defaults = images_this_hub_runs(&config, &answers.default_images);
+    apply_images(&mut config, &defaults)?;
+    apply_images(&mut config, &answers.images)?;
+
+    // --- authorize, unless there is nobody to ask ---------------------------
+    let (mut config, credentials, mesh_granted) = if self_contained {
+        (config, None, false)
+    } else {
+        let (config, credentials, mesh_granted) =
+            authorize_new_hub(answers, config, &store.device_id, &hosts, cancel, on).await?;
+        (config, Some(credentials), mesh_granted)
+    };
+
+    // Now that the mesh name is known too: every address a browser may POST from.
+    config.csrf_trusted_origins = Some(trusted_origins(&config, &host_names(&hosts)));
+
+    // --- write --------------------------------------------------------------
+    let identity = credentials
+        .as_ref()
+        .map(HubCredentials::issued_identity)
+        .unwrap_or_default();
+    // The images are asked before anything is written: how each is started, what prepares
+    // it and what it is registered as are theirs to say, and the files are written from
+    // that. An image that is not on this machine yet is fetched by the asking.
+    on(CreateEvent::Log {
+        line: "Asking the images what they are…".into(),
+    });
+    let said = crate::contract::describe_all(&config, &answers.described).await;
+    let silent: Vec<String> = config
+        .enabled_services()
+        .into_iter()
+        .map(|id| config.service(id))
+        .filter(|block| block.image.is_some())
+        .map(|block| (block.host.clone(), block.image.clone().unwrap_or_default()))
+        .chain(
+            config
+                .running_lok()
+                .map(|lok| (lok.host.clone(), lok.image.clone())),
+        )
+        .filter(|(host, _)| !said.contains_key(host))
+        .map(|(host, image)| format!("`{host}` ({image})"))
+        .collect();
+    if !silent.is_empty() {
+        return Err(CreateError::Answers(format!(
+            "{} did not say what it is when run with no command: the image cannot be pulled, \
+             or it is a release from before a service described itself. Nothing was written.",
+            silent.join(", ")
+        )));
+    }
+    let files = generate_hub_files(&config, &identity, &said);
+    for name in files.keys() {
+        on(CreateEvent::Writing { file: name.clone() });
+    }
+
+    write_profile(&dir, &hub_profile(config.clone()))
+        .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
+    if let Some(credentials) = &credentials {
+        write_credentials(&dir, credentials)?;
+    }
+    crate::migrate::write_hub(&dir, &config, &files)?;
+    // So the first start does not ask them again.
+    crate::contract::remember(&dir, &config, &said)?;
+
+    // --- register, so the desktop app sees it -------------------------------
+    registry::register(
+        &mut store,
+        &answers.name,
+        &dir.to_string_lossy(),
+        Some(answers.coord_server.trim().to_string()),
+        Some(answers.identifier.trim().to_string()),
+        now_rfc3339(),
+    );
+    let _ = registry::save(&store);
+
+    // --- check the source out, for the services that run from source --------
+    //
+    // Deliberately *after* the deployment is registered and before the stack is started.
+    // Before `up`, because compose already declares the bind mounts and an empty
+    // `mounts/<service>` would hand the container an empty workspace. After `register`,
+    // because the device grant above is single-use: a clone that fails must leave a hub
+    // the app can still see and the user can fix by hand, not an authorized folder
+    // nothing knows about and no second run can reproduce.
+    {
+        let fallback = answers
+            .dev_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
+        let branch_of = |id: ServiceId| {
+            answers
+                .service_options
+                .get(&id)
+                .and_then(|asked| asked.branch.as_deref())
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+                .or(fallback)
+                .map(str::to_string)
+        };
+        check_sources_out(&dir, &config, &config.enabled_services(), &branch_of, on)?;
+    }
+
+    // --- start --------------------------------------------------------------
+    if answers.start {
+        on(CreateEvent::Starting);
+        // The same start every front end runs — including the reporter fallback, so a
+        // reporter image that cannot be pulled does not fail a hub that was just written.
+        let log = |line: crate::compose::ComposeLine| on(CreateEvent::Log { line: line.line });
+        if let Err(error) = crate::start::start(&dir, &log).await {
+            on(CreateEvent::Log {
+                line: error.to_string(),
+            });
+            return Err(CreateError::StartFailed);
+        }
+    }
+
+    on(CreateEvent::Done {
+        path: dir.to_string_lossy().to_string(),
+    });
+
+    Ok(CreatedHub {
+        path: dir,
+        config,
+        credentials,
+        mesh_granted,
+    })
+}
+
+/// Of `images`, the entries naming a compose service this hub has.
+fn images_this_hub_runs(
+    config: &HubConfig,
+    images: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let running: Vec<String> = config.stack_images().into_iter().map(|(s, _)| s).collect();
+    images
+        .iter()
+        .filter(|(service, _)| running.contains(service))
+        .map(|(service, image)| (service.clone(), image.clone()))
+        .collect()
+}
+
+/// Points the named compose services at other images. A name the stack does not have is
+/// refused rather than ignored: a pin that silently did nothing is worse than none.
+fn apply_images(
+    config: &mut HubConfig,
+    images: &BTreeMap<String, String>,
+) -> Result<(), CreateError> {
+    let known: Vec<String> = config
+        .stack_images()
+        .into_iter()
+        .map(|(service, _)| service)
+        .collect();
+    for (service, image) in images {
+        if !known.contains(service) {
+            return Err(CreateError::Answers(format!(
+                "This hub runs no service called `{service}` to give an image to — it \
+                 runs {}.",
+                known.join(", ")
+            )));
+        }
+        if image.trim().is_empty() {
+            return Err(CreateError::Answers(format!(
+                "The image for `{service}` is empty."
+            )));
+        }
+        config.set_service_image(service, image.trim());
+    }
+    Ok(())
+}
+
+/// What a self-contained hub cannot be, said before anything is written.
+fn validate_self_contained(answers: &HubAnswers) -> Result<(), CreateError> {
+    if answers.mesh_mode != MeshMode::None || answers.mesh_only {
+        return Err(CreateError::Answers(
+            "A hub that runs its own coordination server has no mesh unless it is given one, \
+             and giving it one is not available yet. Create it with `--mesh none`; it is \
+             reached at this machine's addresses."
+                .into(),
+        ));
+    }
+    if answers.hosts.is_empty() {
+        return Err(CreateError::Answers(
+            "A hub that runs its own coordination server needs an address to advertise \
+             its services at."
+                .into(),
+        ));
+    }
+    let seed = &answers.seed;
+    for (what, value) in [
+        ("an organization", &seed.organization),
+        ("a user", &seed.user),
+    ] {
+        if value.trim().is_empty() {
+            return Err(CreateError::Answers(format!(
+                "A hub that runs its own coordination server needs {what} to start with."
+            )));
+        }
+    }
+    if seed
+        .redeem_tokens
+        .iter()
+        .any(|token| token.trim().is_empty())
+    {
+        return Err(CreateError::Answers(
+            "A redeem token cannot be empty.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The coordination server a self-contained hub starts out with, from the answers.
+fn seeded_lok(answers: &HubAnswers, hosts: &[AdvertisedHost]) -> LokOptions {
+    let seed = &answers.seed;
+    let mut redeem_tokens: Vec<String> = seed
+        .redeem_tokens
+        .iter()
+        .map(|token| token.trim().to_string())
+        .collect();
+    redeem_tokens.extend(
+        std::iter::repeat_with(crate::secrets::generate_redeem_token)
+            .take(seed.generated_redeem_tokens),
+    );
+    LokOptions {
+        hub_identifier: answers.identifier.trim().to_string(),
+        hosts: hosts.to_vec(),
+        organization: seed.organization.trim().to_string(),
+        user: seed.user.trim().to_string(),
+        user_password: seed.user_password.clone(),
+        redeem_tokens,
+        key_pair: None,
+    }
+}
+
+/// Asks the coordination server to accept the hub, waits for somebody to, and folds what
+/// came back into the profile. The one step of creating a hub that needs a person.
+async fn authorize_new_hub(
+    answers: &HubAnswers,
+    mut config: HubConfig,
+    device_id: &str,
+    hosts: &[AdvertisedHost],
+    cancel: &CancellationToken,
+    on: &(dyn Fn(CreateEvent) + Sync),
+) -> Result<(HubConfig, HubCredentials, bool), CreateError> {
     let request = build_hub_request(
         &config,
         &HubManifestOptions {
@@ -324,8 +642,8 @@ pub async fn create_hub(
                 .map(str::trim)
                 .filter(|d| !d.is_empty())
                 .map(str::to_string),
-            node_id: Some(store.device_id.clone()),
-            hosts: hosts.clone(),
+            node_id: Some(device_id.to_string()),
+            hosts: hosts.to_vec(),
             reachable_hosts: answers.reachable_hosts.clone(),
             request_auth_key: answers.mesh_mode == MeshMode::Coordination,
             // Declared up front even for a key that is only about to be minted: the
@@ -385,10 +703,6 @@ pub async fn create_hub(
 
     enable_reporter(&mut config, &envelope);
 
-    // Now that the mesh name is known too: every address a browser may POST from.
-    config.csrf_trusted_origins = Some(trusted_origins(&config, &host_names(&hosts)));
-
-    // --- write --------------------------------------------------------------
     let credentials = HubCredentials {
         version: 1,
         server: answers.coord_server.trim().to_string(),
@@ -396,81 +710,9 @@ pub async fn create_hub(
         authorized_at: now_rfc3339(),
         issuer: grant.issuer.clone(),
         envelope: envelope.clone(),
-        advertised_hosts: hosts,
+        advertised_hosts: hosts.to_vec(),
     };
-
-    let files = generate_hub_files(&config, &credentials.issued_identity());
-    for name in files.keys() {
-        on(CreateEvent::Writing { file: name.clone() });
-    }
-
-    write_profile(&dir, &hub_profile(config.clone()))
-        .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
-    write_credentials(&dir, &credentials)?;
-    crate::migrate::write_hub(&dir, &config, &files)?;
-
-    // --- register, so the desktop app sees it -------------------------------
-    registry::register(
-        &mut store,
-        &answers.name,
-        &dir.to_string_lossy(),
-        Some(credentials.server.clone()),
-        Some(credentials.identifier.clone()),
-        now_rfc3339(),
-    );
-    let _ = registry::save(&store);
-
-    // --- check the source out, for the services that run from source --------
-    //
-    // Deliberately *after* the deployment is registered and before the stack is started.
-    // Before `up`, because compose already declares the bind mounts and an empty
-    // `mounts/<service>` would hand the container an empty workspace. After `register`,
-    // because the device grant above is single-use: a clone that fails must leave a hub
-    // the app can still see and the user can fix by hand, not an authorized folder
-    // nothing knows about and no second run can reproduce.
-    {
-        let fallback = answers
-            .dev_branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|b| !b.is_empty());
-        let branch_of = |id: ServiceId| {
-            answers
-                .service_options
-                .get(&id)
-                .and_then(|asked| asked.branch.as_deref())
-                .map(str::trim)
-                .filter(|b| !b.is_empty())
-                .or(fallback)
-                .map(str::to_string)
-        };
-        check_sources_out(&dir, &config, &config.enabled_services(), &branch_of, on)?;
-    }
-
-    // --- start --------------------------------------------------------------
-    if answers.start {
-        on(CreateEvent::Starting);
-        // The same start every front end runs — including the reporter fallback, so a
-        // reporter image that cannot be pulled does not fail a hub that was just written.
-        let log = |line: crate::compose::ComposeLine| on(CreateEvent::Log { line: line.line });
-        if let Err(error) = crate::start::start(&dir, &log).await {
-            on(CreateEvent::Log {
-                line: error.to_string(),
-            });
-            return Err(CreateError::StartFailed);
-        }
-    }
-
-    on(CreateEvent::Done {
-        path: dir.to_string_lossy().to_string(),
-    });
-
-    Ok(CreatedHub {
-        path: dir,
-        config,
-        credentials,
-        mesh_granted,
-    })
+    Ok((config, credentials, mesh_granted))
 }
 
 /// Clones the source of each of `services` that runs from a checkout into
@@ -534,7 +776,7 @@ pub(crate) fn check_sources_out(
 /// not do.
 pub fn preview_files(answers: &HubAnswers) -> Vec<String> {
     let config = crate::config::hub::build_hub_config(&crate::config::hub::HubConfigOptions {
-        coord_server: answers.coord_server.clone(),
+        coord_server: answers.coord_server.trim().to_string(),
         rekuest_server: answers.rekuest_server.clone(),
         services: Some(answers.services.clone()),
         http_port: Some(answers.http_port),
@@ -547,9 +789,15 @@ pub fn preview_files(answers: &HubAnswers) -> Vec<String> {
         storage: answers.storage,
         ..Default::default()
     });
-    crate::generate::generate_hub_files(&config, &crate::generate::IssuedIdentity::default())
-        .into_keys()
-        .collect()
+    // A preview asks no image anything: it names the files, and those do not depend on
+    // what the images say.
+    crate::generate::generate_hub_files(
+        &config,
+        &crate::generate::IssuedIdentity::default(),
+        &Default::default(),
+    )
+    .into_keys()
+    .collect()
 }
 
 /// The verdict on the container engine and what to do about it, as text. Worded once, in
@@ -694,6 +942,55 @@ mod tests {
         // Below the two-character minimum: better an empty field than a wrong one.
         assert_eq!(identifier_from_folder(Path::new("/home/someone/x")), "");
         assert_eq!(identifier_from_folder(Path::new("/home/someone/...")), "");
+    }
+
+    /// A pin reaches the profile, and with it everything that runs the image — and a pin
+    /// for a service the stack does not have is an error, not a pin that did nothing.
+    #[test]
+    fn an_image_can_be_pinned_by_compose_service() {
+        use crate::config::hub::{build_hub_config, HubConfigOptions};
+        let mut config = build_hub_config(&HubConfigOptions {
+            coord_server: LOCAL_COORD_SERVER.into(),
+            ..Default::default()
+        });
+        let pins = BTreeMap::from([
+            ("rekuest".to_string(), "jhnnsrs/rekuest:5.0.1".to_string()),
+            ("lok".to_string(), " jhnnsrs/lok:3.1.0 ".to_string()),
+        ]);
+        apply_images(&mut config, &pins).unwrap();
+        assert_eq!(
+            config.rekuest.image.as_deref(),
+            Some("jhnnsrs/rekuest:5.0.1")
+        );
+        assert_eq!(config.running_lok().unwrap().image, "jhnnsrs/lok:3.1.0");
+        // takt's image belongs to Rekuest's, so it moves with it.
+        let compose = crate::generate::compose::build_compose(
+            &config,
+            &config.enabled_services(),
+            &Default::default(),
+        );
+        assert_eq!(
+            compose["services"]["rekuest-takt"]["image"],
+            serde_norway::Value::from("jhnnsrs/rekuest-takt:5.0.1")
+        );
+
+        // A default set for a whole run names services this hub may not have; those are
+        // skipped, where a pin given to this hub in particular is refused.
+        let defaults = BTreeMap::from([
+            ("mikro".to_string(), "jhnnsrs/mikro:6.0.0".to_string()),
+            ("elektro".to_string(), "jhnnsrs/elektro:1.0.0".to_string()),
+        ]);
+        assert_eq!(
+            images_this_hub_runs(&config, &defaults),
+            BTreeMap::from([("mikro".to_string(), "jhnnsrs/mikro:6.0.0".to_string())])
+        );
+
+        let unknown = BTreeMap::from([("rekuset".to_string(), "x".to_string())]);
+        let refused = apply_images(&mut config, &unknown).unwrap_err().to_string();
+        assert!(
+            refused.contains("`rekuset`") && refused.contains("rekuest"),
+            "{refused}"
+        );
     }
 
     #[test]
@@ -928,6 +1225,14 @@ pub async fn reauthorize(
     if let Some(reason) = crate::migrate::behind(&answers.dir, &config) {
         return Err(CreateError::Folder(reason));
     }
+    if config.running_lok().is_some() {
+        return Err(CreateError::Answers(
+            "This hub runs its own coordination server, so there is nobody to authorize it \
+             with — and its services are part of what that server was set up with. To change \
+             them, create the hub again with the services you want."
+                .into(),
+        ));
+    }
     // A service change is refused here, before anybody is sent to a browser, and applied
     // to this copy only: the profile on disk changes once the grant is accepted.
     let services = match &answers.services {
@@ -1050,7 +1355,11 @@ pub async fn reauthorize(
 
     // Generation first: a profile this app did not write could fail here, and a
     // half-updated folder is worse than an unchanged one.
-    let files = generate_hub_files(&config, &credentials.issued_identity());
+    let files = generate_hub_files(
+        &config,
+        &credentials.issued_identity(),
+        &crate::contract::known(Path::new(&answers.dir)),
+    );
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
     }

@@ -384,7 +384,8 @@ mod tests {
     fn written_files_are_recorded_and_a_file_no_longer_generated_goes() {
         let config = config();
         let dir = scratch("write");
-        let files = crate::generate::generate_hub_files(&config, &Default::default());
+        let files =
+            crate::generate::generate_hub_files(&config, &Default::default(), &Default::default());
         let mut with_extra = files.clone();
         with_extra.insert("configs/gone.yaml".into(), "x: 1\n".into());
 

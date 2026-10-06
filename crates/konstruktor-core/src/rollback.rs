@@ -1,7 +1,8 @@
 //! Putting a hub back on the images it was running before its last update.
 //!
-//! **This reverts code, not data.** Every service here is `command: bash run.sh`, and
-//! `run.sh` migrates the database forward when the container starts. So by the time an
+//! **This reverts code, not data.** An update brings each service's database forward (the
+//! job its image names for that) before it starts the new build, and nothing takes a
+//! migration back. So by the time an
 //! update has gone wrong the schema has already moved, and putting the old image back
 //! points last week's code at this week's database. That is often enough — a bad build, a
 //! broken template, a service that will not boot — and it is never a substitute for the

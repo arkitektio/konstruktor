@@ -90,7 +90,10 @@ pub async fn run(args: AuthorizeArgs) -> Result<()> {
     } else {
         args.mesh_key
     };
-    let mesh_only = config.mesh.as_ref().is_some_and(|m| m.enabled && m.mesh_only);
+    let mesh_only = config
+        .mesh
+        .as_ref()
+        .is_some_and(|m| m.enabled && m.mesh_only);
     if mesh_only && (!args.hosts.is_empty() || args.reach.is_some()) {
         ui::warn("This hub is mesh-only: it publishes no port, so --host and --reach are ignored.");
     }
@@ -112,7 +115,11 @@ pub async fn run(args: AuthorizeArgs) -> Result<()> {
             if mesh_only {
                 "the mesh only — no ports opened here".into()
             } else {
-                hosts.iter().map(|h| h.host.as_str()).collect::<Vec<_>>().join(", ")
+                hosts
+                    .iter()
+                    .map(|h| h.host.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             },
         ),
         (

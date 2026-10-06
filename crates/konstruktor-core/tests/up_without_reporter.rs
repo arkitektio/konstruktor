@@ -33,7 +33,7 @@ fn hub_with_reporter(image: &str, label: &str) -> PathBuf {
     write_profile(&dir, &hub_profile(config.clone())).expect("profile");
     write_generated_files(
         &dir,
-        &generate_hub_files(&config, &IssuedIdentity::default()),
+        &generate_hub_files(&config, &IssuedIdentity::default(), &Default::default()),
     )
     .expect("files");
     dir

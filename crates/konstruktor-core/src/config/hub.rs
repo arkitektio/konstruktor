@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 
 use crate::catalog::{ServiceId, SERVICE_IDS};
 use crate::config::mesh::{build_mesh_block, MeshBlock, MeshOptions};
+use crate::connect::manifest::AdvertisedHost;
+use crate::hosts::HostCategory;
 use crate::secrets::{
     generate_alpha_numeric_string, generate_django_secret_key, generate_name, KeyPair,
 };
@@ -13,7 +15,9 @@ use crate::secrets::{
 /// from `config/infrastructure.py` and `services/*.py`.
 ///
 /// A hub runs data and compute services and trusts a remote coordination server for
-/// identity, so there is deliberately no `lok`, no users and no organizations.
+/// identity, so by default there is no `lok`, no users and no organizations. The one
+/// exception is a *self-contained* hub (`coord_server: local`), which runs its own — see
+/// [`LokBlock`].
 ///
 /// **Every optional field below is `skip_serializing_if`.** Upstream's pydantic models
 /// use `extra="forbid"`, so a key present-but-null is a hard failure where an absent key
@@ -417,6 +421,168 @@ impl Default for ReporterBlock {
     }
 }
 
+/// What `coord_server` says on a hub that runs its own coordination server, the way
+/// `rekuest_server: local` says it runs its own Rekuest.
+pub const LOCAL_COORD_SERVER: &str = "local";
+
+/// Lok, the coordination server. Follows `latest` like every other image here.
+pub const LOK_IMAGE: &str = "jhnnsrs/lok:latest";
+
+/// An account Lok creates on boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LokUser {
+    pub username: String,
+    pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+/// The organization Lok creates on boot, and registers this hub in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LokOrganization {
+    /// The slug: what a redeem token and a membership name the organization by.
+    pub identifier: String,
+    pub name: String,
+}
+
+/// A token an app trades for a client of its own, without anybody accepting anything.
+///
+/// One token serves one app: Lok pins it to the first manifest it is redeemed with, and
+/// refuses a different one afterwards. A deployment that several apps connect to
+/// unattended therefore needs one per app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LokRedeemToken {
+    pub token: String,
+    /// The account the redeeming app acts as.
+    pub user: String,
+}
+
+/// The coordination server, when this hub runs its own — a *self-contained* hub.
+///
+/// Everywhere else a hub is a claimant: it presents a manifest to a coordination server
+/// somebody else runs and waits to be accepted. Here Konstruktor is the root of trust
+/// itself, which is what makes the whole thing work unattended: it mints Lok's signing
+/// key, writes the public half into every service's config, and writes the hub's own
+/// manifest into Lok's config as something Lok registers on boot. Nobody is asked, and
+/// nothing leaves the machine.
+///
+/// Like [`MeshBlock`] it is omitted entirely on a hub that has none: upstream's model has
+/// no key for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LokBlock {
+    pub enabled: bool,
+    /// The compose service name, and the path it is routed under on the gateway.
+    pub host: String,
+    pub image: String,
+    pub internal_port: u16,
+    pub db: String,
+    pub media_bucket: LocalBucket,
+    pub secret_key: String,
+    /// The RSA pair Lok signs with. The public half is what every service verifies
+    /// against, inline — a service cannot fetch a key set from `localhost`.
+    pub key_pair: KeyPair,
+    /// The `kid` in the header of every token, and in each service's issuer entry.
+    pub key_id: String,
+    /// The `iss` of every token Lok mints, which every service matches by string
+    /// equality. A name, not an address: Lok is told to advertise its endpoints at
+    /// whatever address a request arrived at, so a token got at `localhost`, at a LAN
+    /// address or at the gateway's name on the stack's own network is the same token.
+    pub issuer: String,
+    /// The hub's name inside [`Self::organization`].
+    pub hub_identifier: String,
+    /// The addresses the hub's services are advertised at. Kept here because there is no
+    /// grant to keep them in.
+    pub advertised_hosts: Vec<AdvertisedHost>,
+    pub organization: LokOrganization,
+    pub users: Vec<LokUser>,
+    pub redeem_tokens: Vec<LokRedeemToken>,
+}
+
+/// What a front end says about the coordination server a self-contained hub runs.
+#[derive(Debug, Clone)]
+pub struct LokOptions {
+    pub hub_identifier: String,
+    /// Where clients reach the hub's services.
+    pub hosts: Vec<AdvertisedHost>,
+    pub organization: String,
+    pub user: String,
+    /// Left out, a strong one is generated.
+    pub user_password: Option<String>,
+    /// The redeem tokens to provision, all of them for [`Self::user`].
+    pub redeem_tokens: Vec<String>,
+    /// Injected by the tests; generated fresh otherwise.
+    pub key_pair: Option<KeyPair>,
+}
+
+impl Default for LokOptions {
+    fn default() -> Self {
+        Self {
+            hub_identifier: "local".into(),
+            hosts: vec![AdvertisedHost {
+                host: "localhost".into(),
+                kind: HostCategory::Loopback,
+            }],
+            organization: "demo".into(),
+            user: "demo".into(),
+            user_password: None,
+            redeem_tokens: vec![crate::secrets::generate_redeem_token()],
+            key_pair: None,
+        }
+    }
+}
+
+/// What a self-contained hub's coordination server calls itself in its tokens.
+pub const LOK_ISSUER: &str = "lok";
+
+/// `scheme://host[:port]`, the port left off where it is the scheme's default — the way a
+/// browser spells an origin.
+pub(crate) fn origin(scheme: &str, host: &str, port: u16) -> String {
+    let default = if scheme == "https" { 443 } else { 80 };
+    if port == default {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    }
+}
+
+fn build_lok_block(options: &LokOptions) -> LokBlock {
+    LokBlock {
+        enabled: true,
+        host: "lok".into(),
+        image: LOK_IMAGE.into(),
+        internal_port: 80,
+        db: "lok".into(),
+        media_bucket: LocalBucket::new("lokmedia"),
+        secret_key: generate_django_secret_key(),
+        key_pair: options
+            .key_pair
+            .clone()
+            .unwrap_or_else(crate::secrets::generate_rsa_key_pair),
+        key_id: "lok-key-1".into(),
+        issuer: LOK_ISSUER.into(),
+        hub_identifier: options.hub_identifier.clone(),
+        advertised_hosts: options.hosts.clone(),
+        organization: LokOrganization {
+            identifier: options.organization.clone(),
+            name: options.organization.clone(),
+        },
+        users: vec![LokUser {
+            username: options.user.clone(),
+            password: blank(options.user_password.as_deref())
+                .unwrap_or_else(|| generate_alpha_numeric_string(40)),
+            email: None,
+        }],
+        redeem_tokens: options
+            .redeem_tokens
+            .iter()
+            .map(|token| LokRedeemToken {
+                token: token.clone(),
+                user: options.user.clone(),
+            })
+            .collect(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubConfig {
     pub alpaka: ServiceBlock,
@@ -469,6 +635,9 @@ pub struct HubConfig {
     /// Present only when the hub runs its own Ollama. See [`OllamaBlock`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_ollama: Option<OllamaBlock>,
+    /// Present only on a self-contained hub. See [`LokBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lok: Option<LokBlock>,
     /// Present only on a hub that joined a mesh. Upstream's config model does not know
     /// this key, so it is omitted entirely rather than written as `enabled: false`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -665,6 +834,11 @@ impl HubConfig {
             .collect()
     }
 
+    /// The coordination server this stack runs, if it runs one.
+    pub fn running_lok(&self) -> Option<&LokBlock> {
+        self.lok.as_ref().filter(|lok| lok.enabled)
+    }
+
     /// The Ollama this stack runs, if it runs one. Only while Alpaka does: it is Alpaka's
     /// provider, and a hub that took Alpaka out keeps the block (and the models volume)
     /// for when it comes back, but not the container.
@@ -757,6 +931,9 @@ impl HubConfig {
         if let Some(livekit) = self.running_livekit() {
             images.push((livekit.host.clone(), livekit.image.clone()));
         }
+        if let Some(lok) = self.running_lok() {
+            images.push((lok.host.clone(), lok.image.clone()));
+        }
         if let Some(reporter) = self.reporter.as_ref().filter(|r| r.enabled) {
             images.push((reporter.host.clone(), reporter.image.clone()));
         }
@@ -801,6 +978,10 @@ impl HubConfig {
         }
         if let Some(ollama) = self.local_ollama.as_mut().filter(|o| o.host == service) {
             ollama.image = image.to_string();
+            return;
+        }
+        if let Some(lok) = self.lok.as_mut().filter(|l| l.host == service) {
+            lok.image = image.to_string();
             return;
         }
         if let Some(reporter) = self.reporter.as_mut().filter(|r| r.host == service) {
@@ -1143,14 +1324,6 @@ pub fn scheme_of(config: &HubConfig) -> &'static str {
 /// terminates TLS — so `https://` origins are written only then.
 pub fn trusted_origins(config: &HubConfig, hosts: &[String]) -> Vec<String> {
     let gateway = &config.gateway;
-    let origin = |scheme: &str, host: &str, port: u16| {
-        let default = if scheme == "https" { 443 } else { 80 };
-        if port == default {
-            format!("{scheme}://{host}")
-        } else {
-            format!("{scheme}://{host}:{port}")
-        }
-    };
 
     let mut out: Vec<String> = Vec::new();
     let mut push = |value: String| {
@@ -1228,6 +1401,10 @@ pub struct HubConfigOptions {
     /// Join a mesh. Left out, the hub gets no `mesh` block and no sidecar — the key is
     /// only known after the authorization, so this is filled in on a second pass.
     pub mesh: Option<MeshOptions>,
+    /// The coordination server to run here, on a self-contained hub
+    /// (`coord_server: local`). Left out there, the defaults of [`LokOptions`] apply;
+    /// ignored on any other hub.
+    pub lok: Option<LokOptions>,
     /// Injected by the tests; generated fresh otherwise.
     pub provenance_key_pair: Option<KeyPair>,
     /// A *dev hub*: **every** service's source is checked out on this machine and
@@ -1306,6 +1483,7 @@ impl Default for HubConfigOptions {
             global_description: None,
             csrf_trusted_origins: None,
             mesh: None,
+            lok: None,
             provenance_key_pair: None,
             dev_hub: false,
             service_options: BTreeMap::new(),
@@ -1439,6 +1617,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         global_description: blank(options.global_description.as_deref()),
         internal_network: generate_name(),
         local_ollama: None,
+        lok: None,
         local_redis: RedisBlock {
             enabled: true,
             host: "redis".into(),
@@ -1489,6 +1668,11 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
                     blank(ollama.url.as_deref()).map(|url| OllamaBlock::remote(&url))
                 }
             });
+    }
+
+    // The coordination server, on a hub that runs its own.
+    if options.coord_server.trim() == LOCAL_COORD_SERVER {
+        config.lok = Some(build_lok_block(&options.lok.clone().unwrap_or_default()));
     }
 
     // Every service keeps the host it was seeded with; `service_mut` exists for the

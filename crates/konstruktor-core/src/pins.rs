@@ -222,13 +222,19 @@ pub async fn pin_before_start(
     // Fetched once, here: what is written down is what the channel points at now, not
     // whatever this machine happened to have of it. An image that is here and came from no
     // registry (built on this machine) is not asked for anywhere.
-    for state in states
-        .iter()
-        .filter(|state| !state.present || !state.repo_digests.is_empty())
-    {
-        let pull = vec!["pull".to_string(), state.image.clone()];
-        let _ = crate::compose::run_streamed(dir, pull, on_line).await;
-    }
+    //
+    // Side by side: for an image that is already here a pull is one question to its
+    // registry, and a hub asks it of every image it runs.
+    futures_util::future::join_all(
+        states
+            .iter()
+            .filter(|state| !state.present || !state.repo_digests.is_empty())
+            .map(|state| {
+                let pull = vec!["pull".to_string(), state.image.clone()];
+                crate::compose::run_streamed(dir, pull, on_line)
+            }),
+    )
+    .await;
     let found = resolve(&missing).await;
     if found.is_empty() {
         return Vec::new();
@@ -305,7 +311,8 @@ mod tests {
     fn a_pinned_service_is_written_with_its_build_and_the_rest_as_generated() {
         let config = config();
         let follows = config.rekuest.image.clone().unwrap();
-        let mut files = crate::generate::generate_hub_files(&config, &Default::default());
+        let mut files =
+            crate::generate::generate_hub_files(&config, &Default::default(), &Default::default());
         let generated = images_of(&files);
 
         let pins = BTreeMap::from([("rekuest".to_string(), pin(&follows, "sha256:abc"))]);

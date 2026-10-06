@@ -13,6 +13,7 @@ dns-lookup.workspace = true
 network-interface.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
+rsa.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,6 +24,8 @@ strip-ansi-escapes.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "rt", "macros", "process", "fs", "io-util", "net"] }
 tokio-util.workspace = true
+# `join_all`: the images of a hub are asked, fetched and prepared side by side.
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -241,6 +241,13 @@ pub fn answers_from_disk(
     let profile =
         crate::profile::read_profile(dir).map_err(|e| CreateError::Folder(e.to_string()))?;
     let config = &profile.config;
+    if config.running_lok().is_some() {
+        return Err(CreateError::Answers(
+            "this hub runs its own coordination server, and its services are part of what \
+             that server was set up with — create the hub again with the services you want"
+                .into(),
+        ));
+    }
     let Some(credentials) = crate::credentials::read_credentials(dir) else {
         return Err(CreateError::Answers(
             "this hub has never been authorized — authorize it first, then change its \
@@ -740,7 +747,7 @@ mod tests {
         use crate::generate::compose::build_compose;
 
         let has_ollama = |config: &HubConfig| {
-            build_compose(config, &config.enabled_services())["services"]
+            build_compose(config, &config.enabled_services(), &Default::default())["services"]
                 .get("ollama")
                 .is_some()
         };

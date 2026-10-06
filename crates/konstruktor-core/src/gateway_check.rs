@@ -73,6 +73,8 @@ pub async fn check(dir: &Path, config: &HubConfig) -> Vec<AliasProbe> {
 
     let mut aliases: Vec<(String, u16, &'static str)> = crate::credentials::read_credentials(dir)
         .map(|c| c.advertised_hosts)
+        // No grant on a hub that runs its own coordination server; the profile says.
+        .or_else(|| config.running_lok().map(|lok| lok.advertised_hosts.clone()))
         .unwrap_or_default()
         .into_iter()
         .map(|h| (h.host, advertised_port(config), "advertised"))

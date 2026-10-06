@@ -1,0 +1,158 @@
+//! `konstruktor inspect`: what a service's image says of itself.
+//!
+//! Everything this installer does with a service is read off that answer — what it
+//! registers, what it sets up, how it starts the service and what it runs beforehand. This
+//! shows it: for a service of a hub, or for any image, which is how to find out whether an
+//! image is one a hub could run before putting it in one.
+
+use anyhow::{anyhow, bail, Result};
+use clap::Args;
+
+use konstruktor_core::contract::{self, Description};
+use konstruktor_core::profile;
+
+use crate::manage::Target;
+use crate::ui;
+
+#[derive(Args, Debug, Clone)]
+pub struct InspectArgs {
+    /// A service of the hub, as `konstruktor ps` names it — or, with `--image`, left out.
+    pub service: Option<String>,
+    /// Ask this image instead of a hub's service: `--image jhnnsrs/mikro:7`. Needs no hub.
+    #[arg(long, value_name = "IMAGE", conflicts_with = "service")]
+    pub image: Option<String>,
+    /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
+    #[arg(long = "in", value_name = "TARGET", conflicts_with = "image")]
+    pub in_deployment: Option<String>,
+}
+
+pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
+    let image = match (args.image, args.service) {
+        (Some(image), _) => image,
+        (None, Some(service)) => {
+            let dir = Target::named(args.in_deployment).resolve()?;
+            let config = profile::read_profile(&dir)?.config;
+            contract::image_of(&dir, &config, &service)
+                .ok_or_else(|| anyhow!("`{service}` is not a service this hub runs an image for"))?
+        }
+        (None, None) => bail!("name a service of the hub, or an image with --image"),
+    };
+
+    let answer = contract::answer(&image).await.ok_or_else(|| {
+        anyhow!("`{image}` could not be run, or did not stop: it is not here and cannot be pulled, or it is not a service's image")
+    })?;
+    let Ok(said) = serde_json::from_str::<Description>(&answer) else {
+        bail!(
+            "`{image}` did not say what it is when run with no command: it is not a service's \
+             image, or it is a release from before a service described itself"
+        );
+    };
+    if json {
+        // As the image printed it: whatever it says that this build does not read is kept.
+        let whole: serde_json::Value = serde_json::from_str(&answer)?;
+        return ui::emit_json(&whole);
+    }
+
+    let words = |parts: &[String]| parts.join(" ");
+    let listed = |parts: &[String]| {
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(", ")
+        }
+    };
+    ui::say("");
+    ui::say(&format!("  {}  {}", ui::bold(&said.name), ui::dim(&image)));
+    if !said.summary.is_empty() {
+        ui::say(&format!("  {}", said.summary));
+    }
+    ui::say("");
+    let mut rows: Vec<(String, String)> = vec![
+        ("registered as".into(), said.identifier.clone()),
+        ("contract".into(), said.contract.to_string()),
+        ("storage".into(), listed(&said.needs.storage)),
+        ("beside it".into(), listed(&said.needs.peers)),
+        (
+            "a key of its own".into(),
+            if said.needs.instance_key { "yes" } else { "no" }.into(),
+        ),
+        (
+            "scopes".into(),
+            listed(
+                &said
+                    .needs
+                    .scopes
+                    .iter()
+                    .map(|s| s.key.clone())
+                    .collect::<Vec<_>>(),
+            ),
+        ),
+        (
+            "roles".into(),
+            listed(
+                &said
+                    .needs
+                    .roles
+                    .iter()
+                    .map(|s| s.key.clone())
+                    .collect::<Vec<_>>(),
+            ),
+        ),
+        ("health".into(), said.offers.health.clone()),
+    ];
+    for (kind, path) in &said.offers.endpoints {
+        rows.push((format!("offers {kind}"), path.clone()));
+    }
+    rows.push(("started with".into(), words(&said.serve)));
+    rows.push(("with --debug".into(), words(&said.debug)));
+    rows.push(("config written by".into(), words(&said.render)));
+    rows.push((
+        "prepared by".into(),
+        match (&said.prepare, said.preparation()) {
+            (Some(job), Some(command)) => format!("{job}  ({})", words(command)),
+            _ => "nothing to prepare".into(),
+        },
+    ));
+    for sidecar in &said.sidecars {
+        rows.push((
+            format!("sidecar {}", sidecar.name),
+            format!(
+                "{}{}",
+                sidecar.image,
+                if sidecar.optional { "  (optional)" } else { "" }
+            ),
+        ));
+    }
+    for (peer, versions) in &said.requires {
+        rows.push((format!("needs {peer}"), versions.clone()));
+    }
+    if let Some(oldest) = &said.upgrade_from {
+        rows.push(("upgradable from".into(), oldest.clone()));
+    }
+    ui::table(&rows);
+
+    ui::say("");
+    ui::say(&format!("  {}", ui::bold("jobs")));
+    if said.jobs.is_empty() {
+        ui::say(&format!("  {}", ui::dim("none")));
+    }
+    let jobs: Vec<(String, String)> = said
+        .jobs
+        .iter()
+        .map(|(name, job)| {
+            let mut about = job.summary.clone();
+            if !job.includes.is_empty() {
+                about.push_str(&format!(" Runs: {}.", job.includes.join(", ")));
+            }
+            (name.clone(), about.trim().to_string())
+        })
+        .collect();
+    ui::table(&jobs);
+    ui::say("");
+    ui::say(&format!(
+        "  {}",
+        ui::dim("--json prints the whole description, as the image printed it.")
+    ));
+    ui::say("");
+    Ok(())
+}

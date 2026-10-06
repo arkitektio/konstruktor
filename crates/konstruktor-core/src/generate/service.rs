@@ -112,23 +112,30 @@ pub fn fernet_key_file(service: &ServiceBlock) -> String {
 
 /// Inbound token verification.
 ///
-/// A hub never runs Lok, so the issuer is always the remote coordination server;
-/// provenance points at the local Rekuest when it runs here, and at the configured remote
-/// one otherwise.
+/// The issuer is the remote coordination server — unless the hub runs its own, in which
+/// case it is that Lok's signing key, inline (see [`crate::generate::lok::rsa_issuer`]) and
+/// whatever a grant said is beside the point: there was none. Provenance points at the
+/// local Rekuest when it runs here, and at the configured remote one otherwise.
 ///
 /// The issuer string comes from the grant and is used verbatim — authentikate selects a
 /// trust anchor by exact string equality, and `https://<host>` is not `<host>`. The JWKS
 /// URL is the one place the grant is not taken at its word: see [`jwks_at_base`].
 pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value {
-    let iss = issued
-        .issuer
-        .clone()
-        .unwrap_or_else(|| config.coord_server.clone());
-    let jwks = issued
-        .jwks_url
-        .as_deref()
-        .map(jwks_at_base)
-        .unwrap_or_else(|| format!("https://{}/{JWKS_PATH}", config.coord_server));
+    let issuer = match config.running_lok() {
+        Some(lok) => crate::generate::lok::rsa_issuer(lok),
+        None => {
+            let iss = issued
+                .issuer
+                .clone()
+                .unwrap_or_else(|| config.coord_server.clone());
+            let jwks = issued
+                .jwks_url
+                .as_deref()
+                .map(jwks_at_base)
+                .unwrap_or_else(|| format!("https://{}/{JWKS_PATH}", config.coord_server));
+            jwks_issuer(&iss, &jwks)
+        }
+    };
 
     let mut pairs = vec![
         // Every audience, for now. Authentikate began requiring `aud` to be declared —
@@ -140,7 +147,7 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         // To be replaced by the service instance the configure request returns, once it
         // returns one.
         ("audience", s(ANY_AUDIENCE)),
-        ("issuers", list(vec![jwks_issuer(&iss, &jwks)])),
+        ("issuers", list(vec![issuer])),
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
 

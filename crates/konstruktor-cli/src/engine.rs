@@ -52,7 +52,8 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
 
     let requested = args.dir.as_deref().unwrap_or(".");
     std::fs::create_dir_all(requested).with_context(|| format!("creating {requested}"))?;
-    let dir = konstruktor_core::paths::canonical(requested).with_context(|| format!("resolving {requested}"))?;
+    let dir = konstruktor_core::paths::canonical(requested)
+        .with_context(|| format!("resolving {requested}"))?;
 
     // The shared discriminator, not a raw file check — so this names what is actually
     // there rather than calling a hub or a coordination server "a compose project".

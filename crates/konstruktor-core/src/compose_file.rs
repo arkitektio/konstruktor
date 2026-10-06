@@ -157,11 +157,14 @@ pub fn declares_service(dir: &Path, service: &str) -> bool {
 pub fn regenerate(dir: &Path) -> Result<String, ComposeFileError> {
     let profile =
         profile::read_profile(dir).map_err(|e| ComposeFileError::Profile(e.to_string()))?;
-    Ok(regenerate_from(&profile.config))
+    Ok(regenerate_from(
+        &profile.config,
+        &crate::contract::known(dir),
+    ))
 }
 
-pub fn regenerate_from(config: &HubConfig) -> String {
-    dump(&build_compose(config, &config.enabled_services()))
+pub fn regenerate_from(config: &HubConfig, said: &crate::contract::Said) -> String {
+    dump(&build_compose(config, &config.enabled_services(), said))
 }
 
 /// `docker compose config --quiet`: Docker's own verdict on the file, as the error text it
@@ -270,7 +273,7 @@ mod tests {
         profile::write_profile(&dir, &profile::hub_profile(config.clone())).unwrap();
         assert!(!dir.join(MESH_ENV_FILE).exists());
 
-        write(&dir, &regenerate_from(&config)).unwrap();
+        write(&dir, &regenerate_from(&config, &Default::default())).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join(MESH_ENV_FILE)).unwrap(),
             "TS_AUTHKEY=tskey-auth-old-hub\n"

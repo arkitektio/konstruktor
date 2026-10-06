@@ -3,7 +3,7 @@
 //! A hub's installer knows the hub: where the database is, which services run, which keys
 //! they trust. What a *service* is — what it needs, how this release of it spells its
 //! config — the service's own image says, through one entry point every image has
-//! (`python -m arkitekt_service <verb>`, the `arkitekt-service` package):
+//! (the `arkitekt-service` package; run with no command, an image says what it is):
 //!
 //! - `describe`: what it needs from a hub and offers to it ([`Description`]);
 //! - `render`: this release's config, from the hub's facts ([`facts`]) with what the
@@ -25,7 +25,7 @@ use crate::generate::service::{hub_blocks, map, s};
 use crate::generate::IssuedIdentity;
 
 /// The version of the contract this build speaks.
-pub const CONTRACT: u32 = 1;
+pub const CONTRACT: u32 = 2;
 
 /// A release's own no: facts it cannot be configured from, an override it does not read.
 const REFUSED: i32 = 78;
@@ -68,11 +68,106 @@ pub struct Offers {
     pub endpoints: BTreeMap<String, String>,
 }
 
+/// Something that can be run in a service's image, as a container of its own, by name. The
+/// start is not one of them: that is the image's own command, and nothing here writes one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Job {
+    /// What to run, in a container of the image, with the service's config.
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub summary: String,
+    /// Other jobs this one runs as part of itself, in order: `migrate` includes the
+    /// service's setup.
+    #[serde(default)]
+    pub includes: Vec<String>,
+}
+
+/// A process that runs beside a service, as an image of its own: one the service does not
+/// run without (Rekuest's takt), or an optional one it drives on a hub that has the use for
+/// it (Lok's mesh control server).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sidecar {
+    /// What it runs as beside the service: `takt` is `<service>-takt`.
+    pub name: String,
+    /// Its image, from the service's own: `{repository}` and `{tag}` stand for the parts of
+    /// the image the description came from.
+    pub image: String,
+    #[serde(default)]
+    pub summary: String,
+    /// Whether the service runs without it: started only on a hub that asked for what it
+    /// brings.
+    #[serde(default)]
+    pub optional: bool,
+}
+
+/// What the images of a hub say of themselves, by compose service: what its files are
+/// written from, beside its profile.
+pub type Said = BTreeMap<String, Description>;
+
+impl Description {
+    /// The command a container of the service runs: `serve`, or `debug` when asked for.
+    /// `None` leaves it to the image's own.
+    pub fn command(&self, debug: bool) -> Option<&[String]> {
+        let command = if debug { &self.debug } else { &self.serve };
+        (!command.is_empty()).then_some(command.as_slice())
+    }
+
+    /// The command of the job that prepares the service, if it has one to run.
+    pub fn preparation(&self) -> Option<&[String]> {
+        let job = self.jobs.get(self.prepare.as_deref()?)?;
+        Some(&job.command)
+    }
+}
+
+impl Sidecar {
+    /// The image this sidecar runs, beside a service running `service_image`.
+    pub fn image_beside(&self, service_image: &str) -> String {
+        let reference = service_image.split('@').next().unwrap_or(service_image);
+        // A colon after the last slash separates the tag; one before it is a registry's port.
+        let name_starts = reference.rfind('/').map_or(0, |slash| slash + 1);
+        let (repository, tag) = match reference[name_starts..].rfind(':') {
+            Some(colon) => (
+                &reference[..name_starts + colon],
+                &reference[name_starts + colon + 1..],
+            ),
+            None => (reference, "latest"),
+        };
+        self.image
+            .replace("{repository}", repository)
+            .replace("{tag}", tag)
+    }
+}
+
 /// A service, as its image describes it (`arkitekt_service.contract.description.Description`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Description {
     pub contract: u32,
     pub name: String,
+    /// What it is, in a line.
+    #[serde(default)]
+    pub summary: String,
+    /// What the service is registered as at the coordination server, and what a client asks
+    /// for (`live.arkitekt.mikro`).
+    pub identifier: String,
+    /// What writes the release's config: run in the image with the hub's facts mounted.
+    #[serde(default)]
+    pub render: Vec<String>,
+    /// What a container of the image runs to serve, and nothing else: written as the
+    /// service's command.
+    #[serde(default)]
+    pub serve: Vec<String>,
+    /// The same for development (`--debug`): the server that reloads on a change.
+    #[serde(default)]
+    pub debug: Vec<String>,
+    /// What can be run in the image beside its start, by name.
+    #[serde(default)]
+    pub jobs: BTreeMap<String, Job>,
+    /// The job that brings the service's database to this release, run once per build
+    /// before it is started. `None` when there is nothing to prepare.
+    #[serde(default)]
+    pub prepare: Option<String>,
+    #[serde(default)]
+    pub sidecars: Vec<Sidecar>,
     #[serde(default)]
     pub needs: Needs,
     #[serde(default)]
@@ -85,29 +180,62 @@ pub struct Description {
     pub upgrade_from: Option<String>,
 }
 
-/// Asks `image` to describe itself. `None` for an image with no contract — every release
-/// before there was one — or one that speaks a contract this build does not.
+/// Asks `image` what it is, by running it with no command: a service's image answers with
+/// its description and stops. Nothing of what is inside is assumed — not a language, not a
+/// module — so anything that prints the description as its own command is a service. `None`
+/// for an image that does not: every release before this was the convention, or one that
+/// speaks a contract this build does not.
 pub async fn describe(image: &str) -> Option<Description> {
-    let output = crate::engine_probe::engine()
-        .async_command()
-        .args([
-            "run",
-            "--rm",
-            image,
-            "python",
-            "-m",
-            "arkitekt_service",
-            "describe",
-        ])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .ok()
-        .filter(|output| output.status.success())?;
-    serde_json::from_slice::<Description>(&output.stdout)
+    let answer = answer(image).await?;
+    serde_json::from_str::<Description>(&answer)
         .ok()
         .filter(|said| said.contract == CONTRACT)
 }
+
+/// What `image` printed when it was run with no command, as it printed it: its description,
+/// if it is a service's. For showing an operator the whole of it (`konstruktor inspect`);
+/// everything that acts on a description reads [`describe`].
+pub async fn answer(image: &str) -> Option<String> {
+    // Named, so it can be removed: an image that is not a service's may well *start*
+    // something with no command, and never stop to answer.
+    let name = format!("konstruktor-describe-{:012x}", rand::random::<u64>() >> 16);
+    let asking = crate::engine_probe::engine()
+        .async_command()
+        .args(["run", "--rm", "--name", &name, image])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = match tokio::time::timeout(DESCRIBE_TIMEOUT, asking).await {
+        Ok(output) => output.ok().filter(|output| output.status.success())?,
+        Err(_) => {
+            let _ = crate::engine_probe::engine()
+                .async_command()
+                .args(["rm", "--force", &name])
+                .output()
+                .await;
+            return None;
+        }
+    };
+    String::from_utf8(output.stdout).ok()
+}
+
+/// The image `service` of the hub at `dir` runs: the build written down for it, or what
+/// the profile names. The hub's own coordination server counts.
+pub fn image_of(dir: &Path, config: &HubConfig, service: &str) -> Option<String> {
+    if let Some((_, _, image)) = images(dir, config)
+        .into_iter()
+        .find(|(_, host, _)| host == service)
+    {
+        return Some(image);
+    }
+    let lok = config.running_lok().filter(|lok| lok.host == service)?;
+    let pinned = crate::pins::references(config, &crate::lock::read(dir).pins);
+    Some(pinned.get(&lok.host).unwrap_or(&lok.image).clone())
+}
+
+/// How long an image gets to say what it is, fetching it included. One that describes itself
+/// answers in a second; this is for the one that serves something instead.
+const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// What an image answered when asked for its config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +259,7 @@ fn rendered_from(code: Option<i32>, stdout: &str, stderr: &str) -> Rendered {
 
 /// Has `image` write its config from the facts at `facts`, with `overrides` laid over if
 /// that file exists. Both are mounted read-only; nothing else of the hub is.
-pub async fn render(image: &str, facts: &Path, overrides: &Path) -> Rendered {
+pub async fn render(image: &str, command: &[String], facts: &Path, overrides: &Path) -> Rendered {
     let absolute = |path: &Path| {
         std::fs::canonicalize(path)
             .unwrap_or_else(|_| path.to_path_buf())
@@ -148,11 +276,9 @@ pub async fn render(image: &str, facts: &Path, overrides: &Path) -> Rendered {
         args.push("-v".into());
         args.push(format!("{}:/hub/overrides.yaml:ro", absolute(overrides)));
     }
-    args.extend(
-        [image, "python", "-m", "arkitekt_service", "render"]
-            .into_iter()
-            .map(String::from),
-    );
+    // What writes its config is the image's to name (`render` of its description).
+    args.push(image.to_string());
+    args.extend(command.iter().cloned());
     let output = crate::engine_probe::engine()
         .async_command()
         .args(&args)
@@ -210,33 +336,36 @@ fn images(dir: &Path, config: &HubConfig) -> Vec<(ServiceId, String, String)> {
 /// build and remembered in the lock. A service without a contract is not in the answer.
 pub async fn described(dir: &Path, config: &HubConfig) -> BTreeMap<String, Description> {
     let mut held = crate::lock::read(dir);
-    let mut asked = false;
-    let mut out = BTreeMap::new();
-    for (_, host, image) in images(dir, config) {
-        let known = held
-            .described
-            .get(&host)
-            .filter(|known| known.image == image)
-            .cloned();
-        let said = match known {
-            Some(known) => known.description,
-            None => {
-                let description = describe(&image).await;
-                held.described.insert(
-                    host.clone(),
-                    crate::lock::Described {
-                        image,
-                        description: description.clone(),
-                    },
-                );
-                asked = true;
-                description
-            }
-        };
-        if let Some(said) = said {
-            out.insert(host, said);
-        }
+    let images = images(dir, config);
+    // The ones not asked yet on this build, asked side by side: each is a container of
+    // its own, and none of them knows of the others.
+    let unknown: Vec<&(ServiceId, String, String)> = images
+        .iter()
+        .filter(|(_, host, image)| {
+            held.described
+                .get(host)
+                .is_none_or(|known| &known.image != image)
+        })
+        .collect();
+    let answers =
+        futures_util::future::join_all(unknown.iter().map(|(_, _, image)| describe(image))).await;
+    let asked = !unknown.is_empty();
+    for ((_, host, image), description) in unknown.into_iter().zip(answers) {
+        held.described.insert(
+            host.clone(),
+            crate::lock::Described {
+                image: image.clone(),
+                description,
+            },
+        );
     }
+    let out = images
+        .iter()
+        .filter_map(|(_, host, _)| {
+            let said = held.described.get(host)?.description.clone()?;
+            Some((host.clone(), said))
+        })
+        .collect();
     if asked {
         // Re-read: describing takes a while, and the lock may have been written meanwhile.
         let mut now = crate::lock::read(dir);
@@ -244,6 +373,142 @@ pub async fn described(dir: &Path, config: &HubConfig) -> BTreeMap<String, Descr
         let _ = crate::lock::write(dir, &now);
     }
     out
+}
+
+/// Refuses a hub that would run something else beside a service than the service's image
+/// says it is released with. How a sidecar is wired into the stack is still written here
+/// (takt, beside Rekuest); which build of it runs is the service's to say, and the two
+/// drifting apart is a pair that was never tested together.
+fn sidecars_agree(
+    config: &HubConfig,
+    said: &BTreeMap<String, Description>,
+) -> Result<(), RenderError> {
+    let rekuest = &config.rekuest;
+    let (Some(description), Some(image), Some(running)) = (
+        said.get(&rekuest.host),
+        rekuest.image.as_deref(),
+        config.takt_image(),
+    ) else {
+        return Ok(());
+    };
+    // A sidecar the operator pinned by hand is theirs to answer for.
+    if config.takt_image.is_some() {
+        return Ok(());
+    }
+    for sidecar in description.sidecars.iter().filter(|s| s.name == "takt") {
+        let declared = sidecar.image_beside(image);
+        let strip = |reference: &str| reference.split('@').next().unwrap_or(reference).to_owned();
+        if strip(&declared) != strip(&running) {
+            return Err(RenderError::Failed {
+                service: rekuest.host.clone(),
+                said: format!(
+                    "its image is released with `{declared}` beside it, but this hub would run `{running}`"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The job that brings `service`'s database to its build, as its image declares it: `None`
+/// for an image that does not describe itself, or has nothing to prepare.
+pub async fn migrate_job(dir: &Path, config: &HubConfig, service: &str) -> Option<Vec<String>> {
+    let said = described(dir, config).await.remove(service)?;
+    said.preparation().map(<[String]>::to_vec)
+}
+
+/// What `service`'s image says of itself, the hub's own coordination server included: it is
+/// not one of the hub's services, but its image answers the same question.
+pub async fn description_of(dir: &Path, config: &HubConfig, service: &str) -> Option<Description> {
+    if let Some(said) = described(dir, config).await.remove(service) {
+        return Some(said);
+    }
+    let lok = config.running_lok().filter(|lok| lok.host == service)?;
+    let pinned = crate::pins::references(config, &crate::lock::read(dir).pins);
+    describe(pinned.get(&lok.host).unwrap_or(&lok.image)).await
+}
+
+/// The command that runs `job` of `service`, with `extra` passed on to it — in a container of
+/// its own, beside whatever of the hub is running (`konstruktor job run`).
+pub fn job_command(service: &str, job: &Job, extra: &[String]) -> Vec<String> {
+    ["compose", "run", "--rm", "--no-deps", "-T", service]
+        .into_iter()
+        .map(String::from)
+        .chain(job.command.iter().cloned())
+        .chain(extra.iter().cloned())
+        .collect()
+}
+
+/// What the images of the hub at `dir` said of themselves when they were last asked: read
+/// back from what was written down, without asking anything. What its files are regenerated
+/// from.
+pub fn known(dir: &Path) -> Said {
+    crate::lock::read(dir)
+        .described
+        .into_iter()
+        .filter_map(|(host, known)| Some((host, known.description?)))
+        .collect()
+}
+
+/// Asks every image a new hub would run what it is, side by side — before anything of the
+/// hub is written, because its files are written from the answers. The coordination server
+/// of a hub that runs its own is asked too. An image that does not answer is not in the
+/// result: what that means is the caller's to say. `already` holds answers there are, by
+/// image.
+pub async fn describe_all(config: &HubConfig, already: &BTreeMap<String, Description>) -> Said {
+    let mut images: Vec<(String, String)> = config
+        .enabled_services()
+        .into_iter()
+        .filter_map(|id| {
+            let block = config.service(id);
+            Some((block.host.clone(), block.image.clone()?))
+        })
+        .collect();
+    if let Some(lok) = config.running_lok() {
+        images.push((lok.host.clone(), lok.image.clone()));
+    }
+    // One that was asked already — to learn which service it is — is not asked again.
+    let answers = futures_util::future::join_all(images.iter().map(|(_, image)| async move {
+        match already.get(image) {
+            Some(said) => Some(said.clone()),
+            None => describe(image).await,
+        }
+    }))
+    .await;
+    images
+        .into_iter()
+        .zip(answers)
+        .filter_map(|((host, _), said)| Some((host, said?)))
+        .collect()
+}
+
+/// Writes down what a new hub's images said, so its first start does not ask them again.
+pub fn remember(dir: &Path, config: &HubConfig, said: &Said) -> std::io::Result<()> {
+    let mut held = crate::lock::read(dir);
+    for id in config.enabled_services() {
+        let block = config.service(id);
+        if let (Some(image), Some(description)) = (&block.image, said.get(&block.host)) {
+            held.described.insert(
+                block.host.clone(),
+                crate::lock::Described {
+                    image: image.clone(),
+                    description: Some(description.clone()),
+                },
+            );
+        }
+    }
+    if let Some(lok) = config.running_lok() {
+        if let Some(description) = said.get(&lok.host) {
+            held.described.insert(
+                lok.host.clone(),
+                crate::lock::Described {
+                    image: lok.image.clone(),
+                    description: Some(description.clone()),
+                },
+            );
+        }
+    }
+    crate::lock::write(dir, &held)
 }
 
 /// Has every service's image write its own config.
@@ -259,8 +524,12 @@ pub async fn render_hub(
     issued: &IssuedIdentity,
 ) -> Result<Vec<String>, RenderError> {
     let said = described(dir, config).await;
+    sidecars_agree(config, &said)?;
     let written = |error: std::io::Error| RenderError::Write(error.to_string());
     let mut rendered = Vec::new();
+    // What is to be asked of which image: decided for all of them first, so the asking
+    // itself — a container each — can happen side by side.
+    let mut asking = Vec::new();
     for (id, host, image) in images(dir, config) {
         if !said.contains_key(&host) {
             return Err(RenderError::NoContract {
@@ -299,7 +568,19 @@ pub async fn render_hub(
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&facts_file, std::fs::Permissions::from_mode(0o600));
         }
-        let text = match render(&image, &facts_file, &overrides).await {
+        let command = said[&host].render.clone();
+        asking.push((host, image, command, facts_file, overrides, target, from));
+    }
+
+    let answers = futures_util::future::join_all(asking.iter().map(
+        |(_, image, command, facts_file, overrides, _, _)| {
+            render(image, command, facts_file, overrides)
+        },
+    ))
+    .await;
+
+    for ((host, _, _, _, _, target, from), answer) in asking.into_iter().zip(answers) {
+        let text = match answer {
             Rendered::Config(text) => text,
             Rendered::Refused(said) => {
                 return Err(RenderError::Refused {
@@ -331,24 +612,16 @@ pub async fn render_hub(
     Ok(rendered)
 }
 
-/// The command that brings `service`'s database to the build it is about to run: its
-/// image's `migrate`, which waits for the database, applies the migrations and runs the
-/// service's own setup — in a container of that build, beside nothing else of the service.
-pub fn prepare(service: &str) -> Vec<String> {
-    [
-        "compose",
-        "run",
-        "--rm",
-        "--no-deps",
-        "-T",
-        service,
-        "python",
-        "-m",
-        "arkitekt_service",
-        "migrate",
-    ]
-    .map(String::from)
-    .to_vec()
+/// The command that brings `service`'s database to the build it is about to run: the job
+/// its image declares (`jobs.migrate`), which waits for the database, applies the migrations
+/// and runs the service's own setup — in a container of that build, beside nothing else of
+/// the service.
+pub fn prepare(service: &str, job: &[String]) -> Vec<String> {
+    ["compose", "run", "--rm", "--no-deps", "-T", service]
+        .into_iter()
+        .map(String::from)
+        .chain(job.iter().cloned())
+        .collect()
 }
 
 /// The id of the image a reference resolves to on this machine.
@@ -366,7 +639,21 @@ async fn image_id(image: &str) -> Option<String> {
 pub async fn unprepared(dir: &Path, config: &HubConfig) -> Vec<(String, String)> {
     let prepared = crate::lock::read(dir).prepared;
     let mut out = Vec::new();
-    for (_, host, image) in images(dir, config) {
+    // The hub's own coordination server too: its start only serves, like any service's.
+    // It is not one of the hub's services (nothing is rendered for it), but its database
+    // is brought to its build by the same job.
+    let lok = config.running_lok().map(|lok| {
+        let pinned = crate::pins::references(config, &crate::lock::read(dir).pins);
+        let image = pinned
+            .get(&lok.host)
+            .cloned()
+            .unwrap_or_else(|| lok.image.clone());
+        (lok.host.clone(), image)
+    });
+    let services = images(dir, config)
+        .into_iter()
+        .map(|(_, host, image)| (host, image));
+    for (host, image) in lok.into_iter().chain(services) {
         // An image that is not on the machine has no build to compare: it is prepared for
         // once it is.
         let Some(id) = image_id(&image).await else {
@@ -424,21 +711,61 @@ pub async fn prepare_databases(
     crate::backup::wait_for_database(dir, config, "database", &|_| {})
         .await
         .map_err(|error| error.to_string())?;
+    // What each is prepared with is its image's to say. The coordination server is not one
+    // of the hub's services, so it is asked here, for this.
+    let mut said = described(dir, config).await;
+    if let Some(lok) = config.running_lok() {
+        if waiting.iter().any(|(service, _)| service == &lok.host) {
+            let pinned = crate::pins::references(config, &crate::lock::read(dir).pins);
+            let image = pinned.get(&lok.host).unwrap_or(&lok.image);
+            if let Some(description) = describe(image).await {
+                said.insert(lok.host.clone(), description);
+            }
+        }
+    }
+    let mut jobs = Vec::new();
     let mut done = Vec::new();
+    let mut failed = Vec::new();
     for (service, id) in waiting {
+        match said.get(&service) {
+            None => failed.push(format!(
+                "`{service}`'s image does not say how its database is prepared \
+                 (run with no command, it has to say what it is), so nothing was started on it."
+            )),
+            // Nothing to prepare is prepared.
+            Some(description) => match description.preparation() {
+                None => {
+                    prepared(dir, &service, &id).map_err(|error| error.to_string())?;
+                    done.push(service);
+                }
+                Some(job) => jobs.push((service, id, job.to_vec())),
+            },
+        }
+    }
+    // Side by side: each service has a database of its own in the one server, and a
+    // container of its own to prepare it from.
+    let outcomes = futures_util::future::join_all(jobs.iter().map(|(service, _, job)| {
         say(format!(
             "Preparing {service}'s database for the build it runs"
         ));
-        crate::compose::run_streamed(dir, prepare(&service), on_line)
-            .await
-            .map_err(|said| {
-                format!(
-                    "`{service}`'s database could not be prepared for the build it would \
-                     run, so nothing was started on it. It said:\n{said}"
-                )
-            })?;
-        prepared(dir, &service, &id).map_err(|error| error.to_string())?;
-        done.push(service);
+        crate::compose::run_streamed(dir, prepare(service, job), on_line)
+    }))
+    .await;
+    for ((service, id, _), outcome) in jobs.into_iter().zip(outcomes) {
+        match outcome {
+            Ok(_) => {
+                prepared(dir, &service, &id).map_err(|error| error.to_string())?;
+                done.push(service);
+            }
+            Err(said) => failed.push(format!(
+                "`{service}`'s database could not be prepared for the build it would \
+                 run, so nothing was started on it. It said:\n{said}"
+            )),
+        }
+    }
+    // The ones that went through are written down first: only the others are asked again.
+    if !failed.is_empty() {
+        return Err(failed.join("\n\n"));
     }
     Ok(done)
 }
@@ -476,7 +803,13 @@ pub fn facts(
         ("name", s(&service.host)),
         ("path", s(&service.host)),
         ("url", s(&url(&service.host, service.internal_port))),
-        ("identifier", s(&format!("live.arkitekt.{}", id.as_str()))),
+        (
+            "identifier",
+            s(&described
+                .get(&service.host)
+                .map(|said| said.identifier.clone())
+                .unwrap_or_else(|| format!("live.arkitekt.{}", id.as_str()))),
+        ),
         ("secret_key", field(&django, "secret_key")),
         ("debug", field(&django, "debug")),
         ("allowed_hosts", field(&django, "hosts")),

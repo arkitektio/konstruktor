@@ -291,6 +291,42 @@ pub fn generate_ed25519_key_pair() -> KeyPair {
     build_ed25519_key_pair(&seed)
 }
 
+/// How long a coordination server's signing key is. Lok signs RS256, and 2048 bits is what
+/// every key it has ever been deployed with has.
+const RSA_BITS: usize = 2048;
+
+/// The RSA pair a coordination server signs its tokens with — a PKCS#8 private key and a
+/// SubjectPublicKeyInfo public key, both PEM, which is what Lok's `private_key` and
+/// authentikate's `kind: rsa` issuer read.
+///
+/// Only a hub that runs its own coordination server has one: there Konstruktor is the root
+/// of trust, so the same key goes into Lok's config to sign with and, as its public half,
+/// into every service's config to verify with.
+pub fn generate_rsa_key_pair() -> KeyPair {
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+
+    let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, RSA_BITS)
+        .expect("the OS random source can always produce an RSA key");
+    let public = private.to_public_key();
+
+    KeyPair {
+        key_type: "RS256".to_string(),
+        private_key: private
+            .to_pkcs8_pem(LineEnding::LF)
+            .expect("an RSA key always encodes")
+            .to_string(),
+        public_key: public
+            .to_public_key_pem(LineEnding::LF)
+            .expect("an RSA key always encodes"),
+    }
+}
+
+/// A redeem token: 32 random bytes, URL-safe base64 without padding — what Python's
+/// `secrets.token_urlsafe(32)` writes, which is how Lok mints one itself.
+pub fn generate_redeem_token() -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes(32))
+}
+
 /// The public half of `pair` as a trust-bundle JWK: what the coordination server publishes
 /// for an instance under `/.well-known/hub-keys/<hub>`, and what a hub that is not enrolled
 /// yet writes inline as `instance.trust.jwks`.
@@ -340,5 +376,33 @@ mod tests {
         assert_eq!(jwk["alg"], "Ed25519");
         assert_eq!(jwk["use"], "sig");
         assert_eq!(jwk["service"], "live.arkitekt.mikro");
+    }
+
+    /// The two halves have to be the same key, in the two encodings Lok and authentikate
+    /// import: a signing key whose public half does not verify it trusts nobody.
+    #[test]
+    fn the_rsa_pair_is_one_key_in_the_encodings_lok_reads() {
+        use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+
+        let pair = generate_rsa_key_pair();
+        assert_eq!(pair.key_type, "RS256");
+        assert!(pair
+            .private_key
+            .starts_with("-----BEGIN PRIVATE KEY-----\n"));
+        assert!(pair.public_key.starts_with("-----BEGIN PUBLIC KEY-----\n"));
+
+        let private = rsa::RsaPrivateKey::from_pkcs8_pem(&pair.private_key).expect("PKCS#8");
+        let public = rsa::RsaPublicKey::from_public_key_pem(&pair.public_key).expect("SPKI");
+        assert_eq!(private.to_public_key(), public);
+    }
+
+    #[test]
+    fn redeem_tokens_are_long_and_url_safe() {
+        let token = generate_redeem_token();
+        assert_eq!(token.len(), 43);
+        assert!(token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert_ne!(token, generate_redeem_token());
     }
 }

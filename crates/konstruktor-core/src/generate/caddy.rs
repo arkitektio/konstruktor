@@ -19,6 +19,29 @@ pub struct Upstream<'a> {
     pub name: &'a str,
     pub target: &'a str,
     pub port: u16,
+    /// The buckets it stores into, routed to the object store like a service's.
+    pub buckets: Vec<String>,
+}
+
+/// The coordination server's routes, on a hub that runs its own.
+///
+/// Not [`route`]: its `/lok*` would also take `/lokate` and `/lokmedia`, which are
+/// somebody else's. And the well-known moves to the root, where every client looks for
+/// it — Lok serves it behind its script name like everything else it serves.
+fn coordination_routes(out: &mut String, lok: &Upstream<'_>) {
+    let Upstream {
+        name, target, port, ..
+    } = lok;
+    let _ = write!(out, "\t@{name} path /{name} /{name}/*\n");
+    let _ = write!(out, "\thandle @{name} {OPEN_BRACE_BARE}\n");
+    let _ = write!(out, "\t\treverse_proxy {target}:{port}\n");
+    out.push_str("\t}\n\n");
+
+    let _ = write!(out, "\t@wellknown path /.well-known/*\n");
+    let _ = write!(out, "\thandle @wellknown {OPEN_BRACE_BARE}\n");
+    let _ = write!(out, "\t\trewrite * /{name}{{uri}}\n");
+    let _ = write!(out, "\t\treverse_proxy {target}:{port}\n");
+    out.push_str("\t}\n\n");
 }
 
 fn route(out: &mut String, name: &str, target: &str, port: u16) {
@@ -94,6 +117,7 @@ pub struct LivekitSite<'a> {
 /// before the star, unlike the service routes.
 pub fn build_caddyfile(
     services: &[CaddyService<'_>],
+    coordination: Option<&Upstream<'_>>,
     minio_host: &str,
     minio_port: u16,
     sites: &GatewaySites<'_>,
@@ -123,7 +147,15 @@ pub fn build_caddyfile(
     });
 
     // A hub serves no `/.well-known` of its own: clients resolve it against the
-    // coordination server, which is where the JWKS lives.
+    // coordination server, which is where the JWKS lives. Unless it runs that server —
+    // and only then is anything written here, so every other hub's file is what it was.
+    if let Some(lok) = coordination {
+        coordination_routes(&mut out, lok);
+        for bucket in &lok.buckets {
+            route(&mut out, bucket, minio_host, minio_port);
+        }
+    }
+
     let _ = write!(out, "\t@minio path /minio/*\n");
     let _ = write!(out, "\thandle @minio {OPEN_BRACE_BARE}\n");
     let _ = write!(out, "\t\treverse_proxy {minio_host}:{minio_port}\n");

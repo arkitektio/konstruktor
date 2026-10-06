@@ -69,7 +69,7 @@ fn rewriting_a_hub_of_an_earlier_release_lands_on_what_is_generated_today() {
         profile::rewrite(&dir, config, &[]).unwrap();
 
         let config = profile::read_profile(&dir).unwrap().config;
-        let expected = generate_hub_files(&config, &IssuedIdentity::default());
+        let expected = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
         for (path, contents) in &expected {
             assert_eq!(
                 &std::fs::read_to_string(dir.join(path)).unwrap(),

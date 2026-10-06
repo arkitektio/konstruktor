@@ -4,6 +4,8 @@ mod config_cmd;
 mod coord;
 mod create;
 mod engine;
+mod inspect_cmd;
+mod job_cmd;
 mod manage;
 mod self_cmd;
 mod services;
@@ -35,8 +37,9 @@ struct Cli {
     /// Emit the answer as JSON on stdout, with no narration mixed into it.
     ///
     /// Global, but only the reporting commands have a document to emit — `status`,
-    /// `list`, `ps`, `doctor`, `check`, `update --check`, `rollback`,
-    /// `hub services list` and `hub templates`.
+    /// `list`, `ps`, `wait`, `doctor`, `check`, `update --check`, `rollback`,
+    /// `hub services list`, `hub templates`, `job list`, `inspect` and `hub create`,
+    /// which says where the hub is and how to reach it.
     #[arg(long, global = true)]
     json: bool,
 }
@@ -56,6 +59,7 @@ Create a deployment:
 
 Run it (any deployment):
   up               Start it
+  wait             Block until a hub answers on every endpoint a client opens
   stop             Stop its containers, keeping them
   restart          Restart its containers, or one service's
   down             Stop and remove its containers and networks; data is kept
@@ -77,6 +81,8 @@ Change a hub:
   checkout         List or switch the branches of a dev hub's source checkouts
   compose          Show, validate, edit or reset its compose file
   config           Show or set what a service is configured with beyond defaults
+  job              List or run the jobs a service offers beside its start
+  inspect          Show what a service's image says of itself
   hub regenerate   Rewrite its generated files from its profile
   check            Check that every service answers on every advertised address
 
@@ -180,6 +186,8 @@ enum Command {
     // --- run it: any deployment --------------------------------------------------
     /// Start a deployment.
     Up(manage::Target),
+    /// Block until a hub answers on every endpoint a client opens.
+    Wait(manage::WaitArgs),
     /// Stop a deployment's containers, keeping them.
     Stop(manage::Target),
     /// Restart a deployment's containers, or just one service's.
@@ -220,6 +228,11 @@ enum Command {
     /// Show or change what was set for a hub's services beyond what is generated.
     #[command(subcommand)]
     Config(config_cmd::ConfigCommand),
+    /// List or run the jobs a service's image offers beside its start.
+    #[command(subcommand)]
+    Job(job_cmd::JobCommand),
+    /// Show what a service's image says of itself: a hub's service, or any image.
+    Inspect(inspect_cmd::InspectArgs),
     /// Check that every service answers on every address the hub advertises.
     // `gateway` is what this was called, which read as a command that manages the
     // gateway rather than one that asks through it.
@@ -397,7 +410,7 @@ fn classify(error: &anyhow::Error) -> i32 {
 async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     match cli.command {
-        Command::Hub(HubCommand::Create(args)) => create::run(*args).await,
+        Command::Hub(HubCommand::Create(args)) => create::run(*args, json).await,
         Command::Hub(HubCommand::Templates) => create::templates(json),
         Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
         Command::Hub(HubCommand::Regenerate(args)) => compose_cmd::regenerate_hub(args).await,
@@ -413,6 +426,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::List => manage::list(json),
         Command::Status(target) => manage::status(&target, json).await,
         Command::Up(target) => manage::up(&target).await,
+        Command::Wait(args) => manage::wait(args, json).await,
         Command::Stop(target) => {
             manage::compose(&target, konstruktor_core::compose::stop(), "Stopping")
         }
@@ -439,6 +453,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Check(target) => manage::gateway(&target, json).await,
         Command::Compose(command) => compose_cmd::run(command).await,
         Command::Config(command) => config_cmd::run(command).await,
+        Command::Job(command) => job_cmd::run(command, json).await,
+        Command::Inspect(args) => inspect_cmd::run(args, json).await,
         Command::SelfCmd(command) => self_cmd::run(command),
     }
 }

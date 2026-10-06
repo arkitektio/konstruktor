@@ -1,5 +1,6 @@
 pub mod caddy;
 pub mod compose;
+pub mod lok;
 pub mod service;
 pub mod write;
 
@@ -43,12 +44,29 @@ pub(crate) fn dump(value: &Value) -> String {
 }
 
 /// Every file a hub deployment consists of, keyed by its path in the folder.
-pub fn generate_hub_files(config: &HubConfig, _issued: &IssuedIdentity) -> GeneratedFiles {
+pub fn generate_hub_files(
+    config: &HubConfig,
+    _issued: &IssuedIdentity,
+    said: &crate::contract::Said,
+) -> GeneratedFiles {
     let enabled = config.enabled_services();
     let mut files = GeneratedFiles::new();
 
     // A service's own config is not among these: its image writes that, from the hub's
     // facts ([`crate::contract`]).
+
+    // --- the coordination server, on a hub that runs its own ------------------
+    let lok = config.running_lok();
+    if let Some(lok) = lok {
+        files.insert(
+            format!("configs/{}.yaml", lok.host),
+            dump(&lok::build_lok_config(config, lok)),
+        );
+        let mut access = serde_json::to_string_pretty(&lok::build_access(config, lok))
+            .expect("the access document is plain data");
+        access.push('\n');
+        files.insert(lok::ACCESS_FILE.to_string(), access);
+    }
 
     // --- secret files, mounted read-only into the one service that reads each ---
     for id in &enabled {
@@ -112,6 +130,13 @@ pub fn generate_hub_files(config: &HubConfig, _issued: &IssuedIdentity) -> Gener
         "configs/Caddyfile".to_string(),
         caddy::build_caddyfile(
             &caddy_services,
+            lok.map(|lok| caddy::Upstream {
+                name: &lok.host,
+                target: &lok.host,
+                port: lok.internal_port,
+                buckets: vec![lok.media_bucket.bucket_name.clone()],
+            })
+            .as_ref(),
             &config.minio.host,
             config.minio.internal_port,
             &caddy::GatewaySites {
@@ -127,7 +152,7 @@ pub fn generate_hub_files(config: &HubConfig, _issued: &IssuedIdentity) -> Gener
     // --- the compose project ------------------------------------------------
     files.insert(
         "docker-compose.yaml".to_string(),
-        dump(&compose::build_compose(config, &enabled)),
+        dump(&compose::build_compose(config, &enabled, said)),
     );
 
     files

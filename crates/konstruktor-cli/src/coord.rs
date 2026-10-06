@@ -62,7 +62,8 @@ pub async fn run(args: CoordCreateArgs) -> Result<()> {
 
     let requested = args.dir.as_deref().unwrap_or(".");
     std::fs::create_dir_all(requested).with_context(|| format!("creating {requested}"))?;
-    let dir = konstruktor_core::paths::canonical(requested).with_context(|| format!("resolving {requested}"))?;
+    let dir = konstruktor_core::paths::canonical(requested)
+        .with_context(|| format!("resolving {requested}"))?;
 
     if let Some(kind) = konstruktor_core::profile::holds_a_deployment(&dir) {
         bail!(

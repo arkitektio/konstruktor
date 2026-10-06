@@ -332,9 +332,7 @@ fn show_remedies(probe: &docker::DockerProbe) {
         }
         for step in &remedy.steps {
             match step {
-                Step::OpenUrl { label, url } => {
-                    ui::step(&format!("{label}: {}", ui::dim(url)))
-                }
+                Step::OpenUrl { label, url } => ui::step(&format!("{label}: {}", ui::dim(url))),
                 Step::CopyCommand { label, command } => {
                     ui::step(&format!("{label}:"));
                     ui::step(&format!("    {}", ui::bold(command)));
@@ -421,7 +419,9 @@ async fn apply_remedy(probe: &docker::DockerProbe, yes: bool) -> Result<()> {
                 if !outcome.ok {
                     bail!(
                         "{}",
-                        outcome.message.unwrap_or_else(|| "the installer failed".into())
+                        outcome
+                            .message
+                            .unwrap_or_else(|| "the installer failed".into())
                     );
                 }
                 if outcome.needs_reboot {
@@ -640,7 +640,9 @@ async fn other_status(resolved: &Resolved) -> Result<()> {
                 {
                     Some(m) if m.connected => format!(
                         "connected as {}",
-                        m.hostname.or(m.ipv4).unwrap_or_else(|| mesh.hostname.clone())
+                        m.hostname
+                            .or(m.ipv4)
+                            .unwrap_or_else(|| mesh.hostname.clone())
                     ),
                     Some(_) => "not connected".to_string(),
                     None => format!("joins as {} — sidecar not running", mesh.hostname),
@@ -701,7 +703,9 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
             _ => None,
         };
         let mesh = match &hub {
-            Some(view) => konstruktor_core::hubhealth::from_sidecar(&dir, &view.profile.config).await,
+            Some(view) => {
+                konstruktor_core::hubhealth::from_sidecar(&dir, &view.profile.config).await
+            }
             None => None,
         };
         let aliases = hub.as_ref().map(advertised_aliases);
@@ -884,6 +888,77 @@ pub fn compose(target: &Target, args: Vec<&str>, verb: &str) -> Result<()> {
 /// `konstruktor check`: every service, through every advertised address this machine
 /// can reach. Exits non-zero when a reachable address has a service that does not answer;
 /// an address that is simply not reachable from here is reported, not failed.
+#[derive(Args, Debug, Clone)]
+pub struct WaitArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// How long to wait, in seconds, before giving up.
+    #[arg(long, default_value_t = 600, value_name = "SECONDS")]
+    pub timeout: u64,
+}
+
+/// `konstruktor wait`: blocks until every endpoint a client opens answers, or fails when
+/// the time is up. What a script runs between `up` and connecting an app.
+pub async fn wait(args: WaitArgs, json: bool) -> Result<()> {
+    let dir = args.target.resolve()?;
+    let profile = konstruktor_core::profile::read_profile(&dir)?;
+
+    if !json {
+        ui::say("");
+    }
+    let narrate = |endpoints: &[konstruktor_core::ready::Endpoint]| {
+        if json {
+            return;
+        }
+        let waiting: Vec<&str> = endpoints
+            .iter()
+            .filter(|e| !e.ready)
+            .map(|e| e.name.as_str())
+            .collect();
+        if !waiting.is_empty() {
+            ui::progress(&ui::dim(&format!("Waiting for {}…", waiting.join(", "))));
+        }
+    };
+    let endpoints = konstruktor_core::ready::wait(
+        &profile.config,
+        std::time::Duration::from_secs(args.timeout),
+        &narrate,
+    )
+    .await
+    .map_err(|e| anyhow!("{e}"))?;
+    let ready = endpoints.iter().all(|e| e.ready);
+
+    if json {
+        ui::emit_json(&endpoints)?;
+    } else {
+        ui::end_progress();
+        for endpoint in &endpoints {
+            let line = format!("{} — {}", endpoint.name, endpoint.url);
+            if endpoint.ready {
+                ui::ok(&line);
+            } else {
+                ui::warn(&match (&endpoint.detail, endpoint.status) {
+                    (Some(detail), _) => format!("{line}: {detail}"),
+                    (None, Some(status)) => format!("{line} answered {status}"),
+                    (None, None) => format!("{line} did not answer"),
+                });
+            }
+        }
+        ui::say("");
+    }
+    if !ready {
+        // Something that answered wrongly is its own explanation, and no log has it.
+        if let Some(detail) = endpoints.iter().find_map(|e| e.detail.clone()) {
+            bail!("{detail}");
+        }
+        bail!(
+            "not everything answered within {}s — `konstruktor logs` says why",
+            args.timeout
+        );
+    }
+    Ok(())
+}
+
 pub async fn gateway(target: &Target, json: bool) -> Result<()> {
     // A hub, by name: the addresses come from its profile, which nothing else has.
     let dir = target.resolve()?;
@@ -911,7 +986,10 @@ pub async fn gateway(target: &Target, json: bool) -> Result<()> {
             if !alias.reachable {
                 ui::step(&ui::dim(&format!(
                     "{label} — {}",
-                    alias.detail.as_deref().unwrap_or("not reachable from this machine")
+                    alias
+                        .detail
+                        .as_deref()
+                        .unwrap_or("not reachable from this machine")
                 )));
                 continue;
             }
@@ -1065,9 +1143,15 @@ pub async fn superuser(args: SuperuserArgs) -> Result<()> {
 
     // Django's own complaint — "that username is already taken" and the like — is what
     // comes back on failure, not an exit code.
-    compose::run_superuser(&dir, &args.service, &username, &password, args.email.as_deref())
-        .await
-        .map_err(|message| anyhow!("{message}"))?;
+    compose::run_superuser(
+        &dir,
+        &args.service,
+        &username,
+        &password,
+        args.email.as_deref(),
+    )
+    .await
+    .map_err(|message| anyhow!("{message}"))?;
 
     ui::say("");
     ui::ok(&format!(
@@ -1171,7 +1255,11 @@ pub async fn restore(args: RestoreArgs) -> Result<()> {
     let request = RestoreRequest {
         dir,
         backup: args.backup.clone(),
-        method: if args.raw { DbMethod::Raw } else { DbMethod::Dump },
+        method: if args.raw {
+            DbMethod::Raw
+        } else {
+            DbMethod::Dump
+        },
         restore_postgres: !args.skip_postgres,
         restore_minio: !args.skip_minio,
     };
@@ -1188,7 +1276,11 @@ pub async fn restore(args: RestoreArgs) -> Result<()> {
     ui::table(&[
         (
             "backup of".into(),
-            plan.manifest.hub.identifier.clone().unwrap_or_else(|| "unauthorized hub".into()),
+            plan.manifest
+                .hub
+                .identifier
+                .clone()
+                .unwrap_or_else(|| "unauthorized hub".into()),
         ),
         (
             "taken".into(),
@@ -1196,7 +1288,11 @@ pub async fn restore(args: RestoreArgs) -> Result<()> {
         ),
         (
             "same hub".into(),
-            if plan.same_hub { "yes".into() } else { "no".into() },
+            if plan.same_hub {
+                "yes".into()
+            } else {
+                "no".into()
+            },
         ),
     ]);
     ui::say("");
@@ -1265,7 +1361,11 @@ pub async fn restore(args: RestoreArgs) -> Result<()> {
         }
         RestoreEvent::Line { line, .. } => ui::say(&ui::dim(&format!("  {line}"))),
         RestoreEvent::Skipped { reason, .. } => ui::warn(&format!("skipped — {reason}")),
-        RestoreEvent::Checked { service, healthy, detail } => {
+        RestoreEvent::Checked {
+            service,
+            healthy,
+            detail,
+        } => {
             if healthy {
                 ui::ok(&format!("{service}: {detail}"));
             } else {
@@ -1361,7 +1461,9 @@ fn show_plan(
     // `DeletionPlan::storage` is the default rather than anything that was determined, so
     // saying it would be a confident sentence about something nothing looked up.
     if kind == profile::DeploymentKind::Hub && plan.storage.uses_volumes() {
-        ui::step(&ui::dim("The database and object storage are in docker volumes."));
+        ui::step(&ui::dim(
+            "The database and object storage are in docker volumes.",
+        ));
     }
     for dir in &plan.data_dirs {
         ui::step(&ui::dim(&format!("removes {dir}")));
@@ -1965,8 +2067,9 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         true => None,
         false => Some(match &args.backup_into {
             Some(path) => path.clone(),
-            None => updates::default_backup_folder(&dir)
-                .ok_or_else(|| anyhow!("no folder to back up into — pass --backup-into <FOLDER>"))?,
+            None => updates::default_backup_folder(&dir).ok_or_else(|| {
+                anyhow!("no folder to back up into — pass --backup-into <FOLDER>")
+            })?,
         }),
     };
 
@@ -2080,7 +2183,6 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
-
 #[derive(Args, Debug, Clone)]
 pub struct FreezeArgs {
     #[command(flatten)]
@@ -2144,8 +2246,8 @@ pub struct RollbackArgs {
 
 /// `konstruktor rollback`: back onto the images this hub ran before its last update.
 ///
-/// The images only. `run.sh` migrates the database forward when a service starts, and
-/// nothing takes a migration back, so this points the older code at the newer schema —
+/// The images only. An update migrates each database forward before the new build starts,
+/// and nothing takes a migration back, so this points the older code at the newer schema —
 /// which is often exactly what is wanted after a bad build, and is never the same thing as
 /// undoing the update. That sentence is on the confirmation prompt for the same reason it
 /// is here.
@@ -2277,13 +2379,10 @@ pub struct ReportArgs {
 pub async fn report(args: ReportArgs) -> Result<()> {
     let dir = Target::named(args.in_deployment.clone()).resolve_any()?.dir;
 
-    let report = konstruktor_core::report::bug_report(
-        &dir,
-        args.service.clone(),
-        env!("CARGO_PKG_VERSION"),
-    )
-    .await
-    .map_err(|e| anyhow!("{e}"))?;
+    let report =
+        konstruktor_core::report::bug_report(&dir, args.service.clone(), env!("CARGO_PKG_VERSION"))
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
 
     println!("{}", report.body);
 

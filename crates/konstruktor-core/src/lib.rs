@@ -29,6 +29,7 @@ pub mod paths;
 pub mod pins;
 pub mod process;
 pub mod profile;
+pub mod ready;
 pub mod reclaim;
 pub mod redact;
 pub mod registry;

@@ -57,7 +57,11 @@ pub fn mount_path(service: &ServiceBlock) -> String {
     format!("./{MOUNTS_DIR}/{}", service.host)
 }
 
-fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
+fn compose_service(
+    config: &HubConfig,
+    service: &ServiceBlock,
+    said: &crate::contract::Said,
+) -> Value {
     // The config file is mounted *inside* the workspace, so on a dev hub the source mount
     // is the parent of the config mount. Docker resolves nested binds outermost-first
     // regardless of the order they are declared, so the config still lands on top of the
@@ -83,23 +87,26 @@ fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
         volumes.push(s(&format!("{TAKT_SOCKET_VOLUME}:{TAKT_SOCKET_DIR}")));
     }
 
-    map(vec![
-        (
-            "image",
-            s(service
-                .image
-                .as_deref()
-                .expect("a service without an image is never emitted")),
-        ),
-        // `run-debug.sh` is the debug variant; nothing in the GUI turns debug on.
-        (
+    let mut entries = vec![(
+        "image",
+        s(service
+            .image
+            .as_deref()
+            .expect("a service without an image is never emitted")),
+    )];
+    // How a service is started is its image's to say (`serve`, or `debug` when asked for;
+    // nothing in the GUI turns debug on). No command is written for an image that was not
+    // asked — and its own only says what it is, so a hub is never written without asking.
+    if let Some(command) = said
+        .get(&service.host)
+        .and_then(|said| said.command(service.debug))
+    {
+        entries.push((
             "command",
-            s(if service.debug {
-                "bash run-debug.sh"
-            } else {
-                "bash run.sh"
-            }),
-        ),
+            list(command.iter().map(|part| s(part)).collect()),
+        ));
+    }
+    entries.extend(vec![
         // By the profile's own names: the object storage was renamed from `minio` to
         // `rustfs`, and a dependency on a service that is not in the file is an error
         // compose refuses the whole project over.
@@ -125,7 +132,8 @@ fn compose_service(config: &HubConfig, service: &ServiceBlock) -> Value {
                 ]),
             )]),
         ),
-    ])
+    ]);
+    map(entries)
 }
 
 /// The compose service Rekuest's reaper ran as, before takt took its work over.
@@ -291,6 +299,11 @@ pub fn build_minio_init(config: &HubConfig, enabled: &[ServiceId]) -> Option<Val
     let buckets: Vec<String> = provisioned(config, enabled)
         .iter()
         .flat_map(|id| buckets_of(*id, config.service(*id)))
+        .chain(
+            config
+                .running_lok()
+                .map(|lok| lok.media_bucket.bucket_name.clone()),
+        )
         .collect();
 
     if buckets.is_empty() {
@@ -319,14 +332,20 @@ pub fn build_minio_init(config: &HubConfig, enabled: &[ServiceId]) -> Option<Val
     ]))
 }
 
-pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
+pub fn build_compose(
+    config: &HubConfig,
+    enabled: &[ServiceId],
+    said: &crate::contract::Said,
+) -> Value {
     let mut services = Value::Mapping(Mapping::new());
 
     // --- infrastructure -------------------------------------------------------
     let provisioned = provisioned(config, enabled);
+    let lok = config.running_lok();
     let databases: Vec<String> = provisioned
         .iter()
         .map(|id| config.service(*id).db_config.db.clone())
+        .chain(lok.map(|lok| lok.db.clone()))
         .collect();
 
     if !databases.is_empty() {
@@ -356,7 +375,7 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         );
     }
 
-    if !enabled.is_empty() {
+    if !enabled.is_empty() || lok.is_some() {
         insert(
             &mut services,
             &config.local_redis.host,
@@ -364,9 +383,10 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         );
     }
 
-    let has_buckets = provisioned
-        .iter()
-        .any(|id| !buckets_of(*id, config.service(*id)).is_empty());
+    let has_buckets = lok.is_some()
+        || provisioned
+            .iter()
+            .any(|id| !buckets_of(*id, config.service(*id)).is_empty());
 
     if has_buckets {
         insert(
@@ -444,13 +464,22 @@ pub fn build_compose(config: &HubConfig, enabled: &[ServiceId]) -> Value {
         );
     }
 
+    // --- the coordination server, on a hub that runs its own -------------------
+    if let Some(lok) = lok {
+        insert(
+            &mut services,
+            &lok.host,
+            crate::generate::lok::lok_compose_service(config, lok, said),
+        );
+    }
+
     // --- the services themselves ---------------------------------------------
     for id in enabled {
         let service = config.service(*id);
         insert(
             &mut services,
             &service.host,
-            compose_service(config, service),
+            compose_service(config, service, said),
         );
     }
     if enabled.contains(&ServiceId::Rekuest) {

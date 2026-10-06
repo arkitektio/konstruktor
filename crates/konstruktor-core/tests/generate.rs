@@ -93,7 +93,11 @@ struct Case {
 }
 
 fn case(fixture: &str, golden: &str) -> Case {
-    let generated = generate_hub_files(&config_of(fixture), &IssuedIdentity::default());
+    let generated = generate_hub_files(
+        &config_of(fixture),
+        &IssuedIdentity::default(),
+        &Default::default(),
+    );
     if std::env::var(BLESS).as_deref() == Ok("1") {
         bless(golden, &generated);
     }
@@ -272,7 +276,7 @@ mod mesh {
     }
 
     fn compose(config: &HubConfig) -> Value {
-        let files = generate_hub_files(config, &IssuedIdentity::default());
+        let files = generate_hub_files(config, &IssuedIdentity::default(), &Default::default());
         serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML")
     }
 
@@ -294,7 +298,7 @@ mod mesh {
 
     #[test]
     fn joins_with_the_key_and_control_server_it_was_given() {
-        let files = generate_hub_files(&meshed(), &IssuedIdentity::default());
+        let files = generate_hub_files(&meshed(), &IssuedIdentity::default(), &Default::default());
         let compose: Value = serde_norway::from_str(&files["docker-compose.yaml"]).unwrap();
         let env = &compose["services"]["tailscale"]["environment"];
 
@@ -351,7 +355,11 @@ mod mesh {
 
     #[test]
     fn a_hub_without_a_mesh_writes_no_env_file() {
-        let files = generate_hub_files(&config_of("hub_config.yaml"), &IssuedIdentity::default());
+        let files = generate_hub_files(
+            &config_of("hub_config.yaml"),
+            &IssuedIdentity::default(),
+            &Default::default(),
+        );
         assert!(!files.contains_key("mesh.env"));
     }
 
@@ -472,7 +480,7 @@ mod stack_images {
     use konstruktor_core::config::mesh::{build_mesh_block, MeshOptions};
 
     fn compose_service_names(config: &HubConfig) -> Vec<String> {
-        let files = generate_hub_files(config, &IssuedIdentity::default());
+        let files = generate_hub_files(config, &IssuedIdentity::default(), &Default::default());
         let compose: Value =
             serde_norway::from_str(&files["docker-compose.yaml"]).expect("valid YAML");
         compose["services"]

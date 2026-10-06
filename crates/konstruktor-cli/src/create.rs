@@ -1,10 +1,12 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use konstruktor_core::config::hub::{OllamaChoice, ServiceOptions, StorageMode};
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
+use konstruktor_core::config::hub::{
+    OllamaChoice, ServiceOptions, StorageMode, LOCAL_COORD_SERVER,
+};
 use konstruktor_core::connect::manifest::AdvertisedHost;
 use konstruktor_core::create::{
-    create_hub, identifier_from_folder, CreateEvent, HubAnswers, MeshMode,
+    create_hub, identifier_from_folder, CreateEvent, HubAnswers, MeshMode, SeedAnswers,
 };
 use konstruktor_core::hosts;
 use konstruktor_core::profile;
@@ -20,7 +22,9 @@ pub struct CreateArgs {
     /// How this deployment is labelled. Defaults to the folder's name.
     #[arg(long)]
     pub name: Option<String>,
-    /// The coordination server this hub answers to.
+    /// The coordination server this hub answers to. `local` runs one in this stack: a
+    /// self-contained hub, which nobody has to accept and which needs no network — see
+    /// `--org`, `--user` and `--redeem-tokens` for what it starts out with.
     #[arg(long)]
     pub server: Option<String>,
     /// The hub's name inside the organization that accepts it.
@@ -64,10 +68,14 @@ pub struct CreateArgs {
     /// How far the hub should reach: local-only · this-network · public.
     ///
     /// Ignored when `--host` is given, which says exactly what to advertise.
-    #[arg(long, default_value = "this-network", value_parser = crate::parse_reach)]
-    pub reach: hosts::ReachPresetId,
-    /// How the hub joins a mesh: none · coordination · manual. By default it asks the
-    /// coordination server for a key to join the organization's mesh.
+    ///
+    /// Defaults to `this-network` — and to `local-only` with `--server local`, where
+    /// the hub is something a script on this machine built for itself unless told
+    /// otherwise.
+    #[arg(long, value_parser = crate::parse_reach)]
+    pub reach: Option<hosts::ReachPresetId>,
+    /// none · coordination · manual. By default the hub asks the coordination server for
+    /// a key to join the organization's mesh.
     #[arg(long, default_value = "coordination", value_parser = crate::parse_mesh_mode)]
     pub mesh: MeshMode,
     /// Reach the hub over the mesh only: no port is opened on this machine and no
@@ -111,8 +119,42 @@ pub struct CreateArgs {
     /// Windows.
     #[arg(long, default_value = "volumes", value_parser = parse_storage)]
     pub storage: StorageMode,
-    /// Print what would be written and stop. Nothing is created, and the coordination
-    /// server is never contacted — so an unattended invocation can be rehearsed safely.
+    /// Run one service on another image than the one a new hub gets: `rekuest=jhnnsrs/rekuest:1.2.3`.
+    /// Repeatable. The name is the compose service — a service, or `lok`, `db`, `redis`,
+    /// `rustfs`, `gateway`.
+    ///
+    /// `KONSTRUKTOR_IMAGES` takes the same, comma-separated, as a default for every hub
+    /// created while it is set: an entry for a service a hub does not run is skipped
+    /// there, where here it is an error.
+    #[arg(long = "image", value_name = "SERVICE=IMAGE")]
+    pub images: Vec<String>,
+    /// A hub of exactly the services these images are: `--service-image jhnnsrs/mikro:7`.
+    /// Repeatable. Each image is asked which service it is, so nothing but the image has
+    /// to be named — which is how a client library says what it needs hosted. Rekuest
+    /// runs here only when one of the images is Rekuest's.
+    #[arg(long = "service-image", value_name = "IMAGE", conflicts_with_all = ["services", "template"])]
+    pub service_images: Vec<String>,
+    /// With `--server local`: the organization the hub's coordination server starts with.
+    #[arg(long, default_value = "demo")]
+    pub org: String,
+    /// With `--server local`: the account in that organization that apps act as.
+    #[arg(long, default_value = "demo")]
+    pub user: String,
+    /// Left out, a strong one is generated.
+    #[arg(long)]
+    pub user_password: Option<String>,
+    /// With `--server local`: a redeem token to provision as given. Repeatable. An app
+    /// trades one for a client without anybody accepting it — one token per app.
+    #[arg(long = "redeem-token", value_name = "TOKEN")]
+    pub redeem_token: Vec<String>,
+    /// With `--server local`: how many redeem tokens to mint, besides any given. They are
+    /// written to `secrets/access.json` with everything else an app needs to connect.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    pub redeem_tokens: usize,
+    /// Print what would be written and stop. Nothing is created, no image is fetched or
+    /// asked anything, and the coordination server is never contacted — so an unattended
+    /// invocation can be rehearsed safely. Creating for real asks every image what it is
+    /// first, so it needs them, even with `--no-start`.
     #[arg(long)]
     pub dry_run: bool,
     /// Write the files, but do not start the containers.
@@ -157,7 +199,7 @@ impl Asker {
     }
 }
 
-pub async fn run(mut args: CreateArgs) -> Result<()> {
+pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
     let ask = Asker {
         interactive: ui::is_interactive() && !args.yes,
     };
@@ -168,6 +210,14 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
     ui::say("");
     ui::say(&format!("  {}", ui::bold("Creating a hub")));
     ui::say("");
+
+    // First, because the images are the answer to which services this hub runs: nothing
+    // below asks that again.
+    let described = if args.service_images.is_empty() {
+        Default::default()
+    } else {
+        services_of_images(&mut args).await?
+    };
 
     // --- folder ------------------------------------------------------------
     //
@@ -184,7 +234,8 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
     // Load-bearing, and it has to happen before `HubAnswers` is built: the core hands
     // `answers.dir` straight to the registry, which compares paths as raw strings. A
     // relative path there would defeat the collision check and be recorded unusable.
-    let dir = konstruktor_core::paths::canonical(requested).with_context(|| format!("resolving {requested}"))?;
+    let dir = konstruktor_core::paths::canonical(requested)
+        .with_context(|| format!("resolving {requested}"))?;
 
     if profile::holds_a_hub(&dir) {
         bail!(
@@ -221,6 +272,14 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
     // wizard holds.
     konstruktor_core::create::validate_identifier(&identifier)?;
 
+    // A hub that runs its own coordination server has nobody to ask for a mesh key, so
+    // the default — ask the coordination server — means none here. Anything else that
+    // was said about a mesh is refused by the core, in its own words.
+    let self_contained = server.trim() == LOCAL_COORD_SERVER;
+    if self_contained && args.mesh == MeshMode::Coordination {
+        args.mesh = MeshMode::None;
+    }
+
     if wants_wizard(&args, ask.interactive) {
         wizard(&mut args).await?;
     }
@@ -243,18 +302,25 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
         // Nothing on this machine's networks is advertised; the manifest carries the
         // tailnet node and the in-network gateway by itself.
         if !args.hosts.is_empty() {
-            ui::warn("--host is ignored with --mesh-only: the hub is advertised on the mesh alone.");
+            ui::warn(
+                "--host is ignored with --mesh-only: the hub is advertised on the mesh alone.",
+            );
         }
         Vec::new()
     } else if args.hosts.is_empty() {
         // Exactly what the wizard's preset of the same name selects — the rule lives in
         // the core precisely so these two cannot answer differently.
-        let chosen = hosts::discover(args.reach).await;
+        let reach = args.reach.unwrap_or(if self_contained {
+            hosts::ReachPresetId::LocalOnly
+        } else {
+            konstruktor_core::defaults::REACH
+        });
+        let chosen = hosts::discover(reach).await;
         if chosen.is_empty() {
             bail!(
                 "nothing on this machine matches --reach {} — widen it, or pass --host \
                  so clients have somewhere to reach this hub",
-                args.reach.label()
+                reach.label()
             );
         }
         chosen
@@ -323,6 +389,16 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
         // `--dev` and these are a union, as in the wizard: `--dev` for every service,
         // `--from-source` for the ones named.
         service_options,
+        images: parse_images(&args.images)?,
+        default_images: images_of_the_environment()?,
+        described,
+        seed: SeedAnswers {
+            organization: args.org.clone(),
+            user: args.user.clone(),
+            user_password: args.user_password.clone(),
+            redeem_tokens: args.redeem_token.clone(),
+            generated_redeem_tokens: args.redeem_tokens,
+        },
     };
 
     summarise(&answers, template.as_deref());
@@ -383,9 +459,28 @@ pub async fn run(mut args: CreateArgs) -> Result<()> {
         created.config.reporter.is_some(),
         answers.start,
     );
+    if created.config.running_lok().is_some() {
+        ui::step(&ui::dim(&format!(
+            "Runs its own coordination server. How to reach it — the address, the account \
+             and the redeem tokens — is in {}.",
+            konstruktor_core::generate::lok::ACCESS_FILE
+        )));
+    }
     ui::say("");
-    // The one line a script would want: stdout, not stderr.
-    println!("{}", created.path.to_string_lossy());
+    // What a script would want: stdout, not stderr. The path alone, or with `--json` the
+    // path and — on a self-contained hub — everything an app needs to connect to it.
+    if json {
+        let access = created
+            .config
+            .running_lok()
+            .map(|lok| konstruktor_core::generate::lok::build_access(&created.config, lok));
+        ui::emit_json(&serde_json::json!({
+            "path": created.path.to_string_lossy(),
+            "access": access,
+        }))?;
+    } else {
+        println!("{}", created.path.to_string_lossy());
+    }
     Ok(())
 }
 
@@ -463,7 +558,9 @@ pub fn parse_storage(value: &str) -> Result<StorageMode, String> {
     match value {
         "volumes" | "docker-volumes" => Ok(StorageMode::DockerVolumes),
         "folder" | "deployment-folder" => Ok(StorageMode::DeploymentFolder),
-        other => Err(format!("unknown storage `{other}` — expected volumes or folder")),
+        other => Err(format!(
+            "unknown storage `{other}` — expected volumes or folder"
+        )),
     }
 }
 
@@ -514,6 +611,96 @@ pub fn parse_template(value: &str) -> Result<String, String> {
 }
 
 /// The services the flags ask for: `--services` when given, otherwise the template's.
+/// Turns `--service-image` into what the rest of the command already understands: the
+/// services the images say they are, each pinned to its image.
+async fn services_of_images(
+    args: &mut CreateArgs,
+) -> Result<std::collections::BTreeMap<String, konstruktor_core::contract::Description>> {
+    let overridden = images_of_the_environment()?;
+    let mut names = Vec::new();
+    let mut described = std::collections::BTreeMap::new();
+    for image in &args.service_images {
+        let image = image.trim();
+        // The image that will run is the one to ask. Where the environment names another
+        // build for the service this image's name stands for — a suite pointed at a server
+        // not released yet — the declared one may not even be one that answers.
+        let stands_for = image
+            .split('@')
+            .next()
+            .unwrap_or(image)
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.split(':').next())
+            .unwrap_or_default();
+        let asked = overridden
+            .get(stands_for)
+            .map(String::as_str)
+            .unwrap_or(image);
+        let said = konstruktor_core::contract::describe(asked)
+            .await
+            .with_context(|| {
+                format!(
+                    "`{asked}` does not say which service it is when it is run with no command: \
+                     it cannot be pulled, or it is a release from before a service \
+                     described itself"
+                )
+            })?;
+        let known = service_named(&said.name).with_context(|| {
+            format!(
+                "`{image}` is `{}`, a service this konstruktor cannot host yet — it hosts {}",
+                said.name,
+                known_services()
+            )
+        })?;
+        if names.contains(&known.as_str().to_string()) {
+            bail!("--service-image names `{}` twice", known.as_str());
+        }
+        names.push(known.as_str().to_string());
+        described.insert(asked.to_string(), said);
+        // The image says which service this is; which build of it runs is still the
+        // environment's to say. That is how a suite is pointed at a server not
+        // released yet without touching what the client library declares.
+        if !overridden.contains_key(known.as_str()) {
+            args.images.push(format!("{}={image}", known.as_str()));
+        }
+    }
+    args.rekuest = if names.iter().any(|name| name == ServiceId::Rekuest.as_str()) {
+        "local".into()
+    } else {
+        "none".into()
+    };
+    args.services = Some(names);
+    Ok(described)
+}
+
+/// `KONSTRUKTOR_IMAGES`: the images every hub created while it is set runs, by service.
+fn images_of_the_environment() -> Result<std::collections::BTreeMap<String, String>> {
+    parse_images(
+        &std::env::var("KONSTRUKTOR_IMAGES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|spec| !spec.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+    )
+    .context("reading KONSTRUKTOR_IMAGES")
+}
+
+fn service_named(name: &str) -> Option<ServiceId> {
+    SERVICE_IDS
+        .into_iter()
+        .find(|id| id.as_str() == name.trim())
+}
+
+fn known_services() -> String {
+    SERVICE_IDS
+        .iter()
+        .map(|i| i.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn services_from(args: &CreateArgs) -> Result<Vec<ServiceId>> {
     match &args.services {
         Some(names) => parse_services(names),
@@ -546,7 +733,14 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
                 }
             },
         ),
-        ("coordination".into(), answers.coord_server.clone()),
+        (
+            "coordination".into(),
+            if answers.coord_server.trim() == LOCAL_COORD_SERVER {
+                "its own, in this stack".into()
+            } else {
+                answers.coord_server.clone()
+            },
+        ),
         ("identifier".into(), answers.identifier.clone()),
         (
             "mesh".into(),
@@ -724,12 +918,13 @@ async fn wizard(args: &mut CreateArgs) -> Result<()> {
                     format!("{} — {found}", p.label)
                 })
                 .collect();
-            let start = presets.iter().position(|p| p.id == args.reach).unwrap_or(0);
+            let reach = args.reach.unwrap_or(konstruktor_core::defaults::REACH);
+            let start = presets.iter().position(|p| p.id == reach).unwrap_or(0);
             let picked = Select::new("How far should the hub reach?", labels.clone())
                 .with_starting_cursor(start)
                 .prompt()?;
             if let Some(i) = labels.iter().position(|l| *l == picked) {
-                args.reach = presets[i].id;
+                args.reach = Some(presets[i].id);
             }
         }
     }
@@ -778,11 +973,21 @@ fn service_options_from(
                 url: Some(url.to_string()),
             },
         };
-        options.entry(named("alpaka", "--ollama")?).or_default().ollama = Some(choice);
+        options
+            .entry(named("alpaka", "--ollama")?)
+            .or_default()
+            .ollama = Some(choice);
     }
     if !args.repositories.is_empty() {
-        options.entry(named("kabinet", "--repository")?).or_default().repositories =
-            Some(args.repositories.iter().map(|r| r.trim().to_string()).collect());
+        options
+            .entry(named("kabinet", "--repository")?)
+            .or_default()
+            .repositories = Some(
+            args.repositories
+                .iter()
+                .map(|r| r.trim().to_string())
+                .collect(),
+        );
     }
 
     // The core holds the same rules for the wizard; asked here too so a bad flag is
@@ -791,24 +996,33 @@ fn service_options_from(
     Ok(options)
 }
 
+/// `["rekuest=jhnnsrs/rekuest:1.2.3"]` → `{rekuest: jhnnsrs/rekuest:1.2.3}`. Split on the
+/// first `=` only: an image reference may carry one of its own, in a digest.
+fn parse_images(specs: &[String]) -> Result<std::collections::BTreeMap<String, String>> {
+    specs
+        .iter()
+        .map(|spec| match spec.split_once('=') {
+            Some((service, image)) if !service.trim().is_empty() && !image.trim().is_empty() => {
+                Ok((service.trim().to_string(), image.trim().to_string()))
+            }
+            _ => {
+                bail!("--image {spec}: expected SERVICE=IMAGE, e.g. rekuest=jhnnsrs/rekuest:1.2.3")
+            }
+        })
+        .collect()
+}
+
 fn parse_services(names: &[String]) -> Result<Vec<ServiceId>> {
     names
         .iter()
         .map(|name| {
-            SERVICE_IDS
-                .into_iter()
-                .find(|id| id.as_str() == name.trim())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "unknown service `{}` — known ones are {}",
-                        name.trim(),
-                        SERVICE_IDS
-                            .iter()
-                            .map(|i| i.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                })
+            service_named(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown service `{}` — known ones are {}",
+                    name.trim(),
+                    known_services()
+                )
+            })
         })
         .collect()
 }
@@ -854,7 +1068,10 @@ mod tests {
         assert_eq!(mikro.branch.as_deref(), Some("feature/zarr"));
         assert!(options[&ServiceId::Fluss].from_source);
         assert_eq!(options[&ServiceId::Fluss].branch, None);
-        let ollama = options[&ServiceId::Alpaka].ollama.as_ref().expect("a provider");
+        let ollama = options[&ServiceId::Alpaka]
+            .ollama
+            .as_ref()
+            .expect("a provider");
         assert!(!ollama.run_locally);
         assert_eq!(ollama.url.as_deref(), Some("http://gpu-box:11434"));
         assert_eq!(
@@ -928,10 +1145,24 @@ mod tests {
         let args = args(&[]);
         assert_eq!(args.http_port, defaults::HTTP_PORT);
         assert_eq!(args.https_port, defaults::HTTPS_PORT);
-        assert_eq!(args.reach, defaults::REACH);
+        // Left unsaid, so that a self-contained hub can default to its own.
+        assert_eq!(args.reach, None);
         assert_eq!(args.mesh, defaults::MESH_MODE);
         assert_eq!(args.mesh_only, defaults::MESH_ONLY);
         assert_eq!(args.storage, defaults::STORAGE);
         assert_eq!(!args.no_start, defaults::START);
+    }
+
+    #[test]
+    fn an_image_pin_is_split_on_its_first_equals_sign() {
+        let pins = parse_images(&[
+            "rekuest=jhnnsrs/rekuest:5.0.1".to_string(),
+            "db = jhnnsrs/daten@sha256:abc=".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(pins["rekuest"], "jhnnsrs/rekuest:5.0.1");
+        assert_eq!(pins["db"], "jhnnsrs/daten@sha256:abc=");
+        assert!(parse_images(&["rekuest".to_string()]).is_err());
+        assert!(parse_images(&["=jhnnsrs/rekuest".to_string()]).is_err());
     }
 }

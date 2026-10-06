@@ -869,7 +869,7 @@ pub(crate) async fn wait_for_database(
             );
             reported = true;
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 

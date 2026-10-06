@@ -123,7 +123,7 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         eprintln!("{service} runs {image}");
         config.set_service_image(service, image);
     }
-    let files = generate_hub_files(&config, &IssuedIdentity::default());
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hub-e2e");
     // A run that crashed hard (no drop) may have left its stack behind.

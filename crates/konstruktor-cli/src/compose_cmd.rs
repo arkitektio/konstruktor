@@ -152,15 +152,19 @@ async fn edit(dir: &std::path::Path) -> Result<()> {
 
     // Edited as a copy, and written back through the core only if it changed: the core
     // keeps the backup and refuses what does not parse, which a direct save would skip.
-    let scratch = std::env::temp_dir().join(format!(
-        "konstruktor-compose-{}.yaml",
-        std::process::id()
-    ));
+    let scratch =
+        std::env::temp_dir().join(format!("konstruktor-compose-{}.yaml", std::process::id()));
     std::fs::write(&scratch, &before).context("writing a copy to edit")?;
 
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "vi".into() });
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".into()
+            } else {
+                "vi".into()
+            }
+        });
     let mut parts = editor.split_whitespace();
     let program = parts.next().unwrap_or("vi");
     let status = std::process::Command::new(program)
@@ -199,7 +203,10 @@ fn confirm(yes: bool, question: &str) -> Result<()> {
     if !ui::is_interactive() {
         bail!("pass --yes to confirm");
     }
-    if !inquire::Confirm::new(question).with_default(false).prompt()? {
+    if !inquire::Confirm::new(question)
+        .with_default(false)
+        .prompt()?
+    {
         bail!("left alone");
     }
     Ok(())

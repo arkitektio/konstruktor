@@ -139,10 +139,12 @@ where the positional is something else — a service, a branch, a backup folder:
 these same headings.
 
 > **`coord create` is not finished.** A coordination server is a first-class deployment —
-> it is recognised on disk, listed, and driven by every lifecycle command above — but
-> Konstruktor cannot generate the stack yet: nothing here pins a Lok image or knows its
-> config schema. `coord create` says so and writes nothing. Until it lands, point hubs at a
-> coordination server you already run with `hub create --server <address>`.
+> it is recognised on disk, listed, and driven by every lifecycle command above — and
+> Konstruktor can generate a hub that *runs* one (see [a self-contained hub](#a-self-contained-hub)).
+> A coordination server on its own, which other hubs authorize against, also needs the
+> account frontend where somebody accepts them, and that is not generated yet. `coord create`
+> says so and writes nothing. Until it lands, point hubs at a coordination server you
+> already run with `hub create --server <address>`.
 
 `pull` fetches every image whether anything changed or not; **`update`** asks each registry
 whether the tag has moved and recreates only those services. `--check` reports without
@@ -182,15 +184,38 @@ major of a service arrives with the Konstruktor that writes files for it.
 and **`unfreeze`** lifts that. Neither changes a file or restarts anything: the builds are
 written down either way, and a freeze only says not to look for newer ones.
 
-A service's config is not Konstruktor's to write. Every service image answers the same
-few questions (`python -m arkitekt_service …`, the
-[arkitekt-service](https://github.com/arkitektio/arkitekt-service) package): what it needs
-from a hub, and — given the hub's facts — its own config for the release it is. Konstruktor
+Konstruktor knows nothing of what is inside a service's image, and asks. Run with no
+command, a service's image says what it is and stops (the
+[arkitekt-service](https://github.com/arkitektio/arkitekt-service) package does that for the
+Python services): what it is registered as, what it needs from a hub, how it is started —
+for production and for `--debug` — what prepares its database, what writes its config, and
+what else can be run in it. Every command Konstruktor runs in an image afterwards is one
+that answer named. That is why creating a hub asks every image first, before a file is
+written: the compose file is written from the answers, and an image that does not answer is
+refused with nothing on disk. (`--dry-run` asks nobody, and fetches nothing.)
+
+`konstruktor inspect <service>` shows what a hub's service said, and `konstruktor inspect
+--image jhnnsrs/mikro:7` asks any image, without a hub — which is how to find out whether
+an image is one a hub could run. `--json` prints the description whole.
+
+What an image offers beside its start are its **jobs**. `konstruktor job list` shows them for
+every service, `konstruktor job run <service> <job>` runs one in a container of its own, and
+what follows `--` is passed on to it:
+
+```
+konstruktor job list lok
+konstruktor job run lok ensureusers
+konstruktor job run rekuest plan          # the migrations the next start would apply
+```
+
+A service's config is not Konstruktor's to write either. Given the hub's facts, the image
+writes its own config for the release it is. Konstruktor
 writes `facts/<service>.yaml` (database, storage, keys, the other services and what they
 offer) and the image turns that into `configs/<service>.yaml`. What you set yourself goes in
 `overrides/<service>.yaml` (`konstruktor config set`) and is laid over it; a setting a
 release does not read is refused by name. And a service's start only serves: its database
-is prepared — migrated, and set up — by its image before that, once per build.
+is prepared — migrated, and set up — by the job its image names for that, once per build,
+before it is started.
 
 Some moves need more than new files. A change to the hub itself — a volume, a one-off
 container — is a command written beside the layout it belongs to, run by the update that
@@ -243,8 +268,8 @@ the services yourself. A template is only a starting point: you can add or remov
 later with `konstruktor hub services add|remove`.
 
 `--dry-run` prints the files it would write and stops, so an unattended invocation can be
-rehearsed before it is trusted. `--json` on `status`, `list`, `ps`, `doctor`,
-`update --check`, `rollback` and `hub templates` puts a document on stdout and nothing else — the narration is on stderr,
+rehearsed before it is trusted. `--json` on `status`, `list`, `ps`, `wait`, `doctor`,
+`update --check`, `rollback`, `hub templates` and `hub create` puts a document on stdout and nothing else — the narration is on stderr,
 so `konstruktor status --json | jq .` works in a pipe.
 
 Addresses work the same way as in the wizard: `--reach local-only|this-network|public`
@@ -258,6 +283,67 @@ so a hub created in either shows up in the other.
 
 The one interactive step is the authorization itself: the CLI prints the URL and the short
 code, and waits while somebody with an account accepts the hub in a browser.
+
+### A self-contained hub
+
+`--server local` runs the coordination server *in* the hub's stack, the way `--rekuest local`
+runs Rekuest there. Nobody has to accept it and nothing leaves the machine, so it is the
+one kind of hub that can be created entirely unattended — which is what a test suite, a CI
+job or a demo on a laptop needs:
+
+```
+konstruktor hub create ./hub --server local --services rekuest,mikro \
+  --http-port 7190 --redeem-tokens 3 --yes --json
+konstruktor wait ./hub          # until everything a client opens answers
+```
+
+Konstruktor is the root of trust here. It mints the key the coordination server signs
+with and writes the public half into every service's config, and it writes the hub's own
+manifest into the coordination server's config as something registered on boot. What the
+stack starts out with is yours to say:
+
+| flag | |
+|---|---|
+| `--org`, `--user`, `--user-password` | the organization, and the account in it that apps act as (`demo` / `demo`, password generated) |
+| `--redeem-tokens N` | how many redeem tokens to mint (1) |
+| `--redeem-token TOKEN` | one to provision as given, for a caller that has to know it beforehand; repeatable |
+| `--host`, `--reach`, `--http-port` | where its services are advertised — this machine only (`--reach local-only`) and port 7080 unless said |
+| `--service-image IMAGE` | a hub of exactly the services these images are: each is asked which service it is, so only the image has to be named. Repeatable; in place of `--services`. Rekuest runs only if one of them is Rekuest's |
+| `--image SERVICE=IMAGE` | run a service on another image than a new hub gets; repeatable, and not only for this kind of hub. `KONSTRUKTOR_IMAGES` sets the same for every hub created while it is set |
+
+A **redeem token** is what an app trades for a client of its own, with no browser involved:
+point the app at the hub and hand it one.
+
+```
+FAKTS_URL=http://localhost:7190 FAKTS_REDEEM_TOKEN=… python my_app.py
+```
+
+One token serves one app — the coordination server pins it to the first app that redeems
+it — so mint as many as there are apps.
+
+Everything needed to connect is written to **`secrets/access.json`** in the hub's folder,
+and printed by `hub create --json`: the address, the account, the tokens, and each
+service's URL. It is regenerated from the profile with every other file.
+
+**Where it is reached.** Logging in works at any address the gateway answers on: the
+coordination server advertises its endpoints at whatever address it was asked at, and its
+tokens carry a name rather than an address, so one got at `localhost` is good everywhere.
+The *services* are advertised at fixed addresses — the ones `--host` or `--reach` chose,
+and the gateway's own name (`gateway`) for containers on the stack's network, which try
+that one first. So an app on another machine can log in as it stands, and reaches the
+services once the hub was created with an address that machine can open. The port is part
+of those addresses: pick it when the hub is created.
+
+This needs a coordination server that knows the `discovery_follows_request` setting and the
+`docker` alias kind. `konstruktor wait` says so, rather than waiting, when the Lok image
+it started is too old.
+
+**What it does not have.** A mesh is opt-in on such a hub, and opting in is not available
+yet: it is reached at this machine's addresses. Changing its services means creating it
+again — they are part of what its coordination server was set up with.
+
+From Python, the `konstruktor` package wraps exactly this and nothing more — see
+[`python/README.md`](python/README.md).
 
 ### The desktop app
 
