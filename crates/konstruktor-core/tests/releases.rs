@@ -1,18 +1,17 @@
-//! The hub folders earlier releases generated, and what this build makes of them.
+//! The hub folders earlier releases generated, and what this build makes of them: nothing.
 //!
 //! `fixtures/releases/<version>/` is what that release wrote for a default hub
-//! (`scripts/capture-release-fixture.sh`). A hub out there has exactly such files, so
-//! these are what "an existing hub" means to this build: which layout it reads them as,
-//! and that rewriting them lands where a hub created today starts.
+//! (`scripts/capture-release-fixture.sh`). A hub out there has exactly such files. Their
+//! profile is of the shape from before services were data — a key per service, and none
+//! of what each service's image has since been asked — and this build does not migrate
+//! it: such a hub is refused, told to be created again, and left exactly as it was found.
 
 use std::path::{Path, PathBuf};
 
-use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
-use konstruktor_core::migrate;
-use konstruktor_core::profile;
+use konstruktor_core::profile::{self, ProfileError};
 
-/// Each captured release, and the layout its files have.
-const RELEASES: [(&str, u32); 3] = [("0.11.0", 1), ("0.13.0", 2), ("0.14.0", 3)];
+/// Each captured release.
+const RELEASES: [&str; 3] = ["0.11.0", "0.13.0", "0.14.0"];
 
 fn copy(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -41,87 +40,82 @@ fn hub_of(version: &str, tag: &str) -> PathBuf {
     dir
 }
 
-#[test]
-fn a_hub_of_an_earlier_release_is_read_as_the_layout_it_has() {
-    for (version, layout) in RELEASES {
-        let dir = hub_of(version, "read");
-        let config = profile::read_profile(&dir)
-            .unwrap_or_else(|error| panic!("{version}'s profile is read: {error}"))
-            .config;
-        assert_eq!(migrate::layout(&dir, &config), layout, "{version}");
-        assert_eq!(
-            migrate::pending(&dir, &config).len() as u32,
-            migrate::CURRENT_LAYOUT - layout,
-            "{version}"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-}
-
-/// What an update does to the files of such a hub: every generated file is what this build
-/// generates from the hub's own profile, nothing of the old layout is left beside them,
-/// and the hub is no longer behind.
-#[test]
-fn rewriting_a_hub_of_an_earlier_release_lands_on_what_is_generated_today() {
-    for (version, _) in RELEASES {
-        let dir = hub_of(version, "rewrite");
-        let config = profile::read_profile(&dir).unwrap().config;
-        profile::rewrite(&dir, config, &[]).unwrap();
-
-        let config = profile::read_profile(&dir).unwrap().config;
-        let expected = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
-        for (path, contents) in &expected {
-            assert_eq!(
-                &std::fs::read_to_string(dir.join(path)).unwrap(),
-                contents,
-                "{version}: {path}"
-            );
+/// Every file under `dir`, by path, so "nothing was touched" can be an equality.
+fn snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).unwrap().flatten() {
+            if entry.path().is_dir() {
+                pending.push(entry.path());
+            } else {
+                out.insert(entry.path(), std::fs::read(entry.path()).unwrap());
+            }
         }
-        assert_eq!(migrate::pending(&dir, &config), [], "{version}");
-        assert_eq!(
-            migrate::hand_edited(&dir),
-            Vec::<String>::new(),
-            "{version}"
+    }
+    out
+}
+
+#[test]
+fn a_hub_of_an_earlier_release_is_refused_and_told_to_be_created_again() {
+    for version in RELEASES {
+        let dir = hub_of(version, "read");
+        let refused = profile::read_profile(&dir)
+            .err()
+            .unwrap_or_else(|| panic!("{version}'s profile must not be read"));
+        assert!(
+            matches!(refused, ProfileError::Earlier { .. }),
+            "{version}: {refused}"
+        );
+        let said = refused.to_string();
+        assert!(said.contains("earlier konstruktor"), "{version}: {said}");
+        assert!(said.contains("created again"), "{version}: {said}");
+        assert!(said.contains("konstruktor hub create"), "{version}: {said}");
+        assert!(
+            said.contains(&*dir.to_string_lossy()),
+            "{version}: it names the folder: {said}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
 
-/// A frozen hub whose files are behind is not moved in passing: the move would take every
-/// service along, which is what the freeze forbids. It is refused before anything is
-/// backed up, copied or written.
+/// Nothing that rewrites a hub's files gets as far as writing one: regenerating, moving
+/// an image and updating all read the profile first, and stop there.
 #[tokio::test]
-async fn a_frozen_hub_of_an_earlier_release_is_not_updated() {
-    use konstruktor_core::lock::{self, Frozen};
-    use konstruktor_core::updates::{self, UpdateError, UpdateRequest};
+async fn nothing_rewrites_a_hub_of_an_earlier_release() {
+    use konstruktor_core::updates::{self, UpdateRequest};
 
-    let dir = hub_of("0.14.0", "frozen");
-    let mut held = lock::read(&dir);
-    held.frozen.insert("mikro".into(), Frozen { at: 1 });
-    lock::write(&dir, &held).unwrap();
-    let compose = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
+    for version in RELEASES {
+        let dir = hub_of(version, "rewrite");
+        let before = snapshot(&dir);
 
-    let refused = updates::apply(
-        &dir,
-        &UpdateRequest {
-            services: vec!["rekuest".into()],
-            advances: Vec::new(),
-            pull: true,
-            backup_into: Some(dir.join("backups")),
-            health_check: true,
-        },
-        &|_| {},
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        matches!(&refused, UpdateError::Frozen(why) if why.contains("konstruktor unfreeze")),
-        "{refused}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
-        compose
-    );
-    assert!(!dir.join("backups").exists() && !dir.join(".konstruktor").exists());
-    std::fs::remove_dir_all(&dir).ok();
+        assert!(matches!(
+            profile::regenerate(&dir),
+            Err(ProfileError::Earlier { .. })
+        ));
+        assert!(matches!(
+            profile::rewrite_images(&dir, &[("mikro".into(), "jhnnsrs/mikro:7".into())]),
+            Err(ProfileError::Earlier { .. })
+        ));
+        let refused = updates::apply(
+            &dir,
+            &UpdateRequest {
+                services: vec!["rekuest".into()],
+                advances: Vec::new(),
+                pull: true,
+                backup_into: Some(dir.join("backups")),
+                health_check: true,
+            },
+            &|_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused.to_string().contains("created again"),
+            "{version}: {refused}"
+        );
+
+        assert_eq!(snapshot(&dir), before, "{version}: the folder is as it was");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

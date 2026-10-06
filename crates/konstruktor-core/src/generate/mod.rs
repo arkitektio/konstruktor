@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 
 use serde_norway::Value;
 
-use crate::catalog::HUB_SERVICE_ORDER;
 use crate::config::hub::HubConfig;
 
 /// The deployment generator — a port of the hub path through
@@ -60,7 +59,7 @@ pub fn generate_hub_files(
     if let Some(lok) = lok {
         files.insert(
             format!("configs/{}.yaml", lok.host),
-            dump(&lok::build_lok_config(config, lok)),
+            dump(&lok::build_lok_config(config, lok, said)),
         );
         let mut access = serde_json::to_string_pretty(&lok::build_access(config, lok))
             .expect("the access document is plain data");
@@ -71,8 +70,8 @@ pub fn generate_hub_files(
     // --- secret files, mounted read-only into the one service that reads each ---
     for id in &enabled {
         let block = config.service(*id);
-        if let Some(key) = &block.fernet_key {
-            files.insert(service::fernet_key_file(block), format!("{key}\n"));
+        for (name, secret) in &block.secrets {
+            files.insert(service::secret_file(block, name), format!("{secret}\n"));
         }
     }
 
@@ -101,20 +100,15 @@ pub fn generate_hub_files(
     }
 
     // --- gateway ------------------------------------------------------------
-    let caddy_services: Vec<caddy::CaddyService<'_>> = HUB_SERVICE_ORDER
-        .into_iter()
-        .filter(|id| enabled.contains(id))
-        .map(|id| {
+    let caddy_services: Vec<caddy::CaddyService<'_>> = enabled
+        .iter()
+        .map(|&id| {
             let block = config.service(id);
             caddy::CaddyService {
                 id,
                 host: &block.host,
                 internal_port: block.internal_port,
-                buckets: block
-                    .bucket_names(id)
-                    .into_iter()
-                    .map(|(_, name)| name)
-                    .collect(),
+                buckets: block.buckets.names(),
                 agent_upstream: (id == crate::catalog::ServiceId::Rekuest)
                     .then(|| config.takt_host())
                     .flatten()

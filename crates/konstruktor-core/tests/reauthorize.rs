@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use konstruktor_core::catalog::ServiceId;
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+use konstruktor_core::config::hub::HubConfigOptions;
 use konstruktor_core::connect::authorize::HubAuthorizationError;
 use konstruktor_core::connect::manifest::AdvertisedHost;
 use konstruktor_core::create::{
@@ -28,6 +28,8 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+mod support;
 
 /// `reauthorize` records the regeneration in the registry, which lives in the platform's
 /// data directory. It is pointed at a scratch folder before any test runs, so a test
@@ -54,7 +56,8 @@ fn isolate_registry() -> PathBuf {
     root
 }
 
-/// A folder holding a plain, never-authorized hub.
+/// A folder holding a plain, never-authorized hub, as `hub create` leaves one: its
+/// services provided what their images asked for, and what the images said written down.
 fn a_hub() -> PathBuf {
     isolate_registry();
     let dir = std::env::temp_dir().join(format!(
@@ -64,12 +67,14 @@ fn a_hub() -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).expect("the hub folder");
 
-    let config = build_hub_config(&HubConfigOptions {
+    let config = support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: "coord.example.org".into(),
         ..Default::default()
     });
-    write_profile(&dir, &hub_profile(config)).expect("a profile");
+    write_profile(&dir, &hub_profile(config.clone())).expect("a profile");
+    konstruktor_core::contract::remember(&dir, &config, &support::said())
+        .expect("what the images said");
     dir
 }
 
@@ -95,6 +100,17 @@ fn answers(dir: &Path, server: &MockServer) -> ReauthorizeAnswers {
         reachable_hosts: Vec::new(),
         mesh_key: MeshKeyRequest::Never,
         services: None,
+        // What the image of a service that is added says, by image, as if it had just
+        // been asked: no test here has an engine to ask one with.
+        described: konstruktor_core::catalog::SERVICE_IDS
+            .iter()
+            .filter_map(|id| {
+                Some((
+                    id.default_image()?.to_string(),
+                    support::description_of(*id),
+                ))
+            })
+            .collect(),
     }
 }
 
@@ -522,6 +538,7 @@ fn with_change(
     wanted.services = Some(ServiceChange {
         add: add.to_vec(),
         remove: remove.to_vec(),
+        ..Default::default()
     });
     wanted
 }
@@ -589,7 +606,11 @@ fn secrets_of(
 async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
     let dir = a_hub();
     let before = profile::read_profile(&dir).unwrap().config;
-    assert!(!before.bank.enabled);
+    assert!(
+        !before
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .enabled
+    );
 
     let server = coordination_server(accepted(json!({}))).await;
     let done = reauthorize(
@@ -604,17 +625,21 @@ async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
     assert!(plan.removed.is_empty());
 
     let after = profile::read_profile(&dir).unwrap().config;
-    assert!(after.bank.enabled);
     assert!(
-        after.bank.instance_key_pair.is_some(),
+        after
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .enabled
+    );
+    assert!(
+        after
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .instance_key_pair
+            .is_some(),
         "bank got no instance key"
     );
 
-    // Nothing that already existed moved; Bank's own block is the one seeded at creation.
-    let kept: Vec<ServiceId> = konstruktor_core::catalog::SERVICE_IDS
-        .into_iter()
-        .filter(|id| !before.service(*id).is_disposable())
-        .collect();
+    // Nothing that already ran moved; Bank's own block is the one seeded at creation.
+    let kept: Vec<ServiceId> = before.enabled_services();
     assert!(kept.contains(&ServiceId::Mikro) && !kept.contains(&ServiceId::Bank));
     assert_eq!(secrets_of(&before, &kept), secrets_of(&after, &kept));
 
@@ -677,8 +702,16 @@ async fn removing_a_service_drops_its_container_but_keeps_its_data() {
     assert!(!caddyfile.contains("/kraph"), "kraph is still routed");
 
     let config = profile::read_profile(&dir).unwrap().config;
-    assert!(!config.kraph.enabled);
-    assert!(config.kraph.retained);
+    assert!(
+        !config
+            .service(konstruktor_core::catalog::ServiceId::Kraph)
+            .enabled
+    );
+    assert!(
+        config
+            .service(konstruktor_core::catalog::ServiceId::Kraph)
+            .retained
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -732,26 +765,42 @@ async fn re_adding_kuvert_keeps_its_fernet_key() {
     };
 
     run(&[ServiceId::Kuvert], &[]).await;
-    let first = profile::read_profile(&dir).unwrap().config.kuvert;
-    let key = first.fernet_key.clone().expect("kuvert got a fernet key");
+    let first = profile::read_profile(&dir)
+        .unwrap()
+        .config
+        .service(ServiceId::Kuvert)
+        .clone();
+    let key = first
+        .secrets
+        .get("fernet")
+        .cloned()
+        .expect("kuvert got a fernet key");
     assert!(dir.join("secrets/kuvert.fernet").is_file());
 
     run(&[], &[ServiceId::Kuvert]).await;
-    let removed = profile::read_profile(&dir).unwrap().config.kuvert;
+    let removed = profile::read_profile(&dir)
+        .unwrap()
+        .config
+        .service(ServiceId::Kuvert)
+        .clone();
     assert!(!removed.enabled);
     assert_eq!(
-        removed.fernet_key.as_deref(),
-        Some(key.as_str()),
+        removed.secrets.get("fernet"),
+        Some(&key),
         "the key left the profile"
     );
     assert!(!compose_services(&dir).contains(&"kuvert".to_string()));
 
     run(&[ServiceId::Kuvert], &[]).await;
-    let back = profile::read_profile(&dir).unwrap().config.kuvert;
+    let back = profile::read_profile(&dir)
+        .unwrap()
+        .config
+        .service(ServiceId::Kuvert)
+        .clone();
     assert!(back.enabled && !back.retained);
     assert_eq!(
-        back.fernet_key.as_deref(),
-        Some(key.as_str()),
+        back.secrets.get("fernet"),
+        Some(&key),
         "a new key was minted"
     );
     assert_eq!(back.instance_key_pair, first.instance_key_pair);
@@ -791,6 +840,7 @@ async fn service_change_answers_come_from_the_authorized_hub() {
     let change = ServiceChange {
         add: vec![ServiceId::Bank],
         remove: vec![],
+        ..Default::default()
     };
     let error = answers_from_disk(&dir, change.clone()).expect_err("never authorized");
     assert!(error.to_string().contains("authorize it first"), "{error}");

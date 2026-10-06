@@ -6,12 +6,14 @@
 
 use std::path::PathBuf;
 
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+use konstruktor_core::config::hub::HubConfigOptions;
 use konstruktor_core::config::mesh::{MeshOptions, MESH_IMAGE};
 use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::profile::{hub_profile, write_profile};
 use konstruktor_core::start::sidecar_missing_a_network;
+
+mod support;
 
 fn docker(args: &[&str], dir: &PathBuf) -> std::process::Output {
     konstruktor_core::docker::command()
@@ -36,7 +38,7 @@ async fn notices_a_sidecar_that_lost_a_network() {
         return;
     }
 
-    let config = build_hub_config(&HubConfigOptions {
+    let config = support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: "go.arkitekt.live".into(),
         mesh: Some(MeshOptions {

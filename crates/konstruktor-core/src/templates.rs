@@ -64,7 +64,7 @@ pub fn ids() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::HOOKED_SERVICES;
+    use crate::support;
 
     #[test]
     fn the_default_template_is_the_catalogs_defaults() {
@@ -105,10 +105,12 @@ mod tests {
                     template.id
                 );
             }
+            // By what the services say of themselves: nothing here lists the hooked ones.
+            let said = support::said();
             if template
                 .services
                 .iter()
-                .any(|s| HOOKED_SERVICES.contains(s))
+                .any(|s| said[s.as_str()].hooked_by_rekuest())
             {
                 assert!(
                     template.services.contains(&ServiceId::Rekuest),

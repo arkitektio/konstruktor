@@ -576,7 +576,12 @@ async fn build_manifest(
                 repo_digests: state_of(host)
                     .map(|s| s.repo_digests.clone())
                     .unwrap_or_default(),
-                db: config.service(*id).db_config.db.clone(),
+                // Empty for a service that asked for no database.
+                db: config
+                    .service(*id)
+                    .database()
+                    .unwrap_or_default()
+                    .to_string(),
             })
             .collect(),
         infrastructure: infra

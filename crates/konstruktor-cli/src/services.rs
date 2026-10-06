@@ -6,9 +6,12 @@
 //! coordination server, somebody accepts it, and only then is anything written. Then the
 //! stack is brought to it, unless `--no-apply`.
 
-use anyhow::Result;
+use std::collections::BTreeMap;
+
+use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use konstruktor_core::catalog::{catalog, ServiceId, SERVICE_IDS};
+use konstruktor_core::contract::Description;
 use konstruktor_core::services::{self, ServiceChange, ServicePlan};
 use konstruktor_core::{credentials, profile};
 use serde::Serialize;
@@ -23,6 +26,9 @@ pub enum ServicesCommand {
     /// their data.
     List(Target),
     /// Add services: re-authorize with them, write their files, and start them.
+    ///
+    /// By name for the services this konstruktor knows, or by image for any service at
+    /// all (`--image`): the image is asked which service it is.
     Add(ChangeArgs),
     /// Take services out, keeping their data.
     ///
@@ -40,8 +46,13 @@ pub enum ServicesCommand {
 #[derive(Args, Debug, Clone)]
 pub struct ChangeArgs {
     /// The services, by id: `konstruktor hub services list` shows them.
-    #[arg(required = true, value_parser = parse_service)]
+    #[arg(required_unless_present = "images", value_parser = parse_service)]
     pub services: Vec<ServiceId>,
+    /// With `add`: a service to add by the image it is, e.g. `--image example:1`.
+    /// Repeatable. The image is asked which service it is, so it can be one this
+    /// konstruktor has never heard of.
+    #[arg(long = "image", value_name = "IMAGE")]
+    pub images: Vec<String>,
     /// The hub: a path, or a name from `konstruktor list`. Defaults to here.
     // A flag rather than a leading positional: an optional hub in front of a list of
     // services cannot be told apart from the first service — as with `checkout --in`.
@@ -59,39 +70,85 @@ pub struct ChangeArgs {
     pub yes: bool,
 }
 
+/// A service by name. Any name a service can have is taken — a hub may run one that is
+/// not in the catalogue, and it is removed by its name like any other; whether the hub
+/// has it, or an image for it, is the plan's to say.
 pub fn parse_service(value: &str) -> Result<ServiceId, String> {
     let name = value.trim().to_ascii_lowercase();
-    SERVICE_IDS
-        .into_iter()
-        .find(|id| id.as_str() == name)
-        .ok_or_else(|| {
-            format!(
-                "unknown service `{value}` — known ones are {}",
-                SERVICE_IDS
-                    .iter()
-                    .map(|id| id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
+    ServiceId::parse(&name).map_err(|error| {
+        format!(
+            "unknown service `{value}`: {error}. The ones this konstruktor knows by name \
+             are {}",
+            SERVICE_IDS
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+/// Asks each of `images` which service it is: the services to add, the image each runs,
+/// and what each said — so it is not asked a second time.
+async fn services_of_images(
+    images: &[String],
+) -> Result<(
+    Vec<ServiceId>,
+    BTreeMap<ServiceId, String>,
+    BTreeMap<String, Description>,
+)> {
+    let mut ids = Vec::new();
+    let mut by_service = BTreeMap::new();
+    let mut described = BTreeMap::new();
+    for image in images {
+        let image = image.trim();
+        let said = konstruktor_core::contract::describe(image)
+            .await
+            .with_context(|| {
+                format!(
+                    "`{image}` does not say which service it is when it is run with no \
+                     command: it cannot be pulled, or it is a release from before a service \
+                     described itself"
+                )
+            })?;
+        let id = ServiceId::parse(&said.name).with_context(|| {
+            format!("`{image}` cannot be hosted under the name it gives itself")
+        })?;
+        if ids.contains(&id) {
+            bail!("--image names `{id}` twice");
+        }
+        ids.push(id);
+        by_service.insert(id, image.to_string());
+        described.insert(image.to_string(), said);
+    }
+    Ok((ids, by_service, described))
 }
 
 pub async fn run(command: ServicesCommand, json: bool) -> Result<()> {
     match command {
         ServicesCommand::List(target) => list(&target, json),
         ServicesCommand::Add(args) => {
+            let (by_image, images, described) = services_of_images(&args.images).await?;
+            if let Some(twice) = by_image.iter().find(|id| args.services.contains(id)) {
+                bail!("`{twice}` is named both by name and by `--image` — one will do");
+            }
             let change = ServiceChange {
-                add: args.services.clone(),
+                add: args.services.iter().copied().chain(by_image).collect(),
                 remove: Vec::new(),
+                images,
             };
-            change_services(&args, change).await
+            change_services(&args, change, described).await
         }
         ServicesCommand::Remove(args) => {
+            if !args.images.is_empty() {
+                bail!("`--image` adds a service; one is removed by its name");
+            }
             let change = ServiceChange {
                 add: Vec::new(),
                 remove: args.services.clone(),
+                images: BTreeMap::new(),
             };
-            change_services(&args, change).await
+            change_services(&args, change, BTreeMap::new()).await
         }
         ServicesCommand::Apply(target) => apply(&target).await,
     }
@@ -112,22 +169,37 @@ fn list(target: &Target, json: bool) -> Result<()> {
     let config = profile::read_profile(&dir)?.config;
     let running = config.enabled_services();
 
-    let rows: Vec<Listed> = catalog()
+    let state_of = |id: ServiceId| {
+        if running.contains(&id) {
+            "running"
+        } else if config.get(id).is_some_and(|block| block.retained) {
+            "kept"
+        } else {
+            "off"
+        }
+    };
+    let mut rows: Vec<Listed> = catalog()
         .into_iter()
         .filter(|meta| meta.emitted)
         .map(|meta| Listed {
-            state: if running.contains(&meta.id) {
-                "running"
-            } else if config.service(meta.id).retained {
-                "kept"
-            } else {
-                "off"
-            },
+            state: state_of(meta.id),
             id: meta.id,
             name: meta.name,
             experimental: meta.experimental,
         })
         .collect();
+    // Then the services this hub has that the catalogue does not: added by their image,
+    // and known here by the name the image gave.
+    for id in config.service_ids() {
+        if id.known().is_none() {
+            rows.push(Listed {
+                state: state_of(id),
+                id,
+                name: id.as_str().to_string(),
+                experimental: false,
+            });
+        }
+    }
 
     if json {
         return ui::emit_json(&rows);
@@ -154,7 +226,8 @@ fn list(target: &Target, json: bool) -> Result<()> {
     );
     ui::say("");
     ui::step(&ui::dim(
-        "Change them with `konstruktor hub services add|remove <ids…>`.",
+        "Change them with `konstruktor hub services add|remove <ids…>`; add any other \
+         service by its image, with `add --image IMAGE`.",
     ));
     ui::say("");
     Ok(())
@@ -181,14 +254,19 @@ fn describe(plan: &ServicePlan) -> Vec<(String, String)> {
     rows
 }
 
-async fn change_services(args: &ChangeArgs, change: ServiceChange) -> Result<()> {
+async fn change_services(
+    args: &ChangeArgs,
+    change: ServiceChange,
+    described: BTreeMap<String, Description>,
+) -> Result<()> {
     let target = Target::named(args.in_hub.clone());
     let dir = target.resolve()?;
     let config = profile::read_profile(&dir)?.config;
 
     // Refused here, before anybody is sent to a browser; the core asks again.
-    let plan = services::plan(&config, &change)?;
-    let answers = services::answers_from_disk(&dir, change)?;
+    let plan = services::plan(&config, &konstruktor_core::contract::known(&dir), &change)?;
+    let mut answers = services::answers_from_disk(&dir, change)?;
+    answers.described = described;
 
     ui::say("");
     ui::say(&format!("  {}", ui::bold("Changing a hub's services")));
@@ -325,10 +403,31 @@ mod tests {
     }
 
     #[test]
-    fn remove_needs_at_least_one_known_service() {
+    fn remove_needs_at_least_one_service_with_a_name_a_service_can_have() {
         assert!(parse(&["remove"]).is_err());
-        let error = parse(&["remove", "banking"]).unwrap_err().to_string();
-        assert!(error.contains("unknown service `banking`"), "{error}");
+        let error = parse(&["remove", "bank/ing"]).unwrap_err().to_string();
+        assert!(error.contains("unknown service `bank/ing`"), "{error}");
+        // What the hub runs beside its services is not one of them.
+        let error = parse(&["remove", "gateway"]).unwrap_err().to_string();
+        assert!(error.contains("`gateway`"), "{error}");
+        // A service outside the catalogue is removed by its name like any other.
+        let ServicesCommand::Remove(args) = parse(&["remove", "example"]).unwrap() else {
+            panic!("not a remove");
+        };
+        assert_eq!(args.services, [ServiceId::named("example")]);
+    }
+
+    /// A service is added by name or by the image it is — and by image alone is enough.
+    #[test]
+    fn add_takes_a_service_by_its_image() {
+        let ServicesCommand::Add(args) =
+            parse(&["add", "--image", "example:1", "--in", "MyHub"]).unwrap()
+        else {
+            panic!("not an add");
+        };
+        assert!(args.services.is_empty());
+        assert_eq!(args.images, ["example:1"]);
+        assert!(parse(&["add"]).is_err());
     }
 
     #[test]

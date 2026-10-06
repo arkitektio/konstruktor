@@ -366,12 +366,13 @@ pub fn checkouts(dir: &Path, config: &crate::config::hub::HubConfig) -> Vec<Chec
         .into_iter()
         .map(|id| config.service(id))
         .filter(|service| service.mount_github)
-        .map(|service| {
-            read_checkout(
+        // Only a service with a repository this build knows runs from a checkout.
+        .filter_map(|service| {
+            Some(read_checkout(
                 &service.host,
-                &service.github_repo,
+                service.github_repo.as_deref()?,
                 &checkout_dir(dir, &service.host),
-            )
+            ))
         })
         .collect()
 }

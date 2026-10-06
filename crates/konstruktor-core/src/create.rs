@@ -291,6 +291,7 @@ pub async fn create_hub(
 ) -> Result<CreatedHub, CreateError> {
     validate_identifier(&answers.identifier)?;
     validate_service_options(&answers.service_options)?;
+    validate_sources(answers)?;
     let self_contained = answers.coord_server.trim() == LOCAL_COORD_SERVER;
     if self_contained {
         validate_self_contained(answers)?;
@@ -384,22 +385,53 @@ pub async fn create_hub(
         storage: answers.storage,
         ..Default::default()
     });
-    // LiveKit announces one of the addresses the hub is about to advertise.
-    config.place_livekit(&host_names(&hosts));
-
     // Before the authorization and before anything is generated: the images are part of
     // what the hub *is*, and every later path reads them back out of the profile.
-    let mut config = config;
     let defaults = images_this_hub_runs(&config, &answers.default_images);
     apply_images(&mut config, &defaults)?;
     apply_images(&mut config, &answers.images)?;
+    // A service outside the catalogue has no image but the one it is given.
+    let imageless = config.imageless_services();
+    if !imageless.is_empty() {
+        return Err(CreateError::Answers(format!(
+            "{} is not a service this konstruktor knows an image for. Name the image to run \
+             it on: `--service-image IMAGE`, or `--image SERVICE=IMAGE`.",
+            imageless
+                .iter()
+                .map(|host| format!("`{host}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+
+    // The images are asked before anybody is asked to accept the hub, and before anything
+    // is written: what each needs from the hub, how it is started and what it is
+    // registered as are theirs to say, and both the manifest and the files are written
+    // from that. An image that is not on this machine yet is fetched by the asking.
+    on(CreateEvent::Log {
+        line: "Asking the images what they are…".into(),
+    });
+    let said = crate::contract::describe_all(&config, &answers.described).await;
+    let silent = crate::contract::undescribed(&config, &said);
+    if !silent.is_empty() {
+        return Err(CreateError::Answers(format!(
+            "{} did not say what it is when run with no command: the image cannot be pulled, \
+             or it is a release from before a service described itself. Nothing was written.",
+            silent.join(", ")
+        )));
+    }
+    crate::contract::names_agree(&config, &said).map_err(CreateError::Answers)?;
+    // Now the hub can provide each with what it asked for: buckets, a key, its secrets.
+    config.provide(&said);
+    // LiveKit announces one of the addresses the hub is about to advertise.
+    config.place_livekit(&host_names(&hosts));
 
     // --- authorize, unless there is nobody to ask ---------------------------
     let (mut config, credentials, mesh_granted) = if self_contained {
         (config, None, false)
     } else {
         let (config, credentials, mesh_granted) =
-            authorize_new_hub(answers, config, &store.device_id, &hosts, cancel, on).await?;
+            authorize_new_hub(answers, config, &said, &store.device_id, &hosts, cancel, on).await?;
         (config, Some(credentials), mesh_granted)
     };
 
@@ -411,34 +443,6 @@ pub async fn create_hub(
         .as_ref()
         .map(HubCredentials::issued_identity)
         .unwrap_or_default();
-    // The images are asked before anything is written: how each is started, what prepares
-    // it and what it is registered as are theirs to say, and the files are written from
-    // that. An image that is not on this machine yet is fetched by the asking.
-    on(CreateEvent::Log {
-        line: "Asking the images what they are…".into(),
-    });
-    let said = crate::contract::describe_all(&config, &answers.described).await;
-    let silent: Vec<String> = config
-        .enabled_services()
-        .into_iter()
-        .map(|id| config.service(id))
-        .filter(|block| block.image.is_some())
-        .map(|block| (block.host.clone(), block.image.clone().unwrap_or_default()))
-        .chain(
-            config
-                .running_lok()
-                .map(|lok| (lok.host.clone(), lok.image.clone())),
-        )
-        .filter(|(host, _)| !said.contains_key(host))
-        .map(|(host, image)| format!("`{host}` ({image})"))
-        .collect();
-    if !silent.is_empty() {
-        return Err(CreateError::Answers(format!(
-            "{} did not say what it is when run with no command: the image cannot be pulled, \
-             or it is a release from before a service described itself. Nothing was written.",
-            silent.join(", ")
-        )));
-    }
     let files = generate_hub_files(&config, &identity, &said);
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
@@ -517,12 +521,24 @@ pub async fn create_hub(
     })
 }
 
+/// The compose services this hub has an image to name for: everything in its stack, and
+/// the services that are switched on and still waiting for theirs — one outside the
+/// catalogue is not part of the stack until it is given the image it was named by.
+fn compose_services(config: &HubConfig) -> Vec<String> {
+    config
+        .stack_images()
+        .into_iter()
+        .map(|(service, _)| service)
+        .chain(config.imageless_services())
+        .collect()
+}
+
 /// Of `images`, the entries naming a compose service this hub has.
 fn images_this_hub_runs(
     config: &HubConfig,
     images: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
-    let running: Vec<String> = config.stack_images().into_iter().map(|(s, _)| s).collect();
+    let running = compose_services(config);
     images
         .iter()
         .filter(|(service, _)| running.contains(service))
@@ -536,11 +552,7 @@ fn apply_images(
     config: &mut HubConfig,
     images: &BTreeMap<String, String>,
 ) -> Result<(), CreateError> {
-    let known: Vec<String> = config
-        .stack_images()
-        .into_iter()
-        .map(|(service, _)| service)
-        .collect();
+    let known = compose_services(config);
     for (service, image) in images {
         if !known.contains(service) {
             return Err(CreateError::Answers(format!(
@@ -624,9 +636,11 @@ fn seeded_lok(answers: &HubAnswers, hosts: &[AdvertisedHost]) -> LokOptions {
 
 /// Asks the coordination server to accept the hub, waits for somebody to, and folds what
 /// came back into the profile. The one step of creating a hub that needs a person.
+#[allow(clippy::too_many_arguments)]
 async fn authorize_new_hub(
     answers: &HubAnswers,
     mut config: HubConfig,
+    said: &crate::contract::Said,
     device_id: &str,
     hosts: &[AdvertisedHost],
     cancel: &CancellationToken,
@@ -653,8 +667,8 @@ async fn authorize_new_hub(
             // reach it only as `gateway`. Scope local, so clients elsewhere skip it.
             internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
-            // A hub being created has no image on the machine to ask yet.
-            described: Default::default(),
+            // What each service is registered as, and with which scopes and roles.
+            described: said.clone(),
         },
     );
 
@@ -735,22 +749,22 @@ pub(crate) fn check_sources_out(
         .filter(|id| config.service(*id).mount_github)
     {
         let service = config.service(id);
+        // Only a service of the catalogue has a repository to check out; `mount_github`
+        // is never set on any other.
+        let Some(repo) = service.github_repo.as_deref() else {
+            continue;
+        };
         let branch = branch_of(id);
         let into = git::checkout_dir(dir, &service.host);
         std::fs::create_dir_all(&into)?;
 
         on(CreateEvent::Cloning {
             service: service.host.clone(),
-            repo: service.github_repo.clone(),
+            repo: repo.to_string(),
             branch: branch.clone(),
         });
 
-        let cloned = git::clone_service(
-            &service.host,
-            &service.github_repo,
-            branch.as_deref(),
-            &into,
-        )?;
+        let cloned = git::clone_service(&service.host, repo, branch.as_deref(), &into)?;
 
         // The config is bind-mounted at `/workspace/config.yaml`, which is *inside* the
         // checkout. Docker creates a missing mount point itself, as root — so the file is
@@ -959,7 +973,10 @@ mod tests {
         ]);
         apply_images(&mut config, &pins).unwrap();
         assert_eq!(
-            config.rekuest.image.as_deref(),
+            config
+                .service(crate::catalog::ServiceId::Rekuest)
+                .image
+                .as_deref(),
             Some("jhnnsrs/rekuest:5.0.1")
         );
         assert_eq!(config.running_lok().unwrap().image, "jhnnsrs/lok:3.1.0");
@@ -984,6 +1001,17 @@ mod tests {
             images_this_hub_runs(&config, &defaults),
             BTreeMap::from([("mikro".to_string(), "jhnnsrs/mikro:6.0.0".to_string())])
         );
+
+        // A service outside the catalogue has no image until it is given one this way.
+        let mut hosting = build_hub_config(&HubConfigOptions {
+            services: Some(vec![ServiceId::named("example")]),
+            ..Default::default()
+        });
+        assert_eq!(hosting.imageless_services(), ["example"]);
+        let named = BTreeMap::from([("example".to_string(), "example:1".to_string())]);
+        apply_images(&mut hosting, &named).unwrap();
+        assert!(hosting.imageless_services().is_empty());
+        assert!(hosting.runs(ServiceId::named("example")));
 
         let unknown = BTreeMap::from([("rekuset".to_string(), "x".to_string())]);
         let refused = apply_images(&mut config, &unknown).unwrap_err().to_string();
@@ -1098,6 +1126,33 @@ pub fn validate_identifier(identifier: &str) -> Result<(), CreateError> {
     Ok(())
 }
 
+/// Refuses a checkout of a service this build knows no repository for: `--dev` and
+/// `--from-source` run a service from its source, and only the catalogue says where a
+/// service's source is.
+fn validate_sources(answers: &HubAnswers) -> Result<(), CreateError> {
+    let from_source = |id: &ServiceId| {
+        answers.dev_hub
+            || answers
+                .service_options
+                .get(id)
+                .is_some_and(|asked| asked.from_source)
+    };
+    let asked_of = answers
+        .services
+        .iter()
+        .chain(answers.service_options.keys());
+    for id in asked_of {
+        if id.github_repo().is_none() && from_source(id) {
+            return Err(CreateError::Answers(format!(
+                "`{id}` cannot run from a checkout of its source: it is not a service this \
+                 konstruktor knows the repository of. Run it from its image — leave it out \
+                 of `--from-source`, and create the hub without `--dev`."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// What can be refused about one service's answers before anything is created — the rules
 /// the wizard holds on its services step. A branch name is git's to validate; only shapes
 /// git can never accept are refused, so a typo is caught before the clone is attempted.
@@ -1196,6 +1251,9 @@ pub struct ReauthorizeAnswers {
     /// Services to add or take out with this authorization — see [`crate::services`].
     /// Checked before anything is sent, and folded into the profile only once accepted.
     pub services: Option<crate::services::ServiceChange>,
+    /// What images said of themselves when they were asked which service they are
+    /// (`hub services add --image`), by image: they are not asked a second time.
+    pub described: BTreeMap<String, crate::contract::Description>,
 }
 
 /// What re-authorizing did, beyond the credentials it wrote.
@@ -1235,18 +1293,74 @@ pub async fn reauthorize(
     }
     // A service change is refused here, before anybody is sent to a browser, and applied
     // to this copy only: the profile on disk changes once the grant is accepted.
+    let mut said = crate::contract::known(&answers.dir);
     let services = match &answers.services {
         Some(change) => {
-            let plan = crate::services::plan(&config, change)?;
+            let plan = crate::services::plan(&config, &said, change)?;
             crate::services::apply_plan(&mut config, &plan);
             Some(plan)
         }
         None => None,
     };
-    // A profile from before instance keys gets them now; the profile is rewritten below, so
-    // they are minted once and sent to the coordination server with this very request.
-    config.ensure_instance_keys();
-    config.ensure_service_secrets();
+    // A service just added has not said what it is on this hub yet, and the manifest is
+    // written from that: it is asked now, before anybody is sent to a browser. What it
+    // answers is written down only once the change is accepted.
+    let unasked: Vec<ServiceId> = config
+        .enabled_services()
+        .into_iter()
+        .filter(|id| !said.contains_key(&config.service(*id).host))
+        .collect();
+    if !unasked.is_empty() {
+        on(CreateEvent::Log {
+            line: "Asking the images what they are…".into(),
+        });
+        let asked = futures_util::future::join_all(unasked.iter().map(|id| {
+            let image = config.service(*id).image.clone().unwrap_or_default();
+            async move {
+                match answers.described.get(&image) {
+                    Some(said) => Some(said.clone()),
+                    None => crate::contract::describe(&image).await,
+                }
+            }
+        }))
+        .await;
+        for (id, description) in unasked.iter().zip(asked) {
+            if let Some(description) = description {
+                said.insert(config.service(*id).host.clone(), description);
+            }
+        }
+    }
+    let silent = crate::contract::undescribed(&config, &said);
+    if !silent.is_empty() {
+        return Err(CreateError::Answers(format!(
+            "{} did not say what it is when run with no command: the image cannot be pulled, \
+             or it is a release from before a service described itself. Nothing was changed.",
+            silent.join(", ")
+        )));
+    }
+    crate::contract::names_agree(&config, &said).map_err(CreateError::Answers)?;
+    // With every description in hand, the one refusal a plan could not make on its own:
+    // a service added in this very change may be one Rekuest cannot be taken out beside.
+    if let Some(plan) = &services {
+        if plan.removed.contains(&ServiceId::Rekuest) {
+            let hooked = crate::services::hooked_by_rekuest(&config, &said, &plan.services);
+            if !hooked.is_empty() {
+                return Err(CreateError::Answers(format!(
+                    "Rekuest runs the periodic work and receives the signals of {} — remove \
+                     those too, or keep Rekuest",
+                    hooked
+                        .iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
+    // What a service asked for and does not have yet — a service just added, a release
+    // that declares more — is provided now; the profile is rewritten below, so a key is
+    // minted once and sent to the coordination server with this very request.
+    config.provide(&said);
     validate_identifier(&answers.identifier)?;
 
     let store = registry::load();
@@ -1288,13 +1402,9 @@ pub async fn reauthorize(
             mesh_alias: on_mesh,
             internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
-            // What the services' images have said of themselves on this hub: their own
-            // scopes and roles, where they have.
-            described: crate::lock::read(&answers.dir)
-                .described
-                .into_iter()
-                .filter_map(|(service, known)| Some((service, known.description?)))
-                .collect(),
+            // What the services' images have said of themselves on this hub: what each is
+            // registered as, with its own scopes and roles.
+            described: said.clone(),
         },
     );
 
@@ -1355,11 +1465,7 @@ pub async fn reauthorize(
 
     // Generation first: a profile this app did not write could fail here, and a
     // half-updated folder is worse than an unchanged one.
-    let files = generate_hub_files(
-        &config,
-        &credentials.issued_identity(),
-        &crate::contract::known(Path::new(&answers.dir)),
-    );
+    let files = generate_hub_files(&config, &credentials.issued_identity(), &said);
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
     }
@@ -1368,6 +1474,8 @@ pub async fn reauthorize(
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
     write_credentials(&answers.dir, &credentials)?;
     crate::migrate::write_hub(&answers.dir, &config, &files)?;
+    // So the next start does not ask a service that was just added again.
+    crate::contract::remember(&answers.dir, &config, &said)?;
 
     // The registry record now describes the wrong hub: the identifier is editable on the
     // authorize screen, the coordination server can differ, and `last_generated_at` has to

@@ -28,7 +28,7 @@
 //!   files until they have run.
 //!
 //! What a *service* has to do to its own data when its version changes is not here: that
-//! is the service's, shipped in its image (`manage.py upgrade`, see `updates`).
+//! is the service's, shipped in its image (its `upgrade` job, see `updates`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -154,7 +154,7 @@ fn unrecorded(dir: &Path, config: &HubConfig) -> u32 {
         return LAST_UNRECORDED;
     };
     let service = |name: &str| compose.get("services").and_then(|s| s.get(name));
-    if service(&config.rekuest.host).is_none() {
+    if service(&config.rekuest().host).is_none() {
         return LAST_UNRECORDED;
     }
     match service(&takt) {
@@ -264,7 +264,8 @@ pub fn behind(dir: &Path, config: &HubConfig) -> Option<String> {
 ///
 /// The ones switched off too: a service added later starts from the image its block names.
 pub fn caught_up_images(config: &HubConfig) -> Vec<(String, String)> {
-    crate::catalog::HUB_SERVICE_ORDER
+    config
+        .service_ids()
         .into_iter()
         .filter_map(|id| {
             let block = config.service(id);
@@ -407,17 +408,20 @@ mod tests {
     /// What an earlier Konstruktor seeded follows the files; what somebody chose does not.
     #[test]
     fn a_move_brings_seeded_images_to_their_major_and_leaves_chosen_ones() {
-        use crate::catalog::ServiceId::Rekuest;
+        use crate::catalog::ServiceId;
         use crate::config::hub::{caught_up_image, is_supported_image};
 
-        let seeded = config().rekuest.image.unwrap();
+        let seeded = config().rekuest().image.clone().unwrap();
         for behind in [
             "jhnnsrs/rekuest:latest",
             "jhnnsrs/rekuest:latest@sha256:abc",
             "jhnnsrs/rekuest:5",
         ] {
-            assert_eq!(caught_up_image(Rekuest, behind).as_ref(), Some(&seeded));
-            assert!(!is_supported_image(Rekuest, behind));
+            assert_eq!(
+                caught_up_image(ServiceId::Rekuest, behind).as_ref(),
+                Some(&seeded)
+            );
+            assert!(!is_supported_image(ServiceId::Rekuest, behind));
         }
         for chosen in [
             "jhnnsrs/rekuest:5.2.0",
@@ -425,16 +429,25 @@ mod tests {
             "registry.lab/rekuest:latest",
             "next-rekuest",
         ] {
-            assert_eq!(caught_up_image(Rekuest, chosen), None, "{chosen}");
-            assert!(!is_supported_image(Rekuest, chosen), "{chosen}");
+            assert_eq!(
+                caught_up_image(ServiceId::Rekuest, chosen),
+                None,
+                "{chosen}"
+            );
+            assert!(!is_supported_image(ServiceId::Rekuest, chosen), "{chosen}");
         }
-        assert_eq!(caught_up_image(Rekuest, &seeded), None);
-        assert!(is_supported_image(Rekuest, &seeded));
-        assert!(is_supported_image(Rekuest, &format!("{seeded}.0.1")));
+        assert_eq!(caught_up_image(ServiceId::Rekuest, &seeded), None);
+        assert!(is_supported_image(ServiceId::Rekuest, &seeded));
+        assert!(is_supported_image(
+            ServiceId::Rekuest,
+            &format!("{seeded}.0.1")
+        ));
 
         let mut config = config();
-        config.rekuest.image = Some("jhnnsrs/rekuest:latest".into());
-        config.mikro.image = Some("jhnnsrs/mikro:next".into());
+        config.service_mut(crate::catalog::ServiceId::Rekuest).image =
+            Some("jhnnsrs/rekuest:latest".into());
+        config.service_mut(crate::catalog::ServiceId::Mikro).image =
+            Some("jhnnsrs/mikro:next".into());
         assert_eq!(caught_up_images(&config), [("rekuest".to_string(), seeded)]);
         assert_eq!(
             unsupported_images(&config),

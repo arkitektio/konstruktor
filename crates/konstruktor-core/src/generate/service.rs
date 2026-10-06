@@ -36,11 +36,6 @@ fn inline_issuer(iss: &str, jwks: Value) -> Value {
     ])
 }
 
-/// The fakts identifier a service instance is listed under in the hub's trust bundle.
-fn service_identifier(id: ServiceId) -> String {
-    format!("live.arkitekt.{}", id.as_str())
-}
-
 /// `{"keys": [...]}`, as YAML.
 fn jwks_of(keys: Vec<serde_json::Value>) -> Value {
     serde_norway::to_value(serde_json::json!({ "keys": keys })).expect("a JWKS is plain data")
@@ -51,14 +46,18 @@ fn jwks_of(keys: Vec<serde_json::Value>) -> Value {
 /// was not handed one (not enrolled yet) — without it, every signed request between the
 /// hub's services fails with "No key … in the hub's trust bundle". Same shape as
 /// `scripts/instance_keys.py` in the reference deployment writes.
+///
+/// A key is listed under what its service is registered as, which is the image's to say
+/// ([`ServiceBlock::identifier`]): a service that holds a key and was never asked what it
+/// is has nothing to be listed under, and is left out.
 fn inline_trust_bundle(config: &HubConfig) -> Option<Value> {
     let keys: Vec<serde_json::Value> = config
         .enabled_services()
         .into_iter()
-        .filter(|id| config.service(*id).image.is_some())
         .filter_map(|id| {
-            let pair = config.service(id).instance_key_pair.as_ref()?;
-            public_jwk(pair, &service_identifier(id))
+            let block = config.service(id);
+            let pair = block.instance_key_pair.as_ref()?;
+            public_jwk(pair, block.identifier.as_deref()?)
         })
         .collect();
     (!keys.is_empty()).then(|| jwks_of(keys))
@@ -99,15 +98,15 @@ fn jwks_at_base(url: &str) -> String {
 
 const JWKS_PATH: &str = ".well-known/jwks.json";
 
-/// Where a service finds its Fernet key file inside its container. See
-/// [`crate::generate::compose`], which mounts `secrets/<host>.fernet` there.
-pub fn fernet_key_path(service: &ServiceBlock) -> String {
-    format!("/secrets/{}.fernet", service.host)
+/// Where a service finds one of its secrets inside its container. See
+/// [`crate::generate::compose`], which mounts `secrets/<host>.<name>` there.
+pub fn secret_path(service: &ServiceBlock, name: &str) -> String {
+    format!("/secrets/{}.{name}", service.host)
 }
 
-/// The file in the deployment folder holding a service's Fernet key.
-pub fn fernet_key_file(service: &ServiceBlock) -> String {
-    format!("secrets/{}.fernet", service.host)
+/// The file in the deployment folder holding one of a service's secrets.
+pub fn secret_file(service: &ServiceBlock, name: &str) -> String {
+    format!("secrets/{}.{name}", service.host)
 }
 
 /// Inbound token verification.
@@ -151,7 +150,7 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
 
-    let rekuest = &config.rekuest;
+    let rekuest = config.rekuest();
     let remote = config.rekuest_server.trim();
 
     let provenance = if rekuest.enabled {
@@ -159,18 +158,20 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         // Rekuest signs provenance with its instance key. The coordination server's trust
         // bundle, narrowed to Rekuest, is the vouched-for source. Without one (a hub not
         // enrolled yet), the key itself, inline — Konstruktor minted it, so it needs no
-        // fetch. Only a key that cannot be read falls back to Rekuest's own key set inside
+        // fetch. Both name Rekuest by what it is registered as; a Rekuest whose image was
+        // never asked, or whose key cannot be read, falls back to its own key set inside
         // the network, behind its script name.
-        match issued.hub_keys_url.as_deref() {
-            Some(url) => Some(jwks_issuer(
-                iss,
-                &format!("{url}?service={}", service_identifier(ServiceId::Rekuest)),
-            )),
-            None => Some(
+        let registered = rekuest.identifier.as_deref();
+        match (issued.hub_keys_url.as_deref(), registered) {
+            (Some(url), Some(identifier)) => {
+                Some(jwks_issuer(iss, &format!("{url}?service={identifier}")))
+            }
+            _ => Some(
                 rekuest
                     .instance_key_pair
                     .as_ref()
-                    .and_then(|pair| public_jwk(pair, &service_identifier(ServiceId::Rekuest)))
+                    .zip(registered)
+                    .and_then(|(pair, identifier)| public_jwk(pair, identifier))
                     .map(|jwk| inline_issuer(iss, jwks_of(vec![jwk])))
                     .unwrap_or_else(|| {
                         jwks_issuer(
@@ -208,7 +209,7 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
 /// The role the datalayer assumes for its scoped sessions. See [`build_datalayer`].
 pub const DATALAYER_ROLE_ARN: &str = "arn:aws:iam::000000000000:role/datalayer";
 
-fn build_datalayer(config: &HubConfig, id: ServiceId, service: &ServiceBlock) -> Value {
+fn build_datalayer(config: &HubConfig, service: &ServiceBlock) -> Value {
     let mut pairs = vec![
         // Every upload and download grant is an STS session scoped by an inline policy,
         // and the services refuse to issue one without a role to assume — falling back to
@@ -225,8 +226,7 @@ fn build_datalayer(config: &HubConfig, id: ServiceId, service: &ServiceBlock) ->
         ("region", s("us-east-1")),
     ];
 
-    let buckets = service.bucket_names(id);
-    for (purpose, name) in &buckets {
+    for (purpose, name) in service.buckets.iter() {
         pairs.push((purpose, map(vec![("bucket", s(name))])));
     }
 
@@ -248,65 +248,70 @@ pub(crate) fn hub_blocks(config: &HubConfig, id: ServiceId, issued: &IssuedIdent
         .clone()
         .unwrap_or_else(|| vec!["http://localhost".into(), "https://localhost".into()]);
 
-    let mut pairs = vec![
-        (
-            "django",
+    let mut django = Vec::new();
+    // Only a service that asked to be told of the operator account is.
+    if service.admin_config.is_some() {
+        django.push((
+            "admin",
             map(vec![
                 (
-                    "admin",
-                    map(vec![
-                        (
-                            "email",
-                            config
-                                .global_admin_email
-                                .as_deref()
-                                .map(s)
-                                .unwrap_or(Value::Null),
-                        ),
-                        ("password", s(&config.global_admin_password)),
-                        ("username", s(&config.global_admin)),
-                    ]),
+                    "email",
+                    config
+                        .global_admin_email
+                        .as_deref()
+                        .map(s)
+                        .unwrap_or(Value::Null),
                 ),
-                (
-                    "csrf_trusted_origins",
-                    list(csrf.iter().map(|o| s(o)).collect()),
-                ),
-                ("debug", Value::from(service.debug)),
-                // No leading slash: services append this to an absolute base when
-                // building external URLs, and a slash here would produce `//lok/o/token/`.
-                ("force_script_name", s(&service.host)),
-                (
-                    "hosts",
-                    list(service.allowed_hosts.iter().map(|h| s(h)).collect()),
-                ),
-                ("secret_key", s(&service.secret_key)),
+                ("password", s(&config.global_admin_password)),
+                ("username", s(&config.global_admin)),
             ]),
-        ),
+        ));
+    }
+    django.extend([
         (
+            "csrf_trusted_origins",
+            list(csrf.iter().map(|o| s(o)).collect()),
+        ),
+        ("debug", Value::from(service.debug)),
+        // No leading slash: services append this to an absolute base when
+        // building external URLs, and a slash here would produce `//lok/o/token/`.
+        ("force_script_name", s(&service.host)),
+        (
+            "hosts",
+            list(service.allowed_hosts.iter().map(|h| s(h)).collect()),
+        ),
+        ("secret_key", s(&service.secret_key)),
+    ]);
+
+    let mut pairs = vec![("django", map(django))];
+    // The database and the Redis, for a service that declared it uses them.
+    if let Some(database) = service.database() {
+        pairs.push((
             "postgres",
             map(vec![
-                ("db_name", s(&service.db_config.db)),
+                ("db_name", s(database)),
                 ("engine", s("django.db.backends.postgresql")),
                 ("host", s("db")),
                 ("password", s(&config.db.postgres_password)),
                 ("port", Value::from(5432)),
                 ("username", s(&config.db.postgres_user)),
             ]),
-        ),
-        (
+        ));
+    }
+    if service.redis_config.is_some() {
+        pairs.push((
             "redis",
             map(vec![
                 ("host", s(&config.local_redis.host)),
                 ("port", Value::from(config.local_redis.internal_port)),
             ]),
-        ),
-        ("authentikate", build_authentikate(config, issued)),
-    ];
+        ));
+    }
+    pairs.push(("authentikate", build_authentikate(config, issued)));
 
-    // A service that stores no objects itself still gets its buckets created — it just
-    // receives no `datalayer` block, and upstream's models reject one.
-    if id.uses_datalayer() {
-        pairs.push(("datalayer", build_datalayer(config, id, service)));
+    // The object store, with its credentials, exactly for a service that declared storage.
+    if service.uses_datalayer() {
+        pairs.push(("datalayer", build_datalayer(config, service)));
     }
 
     // This instance's key — its only secret towards the hub's other services — and where the

@@ -228,14 +228,11 @@ pub struct HealthReport {
     pub mesh: Option<MeshReport>,
 }
 
-/// Every enabled service answers its health check through the gateway.
-pub async fn services_healthy(client: &reqwest::Client, gateway: &str, hosts: &[String]) -> bool {
-    for host in hosts {
-        let url = format!(
-            "{}/{host}/{}?format=json",
-            gateway.trim_end_matches('/'),
-            crate::health::HEALTH_PATH
-        );
+/// Every enabled service answers its health check through the gateway. `routes` are the
+/// services' health routes there, as `<host>/<health path>`.
+pub async fn services_healthy(client: &reqwest::Client, gateway: &str, routes: &[String]) -> bool {
+    for route in routes {
+        let url = format!("{}/{route}?format=json", gateway.trim_end_matches('/'));
         let ok = client
             .get(&url)
             .send()
@@ -467,7 +464,8 @@ async fn report_once(
             p.config
                 .enabled_services()
                 .into_iter()
-                .map(|id| p.config.service(id).host.clone())
+                .map(|id| p.config.service(id))
+                .map(|block| format!("{}/{}", block.host, block.health_path()))
                 .collect()
         })
         .unwrap_or_default();

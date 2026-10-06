@@ -158,6 +158,7 @@ pub async fn run(args: AuthorizeArgs) -> Result<()> {
         mesh_key,
         // `konstruktor hub services` changes them, through this same call.
         services: None,
+        described: Default::default(),
     };
 
     let cancel = CancellationToken::new();

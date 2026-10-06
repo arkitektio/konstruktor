@@ -3,10 +3,12 @@
 use std::path::PathBuf;
 
 use konstruktor_core::compose::up_in;
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions, ReporterBlock};
+use konstruktor_core::config::hub::{HubConfigOptions, ReporterBlock};
 use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::profile::{hub_profile, write_profile};
+
+mod support;
 
 fn docker_available() -> bool {
     konstruktor_core::docker::command()
@@ -17,7 +19,7 @@ fn docker_available() -> bool {
 }
 
 fn hub_with_reporter(image: &str, label: &str) -> PathBuf {
-    let mut config = build_hub_config(&HubConfigOptions {
+    let mut config = support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: "go.arkitekt.live".into(),
         ..Default::default()
@@ -65,7 +67,7 @@ async fn a_hub_without_a_reporter_is_plain_up() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("up-plain");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let config = build_hub_config(&HubConfigOptions::default());
+    let config = support::hub(&HubConfigOptions::default());
     write_profile(&dir, &hub_profile(config)).expect("profile");
 
     let (args, left_out) = up_in(&dir).await;

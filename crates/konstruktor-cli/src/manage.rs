@@ -1110,7 +1110,8 @@ pub async fn ps(target: &Target, json: bool) -> Result<()> {
 
 /// `konstruktor superuser <service>`: an admin account in one running service.
 ///
-/// The same `docker compose exec` the desktop app runs. Deliberately not part of
+/// The same call the desktop app makes: the job the service's image declares for it, run
+/// in the service's container. Deliberately not part of
 /// creating a hub — the container has to be up and its migrations applied before there
 /// is a table to write to.
 pub async fn superuser(args: SuperuserArgs) -> Result<()> {
@@ -1141,8 +1142,8 @@ pub async fn superuser(args: SuperuserArgs) -> Result<()> {
         ui::bold(&args.service)
     ));
 
-    // Django's own complaint — "that username is already taken" and the like — is what
-    // comes back on failure, not an exit code.
+    // The service's own complaint — "that username is already taken" and the like — is
+    // what comes back on failure, not an exit code.
     compose::run_superuser(
         &dir,
         &args.service,

@@ -310,7 +310,11 @@ mod tests {
     #[test]
     fn a_pinned_service_is_written_with_its_build_and_the_rest_as_generated() {
         let config = config();
-        let follows = config.rekuest.image.clone().unwrap();
+        let follows = config
+            .service(crate::catalog::ServiceId::Rekuest)
+            .image
+            .clone()
+            .unwrap();
         let mut files =
             crate::generate::generate_hub_files(&config, &Default::default(), &Default::default());
         let generated = images_of(&files);
@@ -334,15 +338,24 @@ mod tests {
         let mut config = config();
         let pins = BTreeMap::from([(
             "rekuest".to_string(),
-            pin(&config.rekuest.image.clone().unwrap(), "sha256:abc"),
+            pin(
+                &config
+                    .service(crate::catalog::ServiceId::Rekuest)
+                    .image
+                    .clone()
+                    .unwrap(),
+                "sha256:abc",
+            ),
         )]);
         assert_eq!(references(&config, &pins).len(), 1);
 
-        config.rekuest.image = Some("jhnnsrs/rekuest:99".into());
+        config.service_mut(crate::catalog::ServiceId::Rekuest).image =
+            Some("jhnnsrs/rekuest:99".into());
         assert!(references(&config, &pins).is_empty());
 
         // A rollback names the build in the profile itself: nothing to add.
-        config.rekuest.image = Some("jhnnsrs/rekuest:99@sha256:old".into());
+        config.service_mut(crate::catalog::ServiceId::Rekuest).image =
+            Some("jhnnsrs/rekuest:99@sha256:old".into());
         let pins = BTreeMap::from([(
             "rekuest".to_string(),
             pin("jhnnsrs/rekuest:99@sha256:old", "sha256:abc"),

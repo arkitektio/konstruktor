@@ -193,8 +193,8 @@ pub fn pull_service(service: &str) -> Vec<String> {
 }
 /// Recreate one service against the image its tag points at *now*, and nothing else.
 ///
-/// `--no-deps` is the load-bearing flag. Every generated service declares
-/// `depends_on: [redis, db, minio]`, so without it updating one service on a stopped
+/// `--no-deps` is the load-bearing flag. Every generated service declares what it is
+/// started after — the database, the Redis, the object store — so without it updating one service on a stopped
 /// stack would quietly boot the infrastructure and leave the hub half up — the one state
 /// the dashboard draws as a fault.
 pub fn up_service(service: &str) -> Vec<String> {
@@ -226,10 +226,18 @@ pub fn down_volumes() -> Vec<&'static str> {
 pub fn down_everything() -> Vec<&'static str> {
     vec!["compose", "down", "--volumes", "--remove-orphans"]
 }
-/// Creates a Django superuser in one running service, answering with what Django printed.
+/// The job a service's image declares for making an operator account in it.
+pub const SUPERUSER_JOB: &str = "superuser";
+
+/// Creates a superuser in one running service, answering with what the service printed.
 ///
-/// A failure carries both streams: Django says why on stderr — "that username is already
-/// taken", most often — which is what a person needs to read, not an exit code.
+/// How an account is made in a service is the service's own to say: its image declares a
+/// job for it ([`SUPERUSER_JOB`]), and that job's command is what runs. An image that
+/// declares none is refused, saying so — there is nothing here to fall back on that would
+/// be true of an image nobody has looked into.
+///
+/// A failure carries both streams: the service says why on stderr — "that username is
+/// already taken", most often — which is what a person needs to read, not an exit code.
 pub async fn run_superuser(
     dir: &std::path::Path,
     service: &str,
@@ -242,9 +250,38 @@ pub async fn run_superuser(
         return Err("a username and a password are both required".into());
     }
     let email = email.map(str::trim).filter(|e| !e.is_empty());
+
+    let config = crate::profile::read_profile(dir)
+        .map_err(|e| e.to_string())?
+        .config;
+    let Some(said) = crate::contract::description_of(dir, &config, service).await else {
+        return Err(format!(
+            "`{service}` is not a service of this hub whose image says what it is, so there \
+             is no telling how an account is made in it."
+        ));
+    };
+    let Some(job) = said.jobs.get(SUPERUSER_JOB) else {
+        let offered: Vec<&str> = said.jobs.keys().map(String::as_str).collect();
+        return Err(format!(
+            "`{service}`'s image offers no `{SUPERUSER_JOB}` job, so an account cannot be \
+             made in it from here. It offers: {}.",
+            if offered.is_empty() {
+                "no jobs at all".to_string()
+            } else {
+                offered.join(", ")
+            }
+        ));
+    };
+
     let output = crate::engine_probe::engine()
         .async_command()
-        .args(create_superuser(service, username, password, email))
+        .args(create_superuser(
+            service,
+            &job.command,
+            username,
+            password,
+            email,
+        ))
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
         .output()
@@ -262,18 +299,20 @@ pub async fn run_superuser(
     }
 }
 
-/// Create a Django superuser inside one running service.
+/// Create a superuser inside one running service, by running `job` — the command its
+/// image declares for that — in its container.
 ///
 /// Per service on purpose: each service keeps its own database and its own admin site,
 /// so "an account for the hub" is really one account per service, made in the container
 /// that owns the table. The credentials go in as environment variables rather than on
-/// the command line — `--noinput` is what reads them, and a password in `argv` is
+/// the command line — the job reads them from there, and a password in `argv` is
 /// visible to every process on the machine for as long as the command runs.
 ///
 /// `-T` because there is no terminal on the other end of this: the desktop app runs it
 /// through a pipe, and compose otherwise tries to allocate a TTY and fails.
 pub fn create_superuser(
     service: &str,
+    job: &[String],
     username: &str,
     password: &str,
     email: Option<&str>,
@@ -291,18 +330,8 @@ pub fn create_superuser(
         args.push(format!("{key}={value}"));
     }
     args.push(service.into());
-    // The images run everything through uv, which owns the virtualenv the service's
-    // dependencies live in — a bare `python manage.py` finds a different interpreter.
-    for part in [
-        "uv",
-        "run",
-        "python",
-        "manage.py",
-        "createsuperuser",
-        "--noinput",
-    ] {
-        args.push(part.into());
-    }
+    // What makes the account is the image's to name; nothing is assumed of what is in it.
+    args.extend(job.iter().cloned());
     args
 }
 
@@ -375,17 +404,45 @@ mod tests {
 
     #[test]
     fn a_superuser_is_made_in_the_service_that_owns_the_table() {
-        let args = create_superuser("mikro", "someone", "s3cret", None);
+        let job: Vec<String> = ["arkitekt-service", "run", "superuser"]
+            .map(String::from)
+            .to_vec();
+        let args = create_superuser("mikro", &job, "someone", "s3cret", None);
         assert_eq!(&args[..3], ["compose", "exec", "-T"]);
         // The password is an env var, never an argument.
         assert!(args.contains(&"-e".to_string()));
         assert!(args.contains(&"DJANGO_SUPERUSER_PASSWORD=s3cret".to_string()));
         assert!(!args.iter().any(|a| a == "s3cret"));
-        // The service name comes before the command, as compose wants it.
+        // The service name comes before the command, as compose wants it — and the
+        // command is the image's declared job, whole and last.
         let service = args.iter().position(|a| a == "mikro").expect("the service");
-        let uv = args.iter().position(|a| a == "uv").expect("the runner");
-        assert!(service < uv);
-        assert_eq!(args.last().unwrap(), "--noinput");
+        assert_eq!(&args[service + 1..], job.as_slice());
+    }
+
+    /// An image that declares no such job is refused, saying what it does offer; nothing
+    /// is run on a guess of what is inside it.
+    #[tokio::test]
+    async fn a_service_without_a_superuser_job_is_refused() {
+        use crate::config::hub::{build_hub_config, HubConfigOptions};
+        use crate::support;
+
+        let dir =
+            std::env::temp_dir().join(format!("konstruktor-superuser-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = build_hub_config(&HubConfigOptions::default());
+        crate::profile::write_profile(&dir, &crate::profile::hub_profile(config.clone())).unwrap();
+        // Mikro's image, as the fixture describes it, declares no jobs.
+        crate::contract::remember(&dir, &config, &support::said()).unwrap();
+
+        let refused = run_superuser(&dir, "mikro", "someone", "s3cret", None)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("no `superuser` job"), "{refused}");
+        let unknown = run_superuser(&dir, "nothing", "someone", "s3cret", None)
+            .await
+            .unwrap_err();
+        assert!(unknown.contains("`nothing`"), "{unknown}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -70,7 +70,22 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
     let mut rows: Vec<(String, String)> = vec![
         ("registered as".into(), said.identifier.clone()),
         ("contract".into(), said.contract.to_string()),
+        (
+            "wired to".into(),
+            listed(
+                &[
+                    (said.needs.database, "a database"),
+                    (said.needs.redis, "the redis"),
+                    (said.needs.admin, "the operator account"),
+                ]
+                .iter()
+                .filter(|(needed, _)| *needed)
+                .map(|(_, what)| what.to_string())
+                .collect::<Vec<_>>(),
+            ),
+        ),
         ("storage".into(), listed(&said.needs.storage)),
+        ("secrets".into(), listed(&said.needs.secrets)),
         ("beside it".into(), listed(&said.needs.peers)),
         (
             "a key of its own".into(),
@@ -114,11 +129,14 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
         },
     ));
     for sidecar in &said.sidecars {
+        // The image it would actually run: the description names it relative to the
+        // service's own (`{repository}-takt:{tag}`), so it is resolved against the image
+        // that was asked — the hub's own build of the service, or the one `--image` named.
         rows.push((
             format!("sidecar {}", sidecar.name),
             format!(
                 "{}{}",
-                sidecar.image,
+                sidecar.image_beside(&image),
                 if sidecar.optional { "  (optional)" } else { "" }
             ),
         ));

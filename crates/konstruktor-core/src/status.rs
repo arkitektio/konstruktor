@@ -266,8 +266,9 @@ pub fn hub_view(dir: &std::path::Path) -> Result<HubView, crate::profile::Profil
                     .unwrap_or_else(|| id.as_str().into()),
                 host: block.host.clone(),
                 url: format!("{gateway_url}/{}", block.host),
-                health_url: (!mesh_only)
-                    .then(|| crate::health::health_url(scheme, port, &block.host)),
+                health_url: (!mesh_only).then(|| {
+                    crate::health::health_url(scheme, port, &block.host, block.health_path())
+                }),
                 image: block.image.clone(),
                 tag: block.image.as_deref().and_then(image_tag),
             }

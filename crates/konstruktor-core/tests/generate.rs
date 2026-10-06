@@ -26,8 +26,12 @@ use serde_norway::Value;
 /// serves media uploads; and every service has a bucket for each store its schema mounts
 /// a mutation for — mikro `fabriks` and `konnektion`, elektro `parquet` and `bigfile`,
 /// kraph `zarr` and `bigfile` — with their bucket entries and Caddy routes. The fixture
-/// profiles predate those buckets, so they also exercise the `<service><purpose>` fallback
-/// an older hub takes. See `ServiceId::bucket_purposes` and `build_datalayer`.
+/// profiles hold every one of them, by purpose, as a hub does once its images have been
+/// asked what they store. See `ServiceBlock::buckets` and `build_datalayer`.
+///
+/// A fourth: the stack is ordered by health. The database has a healthcheck, and every
+/// service waits for it to be healthy and for the bucket job to have completed — see
+/// `generate::compose::infrastructure`.
 ///
 /// YAML is compared as *parsed structures*: PyYAML, the `yaml` npm package and
 /// `serde_norway` all render the same data differently (sequence indentation, quote
@@ -581,7 +585,13 @@ mod stack_images {
             .expect("takt is reported");
         assert_eq!(
             config.stack_images()[takt].1,
-            konstruktor_core::config::hub::takt_image_for(config.rekuest.image.as_deref().unwrap())
+            konstruktor_core::config::hub::takt_image_for(
+                config
+                    .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                    .image
+                    .as_deref()
+                    .unwrap()
+            )
         );
         assert_eq!(
             konstruktor_core::generate::compose::companions(&config, "rekuest"),
@@ -623,7 +633,9 @@ mod stack_images {
         );
 
         let mut config = config_of("hub_config.yaml");
-        config.rekuest.image = Some("jhnnsrs/rekuest:4.1.0".into());
+        config
+            .service_mut(konstruktor_core::catalog::ServiceId::Rekuest)
+            .image = Some("jhnnsrs/rekuest:4.1.0".into());
         assert_eq!(
             config.takt_image().as_deref(),
             Some("jhnnsrs/rekuest-takt:4.1.0")
@@ -640,7 +652,10 @@ mod stack_images {
             Some("jhnnsrs/rekuest-takt:4.0.0@sha256:old")
         );
         assert_eq!(
-            config.rekuest.image.as_deref(),
+            config
+                .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                .image
+                .as_deref(),
             Some("jhnnsrs/rekuest:4.1.0")
         );
 
@@ -714,7 +729,7 @@ mod stack_images {
             profile::read_profile(&dir)
                 .unwrap()
                 .config
-                .mikro
+                .service(konstruktor_core::catalog::ServiceId::Mikro)
                 .image
                 .as_deref(),
             Some("jhnnsrs/mikro:9.9.9")

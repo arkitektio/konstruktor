@@ -23,12 +23,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use konstruktor_core::catalog::ServiceId;
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions, LOCAL_COORD_SERVER};
+use konstruktor_core::config::hub::{HubConfigOptions, LOCAL_COORD_SERVER};
 use konstruktor_core::generate::lok::build_access;
 use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::profile::{hub_profile, write_profile};
 use konstruktor_core::ready;
+
+mod support;
 
 fn docker_compose_available() -> bool {
     konstruktor_core::docker::command()
@@ -92,7 +94,7 @@ async fn an_app_redeems_a_token_and_a_service_accepts_it() {
     }
 
     let port = free_port();
-    let mut config = build_hub_config(&HubConfigOptions {
+    let mut config = support::hub(&HubConfigOptions {
         device_id: "e2e".into(),
         coord_server: LOCAL_COORD_SERVER.into(),
         services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),

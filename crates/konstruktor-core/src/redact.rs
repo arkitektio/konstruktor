@@ -113,9 +113,18 @@ fn walk(value: &Value, key: &str, found: &mut BTreeSet<Secret>) {
             }
         }
         Value::Mapping(map) => {
+            // A mapping under a secret-sounding key holds secrets by names of the
+            // owner's choosing — a service's `secrets: {fernet: …}` — so an entry that
+            // does not sound like one itself is still taken for one.
+            let holds_secrets = key_is_secret(key);
             for (name, child) in map {
                 let name = name.as_str().unwrap_or(key);
-                walk(child, name, found);
+                let named = if holds_secrets && !key_is_secret(name) {
+                    key
+                } else {
+                    name
+                };
+                walk(child, named, found);
             }
         }
         _ => {}
@@ -456,7 +465,11 @@ mod tests {
     #[test]
     fn takes_kuverts_fernet_key() {
         let key = "q2L-3n_vX0bYt8Qe7rJmW4sZk1uHc9pA6dFgTiNoV5E=";
-        let found = secrets_in(&doc(&format!("kuvert:\n  fernet_key: {key}\n")));
+        let found = secrets_in(&doc(&format!("kuvert:\n  secrets:\n    fernet: {key}\n")));
+        let values: Vec<&str> = found.iter().map(|s| s.value.as_str()).collect();
+        assert_eq!(values, vec![key]);
+        // And a secret of any other name a service declares, by where it is kept.
+        let found = secrets_in(&doc(&format!("example:\n  secrets:\n    signing: {key}\n")));
         let values: Vec<&str> = found.iter().map(|s| s.value.as_str()).collect();
         assert_eq!(values, vec![key]);
     }

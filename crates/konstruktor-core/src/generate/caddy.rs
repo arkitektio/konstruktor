@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use crate::catalog::{ServiceId, HUB_SERVICE_ORDER};
+use crate::catalog::ServiceId;
 
 /// The gateway config, and the only generated file compared byte-for-byte against what
 /// the Python generator writes.
@@ -56,7 +56,7 @@ pub struct CaddyService<'a> {
     pub id: ServiceId,
     pub host: &'a str,
     pub internal_port: u16,
-    /// Bucket names, in `bucket_purposes()` order, for the purposes this service has.
+    /// Bucket names, in the order the service declared their purposes.
     pub buckets: Vec<String>,
     /// Where this service's agent protocol is served, when something other than the
     /// service itself serves it: takt, for Rekuest.
@@ -112,7 +112,8 @@ pub struct LivekitSite<'a> {
 
 /// Builds the Caddyfile for the enabled services.
 ///
-/// Two passes in [`HUB_SERVICE_ORDER`]: every service's own route first, then every
+/// Two passes over `services`, in the order they are given — generation order, the
+/// catalogue's services first: every service's own route first, then every
 /// bucket of every service. Then the minio catch-all — note `path /minio/*`, with a slash
 /// before the star, unlike the service routes.
 pub fn build_caddyfile(
@@ -123,7 +124,7 @@ pub fn build_caddyfile(
     sites: &GatewaySites<'_>,
 ) -> String {
     let ordered = |f: &mut dyn FnMut(&CaddyService<'_>)| {
-        for id in HUB_SERVICE_ORDER {
+        for id in crate::catalog::in_generation_order(services.iter().map(|s| s.id)) {
             if let Some(service) = services.iter().find(|s| s.id == id) {
                 f(service);
             }

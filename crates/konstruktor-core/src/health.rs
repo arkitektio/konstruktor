@@ -45,8 +45,11 @@ pub const HEALTH_PATH: &str = "ht";
 /// One builder because two callers have to agree: the restore's verification here, and
 /// the dashboard's health dot in the app. `?format=json` asks the check for its verdict
 /// as JSON rather than the HTML page it renders by default.
-pub fn health_url(scheme: &str, port: u16, host: &str) -> String {
-    format!("{scheme}://localhost:{port}/{host}/{HEALTH_PATH}?format=json")
+///
+/// `path` is the service's own health route ([`HEALTH_PATH`] unless its image names
+/// another: `ServiceBlock::health_path`).
+pub fn health_url(scheme: &str, port: u16, host: &str, path: &str) -> String {
+    format!("{scheme}://localhost:{port}/{host}/{path}?format=json")
 }
 
 /// What was found out about one service.
@@ -191,8 +194,9 @@ pub async fn check(
         .map_err(|e| e.to_string())?;
 
     for id in config.enabled_services() {
-        let host = config.service(id).host.clone();
-        let url = health_url(scheme, port, &host);
+        let block = config.service(id);
+        let host = block.host.clone();
+        let url = health_url(scheme, port, &host, block.health_path());
         let state = last.get(&host).and_then(|c| c.state.clone());
         let restarts = seen_down.get(&host).copied().unwrap_or(false);
 

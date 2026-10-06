@@ -6,22 +6,15 @@
  * honest is worth the inconsistency: a renamed field would fail silently as `undefined`.
  */
 
-export const SERVICE_IDS = [
-  "rekuest",
-  "mikro",
-  "fluss",
-  "kabinet",
-  "kraph",
-  "elektro",
-  "alpaka",
-  "lovekit",
-  "bank",
-  "kuvert",
-  "dokuments",
-  "lokate",
-] as const;
-
-export type ServiceId = (typeof SERVICE_IDS)[number];
+/**
+ * A service a hub runs, by name: `rekuest`, `mikro`, or one this app has never heard of.
+ *
+ * A plain string, as the core sends it. Which services there are is not something the
+ * frontend lists: the ones it offers by name come with the catalog (`ServiceMeta`), and a
+ * hub may run one that is not in it — added by its image — which then shows up by the
+ * name its image gave it.
+ */
+export type ServiceId = string;
 
 export type ServiceMeta = {
   id: ServiceId;

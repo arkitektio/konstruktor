@@ -1,4 +1,4 @@
-//! Instance keys: one Ed25519 key per service instance, its public half in the hub manifest,
+//! Instance keys: one Ed25519 key per service instance that asks for one, its public half in the hub manifest,
 //! its private half — and the trust the coordination server vouches for — in its config.
 
 use std::path::PathBuf;
@@ -12,12 +12,14 @@ use konstruktor_core::generate::IssuedIdentity;
 use konstruktor_core::secrets::raw_public_key_b64;
 use serde_norway::Value;
 
+mod support;
+
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// The fixture profile predates instance keys: Rekuest carries a provenance pair, nobody an
-/// instance key.
+/// The fixture profile holds one key, Rekuest's, and that one a placeholder no key can be
+/// read from; nobody else holds any.
 fn legacy_config() -> HubConfig {
     let text = std::fs::read_to_string(fixtures().join("hub_config.yaml")).expect("fixture");
     let profile: Value = serde_norway::from_str(&text).expect("parses");
@@ -34,60 +36,41 @@ fn issued() -> IssuedIdentity {
     }
 }
 
-/// What the hub tells a service: the facts its image writes its config from. Every service
-/// that reports to Rekuest is taken to have said so, as its image does.
+/// What the hub tells a service: the facts its image writes its config from, with what
+/// the catalogue's services say of themselves.
 fn hub_says(config: &HubConfig, issued: &IssuedIdentity, id: ServiceId) -> Value {
-    use konstruktor_core::contract::{Description, Offers};
+    konstruktor_core::contract::facts(config, id, issued, &support::said())
+}
 
-    let described = konstruktor_core::catalog::HOOKED_SERVICES
-        .into_iter()
-        .map(|hooked| {
-            (
-                config.service(hooked).host.clone(),
-                Description {
-                    contract: 1,
-                    name: hooked.as_str().to_string(),
-                    offers: Offers {
-                        health: "ht".into(),
-                        endpoints: [
-                            (
-                                "rekuest_service".to_string(),
-                                "_rekuest/service".to_string(),
-                            ),
-                            ("rekuest_hook".to_string(), "_rekuest/hook".to_string()),
-                        ]
-                        .into(),
-                    },
-                    ..Description::default()
-                },
-            )
-        })
-        .collect();
-    konstruktor_core::contract::facts(config, id, issued, &described)
+/// The fixture's hub, every running service provided what it asks for: a key each.
+fn keyed_config() -> HubConfig {
+    let mut config = legacy_config();
+    // The fixture's pair is a placeholder, not a real key; mint a real one.
+    config.service_mut(ServiceId::Rekuest).instance_key_pair = None;
+    config.provide(&support::said());
+    config
 }
 
 #[test]
-fn an_old_profile_gets_keys_and_rekuest_keeps_its_provenance_key() {
+fn a_service_that_asks_for_a_key_gets_one_and_keeps_it() {
     let mut config = legacy_config();
-    let provenance = config
-        .rekuest
-        .provenance_key_pair
+    let rekuest = config
+        .rekuest()
+        .instance_key_pair
         .clone()
         .expect("fixture has one");
 
-    assert!(config.ensure_instance_keys());
-    assert_eq!(config.rekuest.instance_key_pair.as_ref(), Some(&provenance));
-    assert!(
-        config.rekuest.provenance_key_pair.is_none(),
-        "migrated, not duplicated"
-    );
-    for id in SERVICE_IDS {
+    assert!(config.provide(&support::said()));
+    // The key it had is the key it keeps: the coordination server vouches for that one.
+    assert_eq!(config.rekuest().instance_key_pair.as_ref(), Some(&rekuest));
+    let running = config.enabled_services();
+    for id in &running {
         assert!(
-            config.service(id).instance_key_pair.is_some(),
+            config.service(*id).instance_key_pair.is_some(),
             "{id:?} has a key"
         );
     }
-    let publics: std::collections::BTreeSet<_> = SERVICE_IDS
+    let publics: std::collections::BTreeSet<_> = running
         .iter()
         .map(|id| {
             config
@@ -100,19 +83,55 @@ fn an_old_profile_gets_keys_and_rekuest_keeps_its_provenance_key() {
         .collect();
     assert_eq!(
         publics.len(),
-        SERVICE_IDS.len(),
+        running.len(),
         "every instance has its own key"
     );
+    // A service that is not part of the stack was not asked, and holds nothing.
+    for id in SERVICE_IDS.iter().filter(|id| !running.contains(id)) {
+        assert!(config.service(*id).instance_key_pair.is_none(), "{id:?}");
+    }
 
-    assert!(!config.ensure_instance_keys(), "minted once, then kept");
+    assert!(!config.provide(&support::said()), "minted once, then kept");
+}
+
+/// A key is for the service that asks for one. One whose image says it signs nothing —
+/// the description's `instance_key: false` — holds none, sends none, and is told none.
+#[test]
+fn a_service_that_asks_for_no_key_holds_none() {
+    let mut said = support::said();
+    said.get_mut("kraph").unwrap().needs.instance_key = false;
+    let mut config = legacy_config();
+    config.service_mut(ServiceId::Rekuest).instance_key_pair = None;
+    config.provide(&said);
+
+    assert!(config.service(ServiceId::Kraph).instance_key_pair.is_none());
+    assert!(config.service(ServiceId::Mikro).instance_key_pair.is_some());
+    let facts = konstruktor_core::contract::facts(
+        &config,
+        ServiceId::Kraph,
+        &IssuedIdentity::default(),
+        &said,
+    );
+    assert!(facts.get("instance").is_none());
+    let request = build_hub_request(
+        &config,
+        &HubManifestOptions {
+            described: said,
+            ..Default::default()
+        },
+    );
+    let kraph = request
+        .hub
+        .instances
+        .iter()
+        .find(|i| i.manifest.identifier == "live.arkitekt.kraph")
+        .expect("kraph is registered");
+    assert!(kraph.manifest.challenge_key.is_none());
 }
 
 #[test]
 fn the_manifest_carries_each_instances_raw_public_key() {
-    let mut config = legacy_config();
-    // The fixture's provenance pair is a placeholder, not a real key; mint real ones.
-    config.rekuest.provenance_key_pair = None;
-    config.ensure_instance_keys();
+    let config = keyed_config();
     let request = build_hub_request(
         &config,
         &HubManifestOptions {
@@ -123,10 +142,11 @@ fn the_manifest_carries_each_instances_raw_public_key() {
             reachable_hosts: vec![],
             request_auth_key: false,
             expiration_seconds: None,
+            described: support::said(),
             ..Default::default()
         },
     );
-    assert!(!request.hub.instances.is_empty());
+    assert!(request.hub.instances.len() > 1);
     // Every service sends its key; the object store is no service of the trust bundle.
     for instance in request
         .hub
@@ -141,7 +161,8 @@ fn the_manifest_carries_each_instances_raw_public_key() {
             .expect("every instance sends its key");
         assert_eq!(BASE64.decode(key).unwrap().len(), 32);
         let id = SERVICE_IDS
-            .into_iter()
+            .iter()
+            .copied()
             .find(|id| instance.manifest.identifier == format!("live.arkitekt.{}", id.as_str()))
             .expect("a known service");
         let pair = config.service(id).instance_key_pair.as_ref().unwrap();
@@ -151,8 +172,7 @@ fn the_manifest_carries_each_instances_raw_public_key() {
 
 #[test]
 fn every_service_is_told_its_own_key_and_whom_the_hub_trusts() {
-    let mut config = legacy_config();
-    config.ensure_instance_keys();
+    let config = keyed_config();
 
     for id in [
         ServiceId::Mikro,
@@ -245,10 +265,7 @@ fn every_service_is_told_its_own_key_and_whom_the_hub_trusts() {
 /// told the bundle inline, one key per enabled service, under its service.
 #[test]
 fn without_a_hub_keys_url_the_bundle_is_written_inline() {
-    let mut config = legacy_config();
-    // The fixture's provenance pair is a placeholder, not a real key; mint real ones.
-    config.rekuest.provenance_key_pair = None;
-    config.ensure_instance_keys();
+    let config = keyed_config();
 
     let enabled: Vec<ServiceId> = config
         .enabled_services()
@@ -258,7 +275,11 @@ fn without_a_hub_keys_url_the_bundle_is_written_inline() {
     assert!(enabled.len() > 1, "the fixture enables several services");
 
     let rekuest_jwk = konstruktor_core::secrets::public_jwk(
-        config.rekuest.instance_key_pair.as_ref().unwrap(),
+        config
+            .service(konstruktor_core::catalog::ServiceId::Rekuest)
+            .instance_key_pair
+            .as_ref()
+            .unwrap(),
         "live.arkitekt.rekuest",
     )
     .unwrap();
@@ -324,7 +345,7 @@ fn without_a_hub_keys_url_the_bundle_is_written_inline() {
 #[test]
 fn an_unreadable_rekuest_key_falls_back_to_its_key_set() {
     let mut config = legacy_config();
-    config.ensure_instance_keys();
+    config.provide(&support::said());
     let said = hub_says(&config, &IssuedIdentity::default(), ServiceId::Mikro);
     let provenance = &said["hub"]["auth"]["provenance"]["issuers"][0];
     assert_eq!(provenance["kind"].as_str(), Some("jwks_uri"));

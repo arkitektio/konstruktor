@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions, ReporterBlock};
+use konstruktor_core::config::hub::{HubConfigOptions, ReporterBlock};
 use konstruktor_core::config::mesh::MeshOptions;
 use konstruktor_core::generate::write::write_generated_files;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
+
+mod support;
 
 /// The golden tests prove the generated project matches the Python CLI's. This proves
 /// Docker itself accepts it — in particular that `network_mode: service:tailscale` and
@@ -29,7 +31,7 @@ fn write_and_validate_with(mesh: Option<MeshOptions>, reporter: bool, label: &st
         return;
     }
 
-    let mut config = build_hub_config(&HubConfigOptions {
+    let mut config = support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: "go.arkitekt.live".into(),
         mesh,
@@ -149,7 +151,7 @@ fn docker_accepts_a_self_contained_project() {
         eprintln!("skipping self-contained: no docker compose on this machine");
         return;
     }
-    let config = build_hub_config(&HubConfigOptions {
+    let config = support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: LOCAL_COORD_SERVER.into(),
         https_port: None,

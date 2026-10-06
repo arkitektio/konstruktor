@@ -1,14 +1,16 @@
 use konstruktor_core::catalog::ServiceId;
-use konstruktor_core::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
+use konstruktor_core::config::hub::{HubConfig, HubConfigOptions};
 use konstruktor_core::contract::{Description, Said};
 use konstruktor_core::generate::compose::build_compose;
 use serde_norway::Value;
+
+mod support;
 
 // How a service is started is its image's to say. The compose file is written from what the
 // images answered, which is why they are asked before anything of a hub is written.
 
 fn hub() -> HubConfig {
-    build_hub_config(&HubConfigOptions {
+    support::hub(&HubConfigOptions {
         device_id: "device".into(),
         services: Some(vec![ServiceId::Rekuest, ServiceId::Mikro]),
         ..Default::default()
@@ -56,7 +58,9 @@ fn a_service_is_started_with_the_command_its_image_names() {
 #[test]
 fn in_debug_it_is_started_with_the_one_it_names_for_that() {
     let mut config = hub();
-    config.mikro.debug = true;
+    config
+        .service_mut(konstruktor_core::catalog::ServiceId::Mikro)
+        .debug = true;
     let said = mikro_says(&["bash", "serve.sh"], &["bash", "dev.sh"]);
     assert_eq!(
         command_of(&config, &said, "mikro"),
@@ -74,7 +78,9 @@ fn a_service_whose_image_was_not_asked_gets_no_command() {
     assert_eq!(command_of(&hub(), &Said::new(), "mikro"), None);
     // The same for a mode the image names nothing for.
     let mut config = hub();
-    config.mikro.debug = true;
+    config
+        .service_mut(konstruktor_core::catalog::ServiceId::Mikro)
+        .debug = true;
     assert_eq!(
         command_of(&config, &mikro_says(&["bash", "serve.sh"], &[]), "mikro"),
         None

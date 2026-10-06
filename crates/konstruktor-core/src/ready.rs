@@ -104,7 +104,7 @@ pub fn endpoints(config: &HubConfig) -> Option<Vec<Endpoint>> {
         if block.image.is_some() {
             out.push(endpoint(
                 &block.host,
-                format!("{}/{HEALTH_PATH}", block.host),
+                format!("{}/{}", block.host, block.health_path()),
             ));
         }
     }

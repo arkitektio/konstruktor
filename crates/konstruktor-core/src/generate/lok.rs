@@ -11,7 +11,6 @@
 
 use serde_norway::{Mapping, Value};
 
-use crate::catalog::ServiceId;
 use crate::config::hub::{origin, scheme_of, HubConfig, LokBlock, DB_COMPOSE_SERVICE};
 use crate::connect::manifest::{
     advertised_port, build_aliases, build_hub_request, internal_alias, HubManifest,
@@ -54,7 +53,11 @@ pub fn rsa_issuer(lok: &LokBlock) -> Value {
 /// hub does: every service at each advertised address, as an absolute alias a client
 /// outside the stack opens, and at the gateway's name on the stack's own network, as a
 /// `docker` alias only a container in that network can.
-pub fn preconfigured_hub(config: &HubConfig, lok: &LokBlock) -> HubManifest {
+pub fn preconfigured_hub(
+    config: &HubConfig,
+    lok: &LokBlock,
+    said: &crate::contract::Said,
+) -> HubManifest {
     let mut hub = build_hub_request(
         config,
         &HubManifestOptions {
@@ -67,9 +70,9 @@ pub fn preconfigured_hub(config: &HubConfig, lok: &LokBlock) -> HubManifest {
             mesh_alias: false,
             internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
-            // Generated before any image is on the machine to ask: the scopes and roles
-            // are the ones always known of each service.
-            described: Default::default(),
+            // What each service is registered with — its scopes, its roles — is what its
+            // image said of it.
+            described: said.clone(),
         },
     )
     .hub;
@@ -120,7 +123,7 @@ pub fn preconfigured_hub(config: &HubConfig, lok: &LokBlock) -> HubManifest {
 ///
 /// Lok's settings model ignores keys it does not know, so a misspelt one is not an error —
 /// it is silently the default. Every key here is one `lok_server/configuration.py` reads.
-pub fn build_lok_config(config: &HubConfig, lok: &LokBlock) -> Value {
+pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contract::Said) -> Value {
     let csrf = config
         .csrf_trusted_origins
         .clone()
@@ -135,7 +138,7 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock) -> Value {
         .unwrap_or_default();
     let organization = &lok.organization;
 
-    let hub = serde_norway::to_value(preconfigured_hub(config, lok))
+    let hub = serde_norway::to_value(preconfigured_hub(config, lok, said))
         .expect("a hub manifest is plain data");
 
     map(vec![
@@ -325,13 +328,13 @@ pub fn lok_compose_service(
         ));
     }
     entries.extend(vec![
+        // Like any service that uses all three: after a healthy database, and after the
+        // job that creates its bucket has finished.
         (
             "depends_on",
-            list(vec![
-                s(&config.local_redis.host),
-                s(DB_COMPOSE_SERVICE),
-                s(&config.minio.host),
-            ]),
+            map(crate::generate::compose::infrastructure(
+                config, true, true, true,
+            )),
         ),
         ("stop_grace_period", s("2s")),
         (
@@ -401,20 +404,34 @@ pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
     let port = advertised_port(config);
 
     let mut services = serde_json::Map::new();
-    let mut entry = |name: &str, host: &str, identifier: String| {
+    let mut entry = |name: &str, host: &str, identifier: String, health: &str| {
         services.insert(
             name.to_string(),
             serde_json::json!({
                 "identifier": identifier,
                 "url": format!("{gateway}/{host}"),
-                "health_url": crate::health::health_url(scheme, port, host),
+                "health_url": crate::health::health_url(scheme, port, host, health),
             }),
         );
     };
-    entry(&lok.host, &lok.host, LOK_MANIFEST.to_string());
+    entry(
+        &lok.host,
+        &lok.host,
+        LOK_MANIFEST.to_string(),
+        crate::health::HEALTH_PATH,
+    );
+    // Each under what its image says it is registered as: a service that was never asked
+    // has nothing an app could ask for it by.
     for id in config.enabled_services() {
         let block = config.service(id);
-        entry(id.as_str(), &block.host, service_manifest(id));
+        if let Some(identifier) = &block.identifier {
+            entry(
+                id.as_str(),
+                &block.host,
+                identifier.clone(),
+                block.health_path(),
+            );
+        }
     }
 
     serde_json::json!({
@@ -436,8 +453,4 @@ pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
         "redeem_tokens": lok.redeem_tokens.iter().map(|t| t.token.clone()).collect::<Vec<_>>(),
         "services": services,
     })
-}
-
-fn service_manifest(id: ServiceId) -> String {
-    format!("live.arkitekt.{}", id.as_str())
 }

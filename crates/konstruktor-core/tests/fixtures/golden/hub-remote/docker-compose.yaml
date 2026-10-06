@@ -5,6 +5,17 @@ services:
       POSTGRES_MULTIPLE_DATABASES: kabinet,mikro,fluss,elektro,alpaka,kraph
       POSTGRES_PASSWORD: fixture-postgres-password-not-a-real-secret
       POSTGRES_USER: fixture-postgres-user-not-a-real-secret
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -h
+      - 127.0.0.1
+      - -U
+      - fixture-postgres-user-not-a-real-secret
+      interval: 3s
+      timeout: 5s
+      retries: 40
     volumes:
     - db_data:/var/lib/postgresql/data
   redis:
@@ -35,9 +46,14 @@ services:
   kabinet:
     image: jhnnsrs/kabinet:latest
     depends_on:
-    - redis
-    - db
-    - rustfs
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
     stop_grace_period: 2s
     volumes:
     - ./configs/kabinet.yaml:/workspace/config.yaml
@@ -50,9 +66,14 @@ services:
   mikro:
     image: jhnnsrs/mikro:latest
     depends_on:
-    - redis
-    - db
-    - rustfs
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
     stop_grace_period: 2s
     volumes:
     - ./configs/mikro.yaml:/workspace/config.yaml
@@ -65,9 +86,14 @@ services:
   fluss:
     image: jhnnsrs/fluss:latest
     depends_on:
-    - redis
-    - db
-    - rustfs
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
     stop_grace_period: 2s
     volumes:
     - ./configs/fluss.yaml:/workspace/config.yaml
@@ -80,9 +106,14 @@ services:
   elektro:
     image: jhnnsrs/elektro:latest
     depends_on:
-    - redis
-    - db
-    - rustfs
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
     stop_grace_period: 2s
     volumes:
     - ./configs/elektro.yaml:/workspace/config.yaml
@@ -95,9 +126,14 @@ services:
   alpaka:
     image: jhnnsrs/alpaka:latest
     depends_on:
-    - redis
-    - db
-    - rustfs
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
     stop_grace_period: 2s
     volumes:
     - ./configs/alpaka.yaml:/workspace/config.yaml
@@ -110,9 +146,14 @@ services:
   kraph:
     image: jhnnsrs/kraph:latest
     depends_on:
-    - redis
-    - db
-    - rustfs
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
     stop_grace_period: 2s
     volumes:
     - ./configs/kraph.yaml:/workspace/config.yaml

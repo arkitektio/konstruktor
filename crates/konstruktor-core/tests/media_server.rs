@@ -1,15 +1,17 @@
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
-use konstruktor_core::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
+use konstruktor_core::config::hub::{HubConfig, HubConfigOptions};
 use konstruktor_core::config::mesh::MeshOptions;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use serde_norway::Value;
 
+mod support;
+
 /// Lovekit is the one service that brings a container of somebody else's with it: a
 /// LiveKit media server, its config, a site on the gateway and three published ports.
 /// These pin what a hub with it generates — and that a hub without it generates none of
-/// it, since the golden fixtures are upstream's and upstream has no LiveKit.
+/// it, since the golden fixtures' hubs run no Lovekit.
 fn hub(services: Vec<ServiceId>, mesh: Option<MeshOptions>) -> HubConfig {
-    build_hub_config(&HubConfigOptions {
+    support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: "go.arkitekt.live".into(),
         services: Some(services),
@@ -143,8 +145,8 @@ fn a_mesh_only_hub_publishes_none_of_the_media_ports() {
     assert!(files["configs/Caddyfile"].contains(":2756 {"));
 }
 
-/// The two that are services like any other: a config each, a route each, and storage
-/// only for the one that stores something.
+/// The two that are services like any other: a config each, a route each, and the object
+/// store for each, since each declares a bucket.
 #[test]
 fn dokuments_and_lokate_are_generated_like_any_service() {
     let files = generate_hub_files(
@@ -156,12 +158,7 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
     // What each is told of the hub — its own image writes its config from that.
     let config = hub(vec![ServiceId::Dokuments, ServiceId::Lokate], None);
     let told = |id| {
-        konstruktor_core::contract::facts(
-            &config,
-            id,
-            &IssuedIdentity::default(),
-            &Default::default(),
-        )
+        konstruktor_core::contract::facts(&config, id, &IssuedIdentity::default(), &support::said())
     };
     let dokuments = told(ServiceId::Dokuments);
     assert_eq!(dokuments["database"]["name"].as_str(), Some("dokuments"));
@@ -173,7 +170,12 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
 
     let lokate = told(ServiceId::Lokate);
     assert_eq!(lokate["database"]["name"].as_str(), Some("lokate"));
-    assert!(lokate.get("storage").is_none(), "Lokate stores no objects");
+    // A service that declares storage is handed the object store with its bucket: what
+    // decides is what the image says, and Lokate's says `media`.
+    assert_eq!(
+        lokate["storage"]["buckets"]["media"].as_str(),
+        Some("lokatemedia")
+    );
 
     let compose = yaml(&files, "docker-compose.yaml");
     for host in ["dokuments", "lokate"] {

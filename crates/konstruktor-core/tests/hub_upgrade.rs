@@ -135,7 +135,10 @@ fn psql(dir: &Path, sql: &str) -> String {
             "-U",
             &config.db.postgres_user,
             "-d",
-            &config.rekuest.db_config.db,
+            config
+                .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                .database()
+                .expect("rekuest has a database"),
             "-tAF",
             "|",
             "-c",
@@ -398,12 +401,22 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
             after[service]
         );
     };
-    on_channel("mikro", seeded.mikro.image.clone());
+    on_channel(
+        "mikro",
+        seeded
+            .service(konstruktor_core::catalog::ServiceId::Mikro)
+            .image
+            .clone(),
+    );
     if !chosen("rekuest") {
-        on_channel("rekuest", seeded.rekuest.image.clone());
+        on_channel("rekuest", seeded.rekuest().image.clone());
         assert_eq!(
-            read_profile(&dir).unwrap().config.rekuest.image,
-            seeded.rekuest.image
+            read_profile(&dir)
+                .unwrap()
+                .config
+                .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                .image,
+            seeded.rekuest().image
         );
     }
     if !chosen("rekuest") && !chosen("rekuest-takt") {
@@ -491,7 +504,11 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
 
     // A channel that moves on this machine moves nothing in the hub: the tag kraph
     // follows is pointed at another image, and `up` still runs the build written down.
-    let seeded_kraph = seeded.kraph.image.clone().unwrap();
+    let seeded_kraph = seeded
+        .service(konstruktor_core::catalog::ServiceId::Kraph)
+        .image
+        .clone()
+        .unwrap();
     let kept = format!("{seeded_kraph}-kept-by-hub-upgrade");
     let docker = |args: &[&str]| {
         konstruktor_core::docker::command()
@@ -566,7 +583,11 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         eprintln!("skipping the rollback round trip: set KONSTRUKTOR_E2E_EARLIER_KRAPH");
         return;
     };
-    let channel = seeded.kraph.image.clone().unwrap();
+    let channel = seeded
+        .service(konstruktor_core::catalog::ServiceId::Kraph)
+        .image
+        .clone()
+        .unwrap();
     let fetched = konstruktor_core::docker::command()
         .args(["pull", "--quiet", &earlier_kraph])
         .output()
@@ -626,7 +647,11 @@ async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
         .expect("the rollback runs");
     assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
     assert_eq!(
-        read_profile(&dir).unwrap().config.kraph.image,
+        read_profile(&dir)
+            .unwrap()
+            .config
+            .service(konstruktor_core::catalog::ServiceId::Kraph)
+            .image,
         Some(channel.clone()),
         "the profile still follows its channel"
     );

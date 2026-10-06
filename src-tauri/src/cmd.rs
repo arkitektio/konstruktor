@@ -606,7 +606,7 @@ pub async fn switch_checkout_branch(
         .into_iter()
         .map(|id| profile.config.service(id))
         .find(|s| s.host == service)
-        .map(|s| s.github_repo.clone())
+        .and_then(|s| s.github_repo.clone())
         .unwrap_or_default();
 
     Ok(git::read_checkout(&service, &repo, &at))
@@ -618,7 +618,7 @@ pub fn service_catalog() -> Vec<konstruktor_core::catalog::ServiceMeta> {
     konstruktor_core::catalog::catalog()
 }
 
-/// Makes a Django superuser in one service, after the fact.
+/// Makes a superuser in one service, after the fact, through the job its image declares.
 ///
 /// Not part of creating a hub: the account has to be made in a container that is running,
 /// against a database that exists, and it is per service — so it belongs on the dashboard
@@ -934,6 +934,7 @@ pub async fn reauthorize_hub(
             reachable_hosts,
             mesh_key,
             services: None,
+            described: Default::default(),
         },
         &cancel,
         &move |event| {
@@ -971,9 +972,15 @@ pub fn plan_service_change(
     let config = konstruktor_core::profile::read_profile(std::path::Path::new(&path))
         .map_err(|e| e.to_string())?
         .config;
+    // By what the hub's images have said of themselves: which services keep Rekuest in.
     konstruktor_core::services::plan(
         &config,
-        &konstruktor_core::services::ServiceChange { add, remove },
+        &konstruktor_core::contract::known(std::path::Path::new(&path)),
+        &konstruktor_core::services::ServiceChange {
+            add,
+            remove,
+            ..Default::default()
+        },
     )
     .map_err(|e| e.to_string())
 }
@@ -996,7 +1003,11 @@ pub async fn change_services(
 
     let answers = services::answers_from_disk(
         std::path::Path::new(&path),
-        services::ServiceChange { add, remove },
+        services::ServiceChange {
+            add,
+            remove,
+            ..Default::default()
+        },
     )
     .map_err(|e| e.to_string())?;
 

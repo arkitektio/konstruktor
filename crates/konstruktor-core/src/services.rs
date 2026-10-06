@@ -26,9 +26,10 @@ use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::catalog::{catalog, ServiceId, HOOKED_SERVICES, HUB_SERVICE_ORDER};
+use crate::catalog::{in_generation_order, ServiceId};
 use crate::compose::ComposeLine;
 use crate::config::hub::{HubConfig, DB_COMPOSE_SERVICE};
+use crate::contract::Said;
 use crate::create::{
     reauthorize, CreateError, CreateEvent, MeshKeyRequest, ReauthorizeAnswers, Reauthorized,
 };
@@ -41,6 +42,11 @@ pub struct ServiceChange {
     pub add: Vec<ServiceId>,
     #[serde(default)]
     pub remove: Vec<ServiceId>,
+    /// The image each added service runs, for the ones added *by* their image
+    /// (`hub services add --image`). A service of the catalogue needs none: it starts on
+    /// the image its block names. One outside it has no other.
+    #[serde(default)]
+    pub images: BTreeMap<ServiceId, String>,
 }
 
 /// What a [`ServiceChange`] actually does to one hub.
@@ -56,14 +62,38 @@ pub struct ServicePlan {
     pub services: Vec<ServiceId>,
     /// Worth saying before anybody is sent to a browser.
     pub notes: Vec<String>,
+    /// The image each of `added` was named by, for the ones that were. See
+    /// [`ServiceChange::images`].
+    #[serde(default)]
+    pub images: BTreeMap<ServiceId, String>,
 }
 
+/// What a service is called in a sentence: the catalogue's word for it, or its own name.
 fn name_of(id: ServiceId) -> String {
-    catalog()
-        .into_iter()
-        .find(|meta| meta.id == id)
-        .map(|meta| meta.name)
+    id.known()
+        .map(|known| known.name.to_string())
         .unwrap_or_else(|| id.as_str().to_string())
+}
+
+/// Of `services`, the ones Rekuest runs the periodic work of and receives the signals of,
+/// by what their images said (`said`, by compose service). A service that was not asked is
+/// not known to be one.
+pub fn hooked_by_rekuest(
+    config: &HubConfig,
+    said: &Said,
+    services: &[ServiceId],
+) -> Vec<ServiceId> {
+    services
+        .iter()
+        .copied()
+        .filter(|id| *id != ServiceId::Rekuest)
+        .filter(|id| {
+            config
+                .get(*id)
+                .and_then(|block| said.get(&block.host))
+                .is_some_and(|description| description.hooked_by_rekuest())
+        })
+        .collect()
 }
 
 fn names(ids: &[ServiceId]) -> String {
@@ -76,7 +106,14 @@ fn names(ids: &[ServiceId]) -> String {
 /// Works out what `change` does to `config`, or why it cannot be done. Pure: the front ends
 /// show the result before asking anybody to confirm, and [`reauthorize`] asks it again
 /// before a request leaves this machine.
-pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, CreateError> {
+///
+/// `said` is what the hub's images have said of themselves, by compose service
+/// ([`crate::contract::known`]): it is what tells which services need Rekuest kept.
+pub fn plan(
+    config: &HubConfig,
+    said: &Said,
+    change: &ServiceChange,
+) -> Result<ServicePlan, CreateError> {
     let refuse = |message: String| Err(CreateError::Answers(message));
 
     if let Some(both) = change.add.iter().find(|id| change.remove.contains(id)) {
@@ -86,11 +123,17 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
         ));
     }
 
-    let offered = catalog();
+    // Something has to say which image an added service runs: the change, the block it
+    // already has, or the catalogue. A name on its own, outside the catalogue, is not a
+    // service anybody can start.
     for id in &change.add {
-        if !offered.iter().any(|meta| meta.id == *id && meta.emitted) {
+        let has_image = change.images.contains_key(id)
+            || config.get(*id).is_some_and(|block| block.image.is_some())
+            || id.default_image().is_some();
+        if !has_image {
             return refuse(format!(
-                "{} has no published image yet, so a hub cannot run it",
+                "{} is not a service this konstruktor knows an image for — add it by its \
+                 image, with `--image`",
                 name_of(*id)
             ));
         }
@@ -98,13 +141,25 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
 
     let running = config.enabled_services();
     let mut plan = ServicePlan::default();
-    for id in HUB_SERVICE_ORDER {
+    // Every service the hub has or is asked about, the catalogue's first, in the order
+    // they are generated in.
+    let concerned = in_generation_order(
+        config
+            .service_ids()
+            .into_iter()
+            .chain(change.add.iter().copied())
+            .chain(change.remove.iter().copied()),
+    );
+    for id in concerned {
         let on = running.contains(&id);
         if change.add.contains(&id) {
             if on {
                 plan.unchanged.push(id);
             } else {
                 plan.added.push(id);
+                if let Some(image) = change.images.get(&id) {
+                    plan.images.insert(id, image.clone());
+                }
             }
         }
         if change.remove.contains(&id) {
@@ -117,13 +172,6 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
         let after = (on || plan.added.contains(&id)) && !plan.removed.contains(&id);
         if after {
             plan.services.push(id);
-        }
-    }
-    // Asked to remove something with no place in the generation order: it does not run
-    // here either, so it is as unchanged as any other service that is not running.
-    for id in &change.remove {
-        if !HUB_SERVICE_ORDER.contains(id) && !plan.unchanged.contains(id) {
-            plan.unchanged.push(*id);
         }
     }
 
@@ -159,12 +207,7 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
     }
 
     if plan.removed.contains(&ServiceId::Rekuest) {
-        let hooked: Vec<ServiceId> = plan
-            .services
-            .iter()
-            .copied()
-            .filter(|id| HOOKED_SERVICES.contains(id))
-            .collect();
+        let hooked = hooked_by_rekuest(config, said, &plan.services);
         if !hooked.is_empty() {
             return refuse(format!(
                 "Rekuest runs the periodic work and receives the signals of {} — remove \
@@ -221,7 +264,10 @@ pub fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, C
 /// server has accepted it — see [`reauthorize`].
 pub fn apply_plan(config: &mut HubConfig, plan: &ServicePlan) {
     for id in &plan.added {
-        config.add_service(*id);
+        match plan.images.get(id) {
+            Some(image) => config.add_service_on(*id, image),
+            None => config.add_service(*id),
+        }
     }
     for id in &plan.removed {
         config.remove_service(*id);
@@ -290,6 +336,7 @@ pub fn answers_from_disk(
             MeshKeyRequest::Never
         },
         services: Some(change),
+        described: BTreeMap::new(),
     })
 }
 
@@ -407,11 +454,7 @@ pub fn services_to_restart(
         let Some(host) = file.strip_suffix(".yaml") else {
             continue;
         };
-        let Some(id) = config
-            .enabled_services()
-            .into_iter()
-            .find(|id| config.service(*id).host == host)
-        else {
+        let Some(id) = config.service_at(host).filter(|id| config.runs(*id)) else {
             continue;
         };
         if plan.added.contains(&id) {
@@ -467,7 +510,7 @@ pub async fn apply_services(
     let databases: Vec<String> = config
         .enabled_services()
         .into_iter()
-        .map(|id| config.service(id).db_config.db.clone())
+        .filter_map(|id| config.service(id).database().map(str::to_string))
         .collect();
     if !databases.is_empty() {
         // The same guard `start` runs, before anything pulls or recreates the database.
@@ -507,7 +550,7 @@ pub async fn apply_services(
     let has_buckets = config
         .provisioned_services()
         .iter()
-        .any(|id| !id.bucket_purposes().is_empty());
+        .any(|id| config.service(*id).uses_datalayer());
     if has_buckets {
         let replay = vec![
             "compose".to_string(),
@@ -643,11 +686,12 @@ async fn ensure_database(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::hub::{build_hub_config, HubConfigOptions};
+    use crate::config::hub::HubConfigOptions;
+    use crate::support;
 
-    /// A hub with the services the wizard pre-ticks.
+    /// A hub with the services the wizard pre-ticks, each provided what it asked for.
     fn hub() -> HubConfig {
-        build_hub_config(&HubConfigOptions {
+        support::hub(&HubConfigOptions {
             services: Some(crate::catalog::default_services()),
             ..Default::default()
         })
@@ -657,7 +701,13 @@ mod tests {
         ServiceChange {
             add: add.to_vec(),
             remove: remove.to_vec(),
+            images: BTreeMap::new(),
         }
+    }
+
+    /// [`super::plan`], with what the catalogue's services say of themselves.
+    fn plan(config: &HubConfig, change: &ServiceChange) -> Result<ServicePlan, CreateError> {
+        super::plan(config, &support::said(), change)
     }
 
     #[test]
@@ -692,7 +742,7 @@ mod tests {
 
         // Applied, the media server exists, and only while Lovekit runs.
         apply_plan(&mut config, &plan);
-        config.ensure_service_secrets();
+        config.provide(&support::said());
         assert!(config.running_livekit().is_some());
     }
 
@@ -722,11 +772,100 @@ mod tests {
         let everything_hooked: Vec<ServiceId> = hub()
             .enabled_services()
             .into_iter()
-            .filter(|id| HOOKED_SERVICES.contains(id))
+            .filter(|id| support::HOOKED.contains(id))
             .chain([ServiceId::Rekuest])
             .collect();
         let plan = plan(&hub(), &change(&[], &everything_hooked)).expect("allowed");
         assert_eq!(plan.services, [ServiceId::Kraph]);
+    }
+
+    /// Which services keep Rekuest in a hub is what their images say, not a list here: a
+    /// service nobody has heard of that names Rekuest among its peers, or offers it a
+    /// hook, holds it as firmly as Mikro does — and one that says neither does not.
+    #[test]
+    fn hooked_by_rekuest_follows_the_description() {
+        use crate::contract::{Description, Needs, Offers};
+        let example = ServiceId::named("example");
+        let hub_with = |description: Description| {
+            let mut config = support::hub(&HubConfigOptions {
+                services: Some(vec![ServiceId::Kraph, example]),
+                ..Default::default()
+            });
+            config.set_service_image("example", "example:1");
+            let mut said = support::said();
+            said.insert("example".to_string(), description);
+            config.provide(&said);
+            (config, said)
+        };
+        let remove_rekuest = change(&[], &[ServiceId::Rekuest]);
+
+        // It says nothing of Rekuest: Rekuest may go (Kraph is not hooked either).
+        let (config, said) = hub_with(support::example());
+        assert!(!support::example().hooked_by_rekuest());
+        let gone = super::plan(&config, &said, &remove_rekuest).expect("allowed");
+        assert_eq!(gone.services, [ServiceId::Kraph, example]);
+
+        // It names Rekuest as a peer.
+        let peer = Description {
+            needs: Needs {
+                peers: vec!["rekuest".into()],
+                ..support::example().needs
+            },
+            ..support::example()
+        };
+        assert!(peer.hooked_by_rekuest());
+        let (config, said) = hub_with(peer);
+        let refused = super::plan(&config, &said, &remove_rekuest).unwrap_err();
+        assert!(refused.to_string().contains("example"), "{refused}");
+
+        // Or it offers the endpoint Rekuest calls.
+        let hook = Description {
+            offers: Offers {
+                endpoints: BTreeMap::from([("rekuest_hook".to_string(), "_hook".to_string())]),
+                ..support::example().offers
+            },
+            ..support::example()
+        };
+        assert!(hook.hooked_by_rekuest());
+        let (config, said) = hub_with(hook);
+        assert!(super::plan(&config, &said, &remove_rekuest).is_err());
+
+        // Of a hub nothing was said about, nothing is known to be hooked.
+        let (config, _) = hub_with(support::example());
+        assert!(super::plan(&config, &Said::new(), &remove_rekuest).is_ok());
+    }
+
+    /// A service outside the catalogue is added by its image, and by nothing less: a name
+    /// alone names nothing that could be started.
+    #[test]
+    fn an_unknown_service_is_added_by_its_image() {
+        let example = ServiceId::named("example");
+        let mut config = hub();
+        let refused = plan(&config, &change(&[example], &[])).unwrap_err();
+        assert!(refused.to_string().contains("--image"), "{refused}");
+
+        let by_image = ServiceChange {
+            add: vec![example],
+            remove: Vec::new(),
+            images: BTreeMap::from([(example, "example:1".to_string())]),
+        };
+        let added = plan(&config, &by_image).expect("it has an image now");
+        // After the catalogue's services, where generation puts it.
+        assert_eq!(added.added, [example]);
+        assert_eq!(added.services.last(), Some(&example));
+        apply_plan(&mut config, &added);
+        let block = config.service(example);
+        assert!(block.runs());
+        assert_eq!(block.image.as_deref(), Some("example:1"));
+        assert_eq!(block.github_repo, None);
+
+        // Taken out and added back by name: the block remembers its image.
+        let out = plan(&config, &change(&[], &[example])).unwrap();
+        apply_plan(&mut config, &out);
+        assert!(config.service(example).retained && !config.runs(example));
+        let back = plan(&config, &change(&[example], &[])).expect("its block has an image");
+        apply_plan(&mut config, &back);
+        assert!(config.runs(example));
     }
 
     #[test]

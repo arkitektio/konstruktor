@@ -41,8 +41,17 @@ pub struct Scope {
 }
 
 /// What a service needs a hub to provide.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Needs {
+    /// A database of its own in the hub's Postgres. Left unsaid, it needs one.
+    #[serde(default = "yes")]
+    pub database: bool,
+    /// The hub's Redis. Left unsaid, it needs it.
+    #[serde(default = "yes")]
+    pub redis: bool,
+    /// The buckets it stores into, by purpose (`media`, `zarr`): one bucket each, and the
+    /// credentials to hand out grants for them. A purpose is the service's own word; the
+    /// hub only has to provide a bucket for it.
     #[serde(default)]
     pub storage: Vec<String>,
     /// What a token may be allowed to do at the service, defined at the coordination
@@ -52,11 +61,46 @@ pub struct Needs {
     /// The roles a member of an organization can hold at the service.
     #[serde(default)]
     pub roles: Vec<Scope>,
+    /// A key of its own, to sign what it sends the hub's other services with.
     #[serde(default)]
     pub instance_key: bool,
+    /// The hub's operator account. Left unsaid, it is told of it.
+    #[serde(default = "yes")]
+    pub admin: bool,
     #[serde(default)]
     pub peers: Vec<String>,
+    /// Secrets the hub mints for it once and keeps, by name: each is handed to the service
+    /// as a file only it can read.
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Needs {
+    /// What an image that says nothing of its needs is taken to need: the same a field
+    /// left out of a description reads as.
+    fn default() -> Self {
+        Self {
+            database: true,
+            redis: true,
+            storage: Vec::new(),
+            scopes: Vec::new(),
+            roles: Vec::new(),
+            instance_key: false,
+            admin: true,
+            peers: Vec::new(),
+            secrets: Vec::new(),
+        }
+    }
+}
+
+/// The name Rekuest goes by among a service's peers, and the kind of endpoint a service
+/// offers it: see [`Description::hooked_by_rekuest`].
+pub const REKUEST_PEER: &str = "rekuest";
+pub const REKUEST_HOOK: &str = "rekuest_hook";
 
 /// What a service offers a hub.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +154,26 @@ impl Description {
     pub fn command(&self, debug: bool) -> Option<&[String]> {
         let command = if debug { &self.debug } else { &self.serve };
         (!command.is_empty()).then_some(command.as_slice())
+    }
+
+    /// Whether Rekuest runs this service's periodic actions and receives its signals, each
+    /// call signed with the sender's instance key: it names Rekuest among its peers, or
+    /// offers the endpoint Rekuest calls. A hub cannot take its Rekuest out while a service
+    /// that says so runs.
+    pub fn hooked_by_rekuest(&self) -> bool {
+        self.needs.peers.iter().any(|peer| peer == REKUEST_PEER)
+            || self.offers.endpoints.contains_key(REKUEST_HOOK)
+    }
+
+    /// Where the service answers for its health, under its own path: what it offers, or
+    /// the convention ([`crate::health::HEALTH_PATH`]) when it names none.
+    pub fn health_path(&self) -> &str {
+        let offered = self.offers.health.trim().trim_matches('/');
+        if offered.is_empty() {
+            crate::health::HEALTH_PATH
+        } else {
+            offered
+        }
     }
 
     /// The command of the job that prepares the service, if it has one to run.
@@ -305,8 +369,8 @@ pub enum RenderError {
     Failed { service: String, said: String },
     /// The image does not answer the contract at all: no release this installer can run.
     #[error(
-        "`{service}` runs {image}, which does not answer the hub contract (`python -m \
-         arkitekt_service describe`). A service's config is its own image's to write, so \
+        "`{service}` runs {image}, which does not answer the hub contract (run with no \
+         command, a service's image says what it is). A service's config is its own image's to write, so \
          this Konstruktor runs only releases that do: update `{service}` to one."
     )]
     NoContract { service: String, image: String },
@@ -383,7 +447,7 @@ fn sidecars_agree(
     config: &HubConfig,
     said: &BTreeMap<String, Description>,
 ) -> Result<(), RenderError> {
-    let rekuest = &config.rekuest;
+    let rekuest = config.rekuest();
     let (Some(description), Some(image), Some(running)) = (
         said.get(&rekuest.host),
         rekuest.image.as_deref(),
@@ -437,6 +501,49 @@ pub fn job_command(service: &str, job: &Job, extra: &[String]) -> Vec<String> {
         .chain(job.command.iter().cloned())
         .chain(extra.iter().cloned())
         .collect()
+}
+
+/// The services of `config`'s stack that `said` holds no description for, as
+/// `` `host` (image) ``: the ones nothing can be written or registered for. The hub's own
+/// coordination server counts.
+pub fn undescribed(config: &HubConfig, said: &Said) -> Vec<String> {
+    config
+        .enabled_services()
+        .into_iter()
+        .map(|id| config.service(id))
+        .map(|block| (block.host.clone(), block.image.clone().unwrap_or_default()))
+        .chain(
+            config
+                .running_lok()
+                .map(|lok| (lok.host.clone(), lok.image.clone())),
+        )
+        .filter(|(host, _)| !said.contains_key(host))
+        .map(|(host, image)| format!("`{host}` ({image})"))
+        .collect()
+}
+
+/// Refuses a hub in which an image runs as another service than the one it says it is.
+///
+/// A service's name is its compose service, its path on the gateway and its database, and
+/// its config is written by its image for the service the image knows itself as: an image
+/// that says `mikro`, run as `example`, would be configured as one and served as the other.
+pub fn names_agree(config: &HubConfig, said: &Said) -> Result<(), String> {
+    for id in config.enabled_services() {
+        let block = config.service(id);
+        let Some(description) = said.get(&block.host) else {
+            continue;
+        };
+        if description.name.trim() != id.as_str() {
+            return Err(format!(
+                "`{}` would run {}, which says it is `{}` — a service runs under the name \
+                 its image gives it.",
+                block.host,
+                block.image.as_deref().unwrap_or("no image"),
+                description.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What the images of the hub at `dir` said of themselves when they were last asked: read
@@ -776,8 +883,8 @@ pub async fn prepare_databases(
 /// Nothing here is in the service's vocabulary. It is read off what this installer already
 /// works out for every service — its database, its buckets, its key, how tokens are
 /// verified — and off the other services: where each is, and what each offers
-/// (`described`, by compose service; for one that did not describe itself, what was
-/// always known of it).
+/// (`described`, by compose service; of one that did not describe itself, nothing is
+/// said beyond where it is).
 pub fn facts(
     config: &HubConfig,
     id: ServiceId,
@@ -788,6 +895,11 @@ pub fn facts(
     // The blocks this installer generates are the hub's facts already, in one service's
     // spelling; read back out of it, they are in nobody's.
     let generated = hub_blocks(config, id, issued);
+    let has = |block: &Option<Value>, name: &str| {
+        block
+            .as_ref()
+            .is_some_and(|block| block.get(name).is_some())
+    };
     let block = |name: &str| generated.get(name).cloned();
     let field = |block: &Option<Value>, name: &str| {
         block
@@ -803,18 +915,19 @@ pub fn facts(
         ("name", s(&service.host)),
         ("path", s(&service.host)),
         ("url", s(&url(&service.host, service.internal_port))),
-        (
-            "identifier",
-            s(&described
-                .get(&service.host)
-                .map(|said| said.identifier.clone())
-                .unwrap_or_else(|| format!("live.arkitekt.{}", id.as_str()))),
-        ),
+    ];
+    // What it is registered as: its image's own word, remembered in its block.
+    if let Some(identifier) = &service.identifier {
+        me.push(("identifier", s(identifier)));
+    }
+    me.extend([
         ("secret_key", field(&django, "secret_key")),
         ("debug", field(&django, "debug")),
         ("allowed_hosts", field(&django, "hosts")),
-        ("admin", field(&django, "admin")),
-    ];
+    ]);
+    if has(&django, "admin") {
+        me.push(("admin", field(&django, "admin")));
+    }
     if let Some(issuer) = &service.provenance_issuer {
         me.push(("settings", map(vec![("provenance_issuer", s(issuer))])));
     }
@@ -830,17 +943,20 @@ pub fn facts(
         ),
     ];
 
+    // Only what the service declared it uses is there to be told of.
     let postgres = block("postgres");
-    out.push((
-        "database",
-        map(vec![
-            ("host", field(&postgres, "host")),
-            ("port", field(&postgres, "port")),
-            ("name", field(&postgres, "db_name")),
-            ("username", field(&postgres, "username")),
-            ("password", field(&postgres, "password")),
-        ]),
-    ));
+    if postgres.is_some() {
+        out.push((
+            "database",
+            map(vec![
+                ("host", field(&postgres, "host")),
+                ("port", field(&postgres, "port")),
+                ("name", field(&postgres, "db_name")),
+                ("username", field(&postgres, "username")),
+                ("password", field(&postgres, "password")),
+            ]),
+        ));
+    }
     if let Some(redis) = block("redis") {
         out.push(("redis", redis));
     }
@@ -860,13 +976,22 @@ pub fn facts(
     if let Some(instance) = block("instance") {
         out.push(("instance", instance));
     }
-    if service.fernet_key.is_some() {
+    // Each secret it declared, as the file it is mounted at.
+    if !service.secrets.is_empty() {
         out.push((
             "secrets",
-            map(vec![(
-                "fernet",
-                s(&crate::generate::service::fernet_key_path(service)),
-            )]),
+            Value::Mapping(
+                service
+                    .secrets
+                    .keys()
+                    .map(|name| {
+                        (
+                            name.as_str().into(),
+                            s(&crate::generate::service::secret_path(service, name)),
+                        )
+                    })
+                    .collect(),
+            ),
         ));
     }
 
@@ -893,20 +1018,18 @@ pub fn facts(
                 offers.push(("agent".to_string(), s(&takt)));
             }
         }
-        peers.push((
-            peer.host.clone(),
-            map(vec![
-                (
-                    "identifier",
-                    s(&format!("live.arkitekt.{}", other.as_str())),
-                ),
-                ("url", s(&base)),
-                (
-                    "offers",
-                    Value::Mapping(offers.into_iter().map(|(k, v)| (k.into(), v)).collect()),
-                ),
-            ]),
-        ));
+        let mut entry = Vec::new();
+        if let Some(identifier) = &peer.identifier {
+            entry.push(("identifier", s(identifier)));
+        }
+        entry.extend([
+            ("url", s(&base)),
+            (
+                "offers",
+                Value::Mapping(offers.into_iter().map(|(k, v)| (k.into(), v)).collect()),
+            ),
+        ]);
+        peers.push((peer.host.clone(), map(entry)));
     }
     // What runs beside the services and is no service of the hub: Rekuest's other half,
     // a model server, a media server.
@@ -1044,7 +1167,8 @@ mod tests {
     /// a hooked service where the agents' endpoint is.
     #[test]
     fn the_hub_tells_each_service_about_itself_and_the_others() {
-        let config = build_hub_config(&HubConfigOptions::default());
+        let mut config = build_hub_config(&HubConfigOptions::default());
+        config.provide(&crate::support::said());
         let described = BTreeMap::from([(
             "kraph".to_string(),
             Description {

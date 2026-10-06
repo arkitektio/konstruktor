@@ -44,3 +44,13 @@ pub mod start;
 pub mod status;
 pub mod templates;
 pub mod updates;
+
+// The tests' own knowledge of the services (`tests/support`), for the unit tests here as
+// well: nothing in the library says what a service needs, so a test that wants a hub with
+// its buckets and keys says it from there. The alias lets that one file name the crate
+// the way an integration test does.
+#[cfg(test)]
+extern crate self as konstruktor_core;
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+pub(crate) mod support;

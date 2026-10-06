@@ -692,7 +692,7 @@ async fn running_version(dir: &std::path::Path, service: &str) -> Option<String>
     crate::docker::image_label(&image, VERSION_LABEL).await
 }
 
-/// What a service's new release did with `manage.py upgrade`.
+/// What a service's new release did with its `upgrade` job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Upgraded {
     /// It ran, or had nothing to do.
@@ -703,8 +703,8 @@ pub enum Upgraded {
     Failed(String),
 }
 
-/// Reads the answer off `manage.py upgrade`: 0 is done. 2 is argparse not knowing the
-/// command, 126 and 127 a container with no `python`: there is no upgrade to run.
+/// Reads the answer off the release's `upgrade` job: 0 is done. 2 is the command line not
+/// knowing the job, 126 and 127 a container that cannot run it: there is no upgrade to run.
 /// Anything else is the upgrade failing.
 pub fn upgraded_from(code: Option<i32>, output: &str) -> Upgraded {
     match code {
@@ -821,7 +821,7 @@ pub fn changed_keys(before: &serde_norway::Value, after: &serde_norway::Value) -
     out
 }
 
-/// The migrations `manage.py migrate --plan` lists: the names it prints at the margin,
+/// The migrations a release's `plan` job lists: the names it prints at the margin,
 /// under which it indents what each does.
 pub fn planned_migrations(output: &str) -> Vec<String> {
     output
@@ -1552,7 +1552,7 @@ async fn apply_on(
     // its container is replaced, as a step with an answer — not inside the new container's
     // start, where a migration that fails is a crash loop somebody notices later. After the
     // schema, whatever the release itself has to do to its data between the two versions,
-    // which only it knows (`manage.py upgrade`).
+    // which only it knows (its `upgrade` job).
     //
     // Neither may run while the old code still writes, so everything that writes that
     // service's data is stopped first — the service and what moves with it — and all of it

@@ -101,9 +101,11 @@ async fn change_and_apply(dir: &Path, add: &[ServiceId], remove: &[ServiceId]) -
     let mut config = read_profile(dir).expect("the profile").config;
     let plan = services::plan(
         &config,
+        &konstruktor_core::contract::known(dir),
         &ServiceChange {
             add: add.to_vec(),
             remove: remove.to_vec(),
+            ..Default::default()
         },
     )
     .expect("a valid change");
@@ -111,15 +113,22 @@ async fn change_and_apply(dir: &Path, add: &[ServiceId], remove: &[ServiceId]) -
     // A published image can lag its source (bank's did, across the move to instance
     // keys); point at a local build instead.
     if let Ok(image) = std::env::var("KONSTRUKTOR_E2E_BANK_IMAGE") {
-        if config.bank.enabled {
-            config.bank.image = Some(image);
+        if config
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .enabled
+        {
+            config
+                .service_mut(konstruktor_core::catalog::ServiceId::Bank)
+                .image = Some(image);
         }
     }
-    config.ensure_instance_keys();
-    config.ensure_service_secrets();
+    // The images are asked what they are — the added ones for the first time — and each
+    // is provided what it asks for.
+    let said = konstruktor_core::contract::described(dir, &config).await;
+    config.provide(&said);
 
     let before = services::snapshot_configs(dir);
-    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &said);
     write_profile(dir, &hub_profile(config.clone())).expect("profile is written");
     konstruktor_core::migrate::write_hub(dir, &config, &files).expect("files are written");
     let changed = services::changed_configs(&before, &services::snapshot_configs(dir));
@@ -202,7 +211,10 @@ fn provisioned_agents(dir: &Path, config: &HubConfig) -> std::collections::BTree
             "-U",
             &config.db.postgres_user,
             "-d",
-            &config.rekuest.db_config.db,
+            config
+                .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                .database()
+                .expect("rekuest has a database"),
             "-tAF",
             "|",
             "-c",
@@ -233,7 +245,11 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
         https_port: Some(free_port()),
         ..Default::default()
     });
-    assert!(!config.bank.enabled);
+    assert!(
+        !config
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .enabled
+    );
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("service-change-e2e");
     if dir.exists() {
@@ -285,7 +301,11 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
 
     // --- add bank -----------------------------------------------------------------------
     let config = change_and_apply(&dir, &[ServiceId::Bank], &[]).await;
-    assert!(config.bank.enabled);
+    assert!(
+        config
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .enabled
+    );
 
     // Its database, created in the running cluster, as the init script would have.
     assert_eq!(
@@ -355,7 +375,14 @@ async fn bank_is_added_to_a_running_hub_and_removed_keeping_its_data() {
 
     // --- remove it again ----------------------------------------------------------------
     let config = change_and_apply(&dir, &[], &[ServiceId::Bank]).await;
-    assert!(!config.bank.enabled && config.bank.retained);
+    assert!(
+        !config
+            .service(konstruktor_core::catalog::ServiceId::Bank)
+            .enabled
+            && config
+                .service(konstruktor_core::catalog::ServiceId::Bank)
+                .retained
+    );
     // Asked of the engine, not of compose: bank is no longer in the file, and compose
     // would answer "no such service" with nothing on stdout either way.
     let project = konstruktor_core::compose::project_name(&dir.to_string_lossy());

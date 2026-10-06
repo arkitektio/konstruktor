@@ -134,6 +134,11 @@ pub struct CreateArgs {
     /// runs here only when one of the images is Rekuest's.
     #[arg(long = "service-image", value_name = "IMAGE", conflicts_with_all = ["services", "template"])]
     pub service_images: Vec<String>,
+    /// The services `--service-image` turned out to name, once the images were asked. Not
+    /// a flag: a service named this way need not be one of the catalogue's, which is all
+    /// `--services` takes.
+    #[arg(skip)]
+    pub services_of_images: Option<Vec<ServiceId>>,
     /// With `--server local`: the organization the hub's coordination server starts with.
     #[arg(long, default_value = "demo")]
     pub org: String,
@@ -618,6 +623,7 @@ async fn services_of_images(
 ) -> Result<std::collections::BTreeMap<String, konstruktor_core::contract::Description>> {
     let overridden = images_of_the_environment()?;
     let mut names = Vec::new();
+    let mut ids = Vec::new();
     let mut described = std::collections::BTreeMap::new();
     for image in &args.service_images {
         let image = image.trim();
@@ -645,16 +651,15 @@ async fn services_of_images(
                      described itself"
                 )
             })?;
-        let known = service_named(&said.name).with_context(|| {
-            format!(
-                "`{image}` is `{}`, a service this konstruktor cannot host yet — it hosts {}",
-                said.name,
-                known_services()
-            )
+        // Any service is one a hub can host: what it needs, its image has just said. Only
+        // its name has to be one a hub can give it.
+        let known = ServiceId::parse(&said.name).with_context(|| {
+            format!("`{image}` cannot be hosted under the name it gives itself")
         })?;
-        if names.contains(&known.as_str().to_string()) {
+        if ids.contains(&known) {
             bail!("--service-image names `{}` twice", known.as_str());
         }
+        ids.push(known);
         names.push(known.as_str().to_string());
         described.insert(asked.to_string(), said);
         // The image says which service this is; which build of it runs is still the
@@ -670,6 +675,7 @@ async fn services_of_images(
         "none".into()
     };
     args.services = Some(names);
+    args.services_of_images = Some(ids);
     Ok(described)
 }
 
@@ -687,9 +693,11 @@ fn images_of_the_environment() -> Result<std::collections::BTreeMap<String, Stri
     .context("reading KONSTRUKTOR_IMAGES")
 }
 
+/// The catalogue's service of that name, if it has one.
 fn service_named(name: &str) -> Option<ServiceId> {
     SERVICE_IDS
-        .into_iter()
+        .iter()
+        .copied()
         .find(|id| id.as_str() == name.trim())
 }
 
@@ -702,6 +710,10 @@ fn known_services() -> String {
 }
 
 fn services_from(args: &CreateArgs) -> Result<Vec<ServiceId>> {
+    // What the images said they are, when the hub was named by its images.
+    if let Some(services) = &args.services_of_images {
+        return Ok(services.clone());
+    }
     match &args.services {
         Some(names) => parse_services(names),
         None => Ok(templates::find(template_of(args))
@@ -942,7 +954,12 @@ fn service_options_from(
     use std::collections::BTreeMap;
 
     let named = |name: &str, flag: &str| -> Result<ServiceId> {
-        let id = parse_services(&[name.to_string()])?[0];
+        // One of this hub's services, whatever it is; else a name of the catalogue, to
+        // say which service it is that the hub does not run.
+        let id = match services.iter().find(|id| id.as_str() == name.trim()) {
+            Some(id) => *id,
+            None => parse_services(&[name.to_string()])?[0],
+        };
         if !services.contains(&id) && id != ServiceId::Rekuest {
             bail!("{flag} {name}: this hub does not run {name} — add it to --services");
         }
@@ -1018,7 +1035,9 @@ fn parse_services(names: &[String]) -> Result<Vec<ServiceId>> {
         .map(|name| {
             service_named(name).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "unknown service `{}` — known ones are {}",
+                    "unknown service `{}` — `--services` takes the services this \
+                     konstruktor knows by name: {}. Any other is hosted by its image, with \
+                     `--service-image IMAGE`",
                     name.trim(),
                     known_services()
                 )

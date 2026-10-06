@@ -29,10 +29,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use konstruktor_core::config::hub::{build_hub_config, HubConfigOptions};
+use konstruktor_core::config::hub::HubConfigOptions;
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::health::{self, ServiceHealth};
 use konstruktor_core::profile::{hub_profile, write_profile};
+
+mod support;
 
 const DEFAULT_SETTLE: Duration = Duration::from_secs(60);
 
@@ -107,7 +109,7 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         return;
     }
 
-    let mut config = build_hub_config(&HubConfigOptions {
+    let mut config = support::hub(&HubConfigOptions {
         device_id: "e2e".into(),
         coord_server: "go.arkitekt.live".into(),
         http_port: Some(free_port()),
@@ -245,8 +247,14 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     assert!(!services.is_empty(), "the hub has hooked services");
     let deadline = std::time::Instant::now() + provision_timeout();
     let catalogued = loop {
-        let found =
-            catalogued_services(&dir, &config.db.postgres_user, &config.rekuest.db_config.db);
+        let found = catalogued_services(
+            &dir,
+            &config.db.postgres_user,
+            config
+                .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                .database()
+                .expect("rekuest has a database"),
+        );
         if services.iter().all(|name| found.contains(name)) || std::time::Instant::now() > deadline
         {
             break found;
@@ -274,8 +282,14 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     create_organization(&dir, "e2e");
     let deadline = std::time::Instant::now() + provision_timeout();
     let provisioned = loop {
-        let found =
-            provisioned_agents(&dir, &config.db.postgres_user, &config.rekuest.db_config.db);
+        let found = provisioned_agents(
+            &dir,
+            &config.db.postgres_user,
+            config
+                .service(konstruktor_core::catalog::ServiceId::Rekuest)
+                .database()
+                .expect("rekuest has a database"),
+        );
         let missing: Vec<&String> = expected
             .iter()
             .filter(|service| found.get(*service).copied().unwrap_or(0) == 0)

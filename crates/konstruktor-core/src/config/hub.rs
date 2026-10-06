@@ -9,19 +9,18 @@ use crate::secrets::{
     generate_alpha_numeric_string, generate_django_secret_key, generate_name, KeyPair,
 };
 
-/// The `hub_config.yaml` Konstruktor writes.
-///
-/// A faithful port of `arkitekt_next/server/config/hub.py` and the defaults it pulls in
-/// from `config/infrastructure.py` and `services/*.py`.
+/// The `hub_config.yaml` Konstruktor writes: what a hub *is* — its services, its
+/// infrastructure, and every secret it minted.
 ///
 /// A hub runs data and compute services and trusts a remote coordination server for
 /// identity, so by default there is no `lok`, no users and no organizations. The one
 /// exception is a *self-contained* hub (`coord_server: local`), which runs its own — see
 /// [`LokBlock`].
 ///
-/// **Every optional field below is `skip_serializing_if`.** Upstream's pydantic models
-/// use `extra="forbid"`, so a key present-but-null is a hard failure where an absent key
-/// is fine. This is the single easiest way to break a generated profile.
+/// The services are a map, by name ([`HubConfig::services`]): which services there are is
+/// not something this file's shape decides. What each needs — buckets, a key, secrets — is
+/// what its image said when the hub was created or the service added, written into its
+/// block so that every later generation reads it back instead of asking again.
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalBucket {
@@ -62,61 +61,158 @@ impl Kinded {
     }
 }
 
+/// The buckets a service stores into, by purpose (`media` → `mikromedia`), in the order
+/// its image declared them.
+///
+/// The order is kept because it is the order the buckets are created in and their routes
+/// appear in the Caddyfile, and a map sorted by key would reshuffle both. A purpose is the
+/// service's own word, so any name is one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Buckets(Vec<(String, LocalBucket)>);
+
+impl Buckets {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn get(&self, purpose: &str) -> Option<&LocalBucket> {
+        self.0
+            .iter()
+            .find(|(held, _)| held == purpose)
+            .map(|(_, bucket)| bucket)
+    }
+
+    /// Declares a bucket for `purpose`, after the ones there are. One that is declared
+    /// already keeps its bucket: its name is where the service's objects are.
+    pub fn declare(&mut self, purpose: &str, bucket_name: &str) -> bool {
+        if self.get(purpose).is_some() {
+            return false;
+        }
+        self.0
+            .push((purpose.to_string(), LocalBucket::new(bucket_name)));
+        true
+    }
+
+    /// Every bucket, as `(purpose, bucket name)`, in declaration order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(purpose, bucket)| (purpose.as_str(), bucket.bucket_name.as_str()))
+    }
+
+    /// The bucket names, in declaration order.
+    pub fn names(&self) -> Vec<String> {
+        self.iter().map(|(_, name)| name.to_string()).collect()
+    }
+}
+
+impl Serialize for Buckets {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.iter().map(|(purpose, bucket)| (purpose, bucket)))
+    }
+}
+
+impl<'de> Deserialize<'de> for Buckets {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct InOrder;
+        impl<'de> serde::de::Visitor<'de> for InOrder {
+            type Value = Buckets;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map from a purpose to its bucket")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Buckets, A::Error> {
+                let mut out = Vec::new();
+                while let Some(entry) = map.next_entry::<String, LocalBucket>()? {
+                    out.push(entry);
+                }
+                Ok(Buckets(out))
+            }
+        }
+        deserializer.deserialize_map(InOrder)
+    }
+}
+
+/// One service of a hub: where it runs, on which image, and everything the hub provides
+/// it with.
+///
+/// The second half of the fields is what the service's image asked for when it was asked
+/// what it is ([`HubConfig::provide`]): buckets, a key, secrets, and whether it is wired to
+/// the database, the Redis and the operator account at all. They are written down here,
+/// rather than read off the description each time, because they are *minted* — a bucket
+/// holds a service's objects and a key is vouched for by the coordination server — and
+/// because a hub's files are regenerated in places where no image can be asked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceBlock {
-    pub admin_config: Kinded,
+    /// The operator account the service is told of. Absent for a service whose image says
+    /// it has no use for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_config: Option<Kinded>,
     pub allowed_hosts: Vec<String>,
     pub auth_config: Kinded,
-    pub db_config: LocalDb,
+    /// The service's own database in the hub's Postgres. Absent for one that needs none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_config: Option<LocalDb>,
     pub debug: bool,
     pub enabled: bool,
-    pub github_repo: String,
+    /// Where the service's source lives, for a service of the catalogue. One outside it
+    /// has no repository this build knows, and so no checkout to run from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
     pub host: String,
-    /// Absent only on the Lovekit block of a profile written before Lovekit had an image
-    /// (upstream still writes it so): such a block runs nothing. See [`Self::runs`].
+    /// What the service is registered as at the coordination server, and listed under in
+    /// the hub's trust bundle (`live.arkitekt.mikro`): its image's own word for it. Absent
+    /// until the image has been asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
+    /// Where the service answers for its health, under its own path, when its image names
+    /// another place than the convention. See [`Self::health_path`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    /// A service of the catalogue always has one. A service outside it has none until it
+    /// is given the image it was named by, and a block without one runs nothing: see
+    /// [`Self::runs`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     pub internal_port: u16,
-    pub media_bucket: LocalBucket,
     pub mount_github: bool,
     pub path_config: Kinded,
-    pub redis_config: Kinded,
+    /// The hub's Redis. Absent for a service whose image says it does not use it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redis_config: Option<Kinded>,
     pub secret_key: String,
 
-    // Service-specific extras, present only on the services that declare them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zarr_bucket: Option<LocalBucket>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parquet_bucket: Option<LocalBucket>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bigfile_bucket: Option<LocalBucket>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fabriks_bucket: Option<LocalBucket>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub konnektion_bucket: Option<LocalBucket>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ollama_config: Option<Kinded>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ensured_repositories: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance_issuer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance_kid: Option<String>,
-    /// Read from profiles written before instance keys; migrated into Rekuest's
-    /// [`Self::instance_key_pair`] by [`HubConfig::ensure_instance_keys`], never written again.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance_key_pair: Option<KeyPair>,
-    /// This instance's Ed25519 key: the only secret it holds for talking to the hub's other
-    /// services. The private half goes into its config; the public half into the hub
-    /// manifest (`challenge_key`), and the coordination server vouches for it from there.
-    /// Rekuest's also signs its provenance tokens.
+    /// The buckets the service declared, by purpose. A service with any is handed the
+    /// object store's credentials with them; one with none is told nothing of it.
+    #[serde(default, skip_serializing_if = "Buckets::is_empty")]
+    pub buckets: Buckets,
+    /// This instance's Ed25519 key, for a service that asked for one: the only secret it
+    /// holds for talking to the hub's other services. The private half goes into its
+    /// config; the public half into the hub manifest (`challenge_key`), and the
+    /// coordination server vouches for it from there. Rekuest's also signs its provenance
+    /// tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_key_pair: Option<KeyPair>,
-    /// **Kuvert only.** The Fernet key its mailbox credentials are encrypted with, written
-    /// to `secrets/<host>.fernet` and mounted read-only. Minted once and kept: a new key
-    /// would make every linked mailbox unreadable. See [`HubConfig::ensure_service_secrets`].
+    /// The secrets the service declared, by name, each written to
+    /// `secrets/<host>.<name>` and mounted read-only. Minted once and kept: Kuvert's
+    /// `fernet` encrypts its mailbox credentials, and a new key would make every linked
+    /// mailbox unreadable.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, String>,
+
+    // What this build wires for one service in particular, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fernet_key: Option<String>,
+    pub ollama_config: Option<Kinded>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensured_repositories: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_kid: Option<String>,
     /// Taken out of the hub after it ran (`konstruktor hub services remove`). Its database
     /// and buckets stay provisioned — in the database init list and the bucket manifest —
     /// so its data is neither lost nor silently orphaned, and adding it back picks the
@@ -130,55 +226,72 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl ServiceBlock {
-    /// For `skip_serializing_if` on the services upstream does not know: one that is disabled
-    /// and holds nothing worth keeping is left out of the profile, since the Python CLI's
-    /// model forbids the key. A disabled Kuvert that already has its Fernet key is kept:
-    /// dropping the key would make its mailboxes unreadable once it is switched back on.
-    pub fn is_disposable(&self) -> bool {
-        !self.enabled && self.fernet_key.is_none() && !self.retained
-    }
-
     /// Whether this service is part of the stack: switched on, and with an image to run.
     ///
-    /// Not just `enabled`: upstream seeds `lovekit: enabled: true` without an image, and
-    /// every profile written before Lovekit had one says the same — a switch that never ran
-    /// anything, and must not start running something now.
+    /// Not just `enabled`: a service outside the catalogue has no image until it is given
+    /// one, and a switch without one runs nothing.
     pub fn runs(&self) -> bool {
         self.enabled && self.image.is_some()
     }
 
-    /// The bucket declared for a purpose, if this service declares one.
-    pub fn bucket(&self, purpose: &str) -> Option<&LocalBucket> {
-        match purpose {
-            "media" => Some(&self.media_bucket),
-            "zarr" => self.zarr_bucket.as_ref(),
-            "parquet" => self.parquet_bucket.as_ref(),
-            "bigfile" => self.bigfile_bucket.as_ref(),
-            "fabriks" => self.fabriks_bucket.as_ref(),
-            "konnektion" => self.konnektion_bucket.as_ref(),
-            _ => None,
-        }
+    /// Where the service answers a health check, under its own path: what its image
+    /// offers, or the convention every service has kept so far.
+    pub fn health_path(&self) -> &str {
+        self.health.as_deref().unwrap_or(crate::health::HEALTH_PATH)
     }
 
-    /// The bucket name for one of `id`'s purposes, falling back to `<service><purpose>`
-    /// when the profile does not name one.
+    /// The database the hub provides the service, if it asked for one.
+    pub fn database(&self) -> Option<&str> {
+        self.db_config.as_ref().map(|db| db.db.as_str())
+    }
+
+    /// Whether the service is handed the object store: exactly when it declared storage.
+    pub fn uses_datalayer(&self) -> bool {
+        !self.buckets.is_empty()
+    }
+
+    /// Takes in what the service's image says it needs, minting what is missing and
+    /// keeping everything there is; true when the block changed.
     ///
-    /// The fallback is what keeps an older hub working: a profile written before a service
-    /// gained a bucket has no entry for it, and a service whose settings dereference the
-    /// bucket crashes on boot without it. The name matches what a new profile is seeded
-    /// with, so regenerating an old hub gives the same stack a new one gets.
-    pub fn bucket_name(&self, id: ServiceId, purpose: &str) -> String {
-        self.bucket(purpose)
-            .map(|b| b.bucket_name.clone())
-            .unwrap_or_else(|| format!("{}{purpose}", id.as_str()))
-    }
+    /// Idempotent, and never narrowing what holds data or trust: a bucket, a key and a
+    /// secret, once there, stay — a release that stops declaring one does not make the
+    /// hub forget where the objects are or which key the coordination server vouches
+    /// for. What is merely wiring (the database, the Redis, the operator account)
+    /// follows the description both ways.
+    pub fn provide(&mut self, said: &crate::contract::Description) -> bool {
+        let before = self.clone();
+        let needs = &said.needs;
 
-    /// Every bucket `id` declares, in `bucket_purposes()` order.
-    pub fn bucket_names(&self, id: ServiceId) -> Vec<(&'static str, String)> {
-        id.bucket_purposes()
-            .iter()
-            .map(|purpose| (*purpose, self.bucket_name(id, purpose)))
-            .collect()
+        self.identifier = Some(said.identifier.clone());
+        self.health = Some(said.health_path())
+            .filter(|path| *path != crate::health::HEALTH_PATH)
+            .map(str::to_string);
+        if needs.database {
+            // Called after the service, unless the profile already names another.
+            let db = database_named_after(&self.host);
+            self.db_config.get_or_insert(LocalDb {
+                kind: "local".into(),
+                db,
+            });
+        } else {
+            self.db_config = None;
+        }
+        self.redis_config = needs.redis.then(Kinded::local);
+        self.admin_config = needs.admin.then(Kinded::global);
+
+        for purpose in &needs.storage {
+            self.buckets
+                .declare(purpose, &format!("{}{purpose}", self.host));
+        }
+        if needs.instance_key && self.instance_key_pair.is_none() {
+            self.instance_key_pair = Some(crate::secrets::generate_ed25519_key_pair());
+        }
+        for name in &needs.secrets {
+            self.secrets
+                .entry(name.clone())
+                .or_insert_with(crate::secrets::generate_fernet_key);
+        }
+        *self != before
     }
 }
 
@@ -303,7 +416,7 @@ impl OllamaBlock {
 /// The LiveKit media server Lovekit hands rooms out on.
 ///
 /// Present once Lovekit has run on this hub — minted with it by
-/// [`HubConfig::ensure_service_secrets`] and kept when Lovekit is taken out, like Kuvert's
+/// [`HubConfig::provide`] and kept when Lovekit is taken out, like a service's
 /// Fernet key, so adding it back does not change the credentials. The container runs only
 /// while Lovekit does ([`HubConfig::running_livekit`]).
 ///
@@ -585,52 +698,21 @@ fn build_lok_block(options: &LokOptions) -> LokBlock {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubConfig {
-    pub alpaka: ServiceBlock,
-    /// Experimental, and unknown upstream: defaulted to a disabled block when a profile has
-    /// none, and written only while enabled — so older profiles load and a hub without it
-    /// stays readable by the Python CLI.
-    #[serde(
-        default = "disabled_bank",
-        skip_serializing_if = "ServiceBlock::is_disposable"
-    )]
-    pub bank: ServiceBlock,
     pub coord_server: String,
     pub csrf_trusted_origins: Option<Vec<String>>,
     pub db: DbBlock,
     pub default_service_grace_period_seconds: u32,
     pub device_id: Option<String>,
     pub domain: Option<String>,
-    pub elektro: ServiceBlock,
-    pub fluss: ServiceBlock,
     pub gateway: GatewayBlock,
     pub global_admin: String,
     pub global_admin_email: Option<String>,
     pub global_admin_password: String,
     pub global_description: Option<String>,
     pub internal_network: String,
-    pub kabinet: ServiceBlock,
-    pub kraph: ServiceBlock,
-    /// Experimental, and unknown upstream. See [`Self::bank`].
-    #[serde(
-        default = "disabled_dokuments",
-        skip_serializing_if = "ServiceBlock::is_disposable"
-    )]
-    pub dokuments: ServiceBlock,
-    /// Experimental, and unknown upstream. See [`Self::bank`].
-    #[serde(
-        default = "disabled_lokate",
-        skip_serializing_if = "ServiceBlock::is_disposable"
-    )]
-    pub lokate: ServiceBlock,
     /// Lovekit's media server, once Lovekit has run here. See [`LivekitBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub livekit: Option<LivekitBlock>,
-    /// Experimental, and unknown upstream. See [`Self::bank`].
-    #[serde(
-        default = "disabled_kuvert",
-        skip_serializing_if = "ServiceBlock::is_disposable"
-    )]
-    pub kuvert: ServiceBlock,
     pub local_redis: RedisBlock,
     /// Present only when the hub runs its own Ollama. See [`OllamaBlock`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -638,23 +720,47 @@ pub struct HubConfig {
     /// Present only on a self-contained hub. See [`LokBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lok: Option<LokBlock>,
-    /// Present only on a hub that joined a mesh. Upstream's config model does not know
-    /// this key, so it is omitted entirely rather than written as `enabled: false`.
+    /// Present only on a hub that joined a mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshBlock>,
-    pub mikro: ServiceBlock,
     pub minio: MinioBlock,
-    pub rekuest: ServiceBlock,
     pub rekuest_server: String,
     /// The image takt runs, once something pinned it (a rollback, an advanced pin). Unset,
-    /// it follows Rekuest's image — see [`Self::takt_image`]. Unknown upstream, so it is
-    /// written only when set.
+    /// it follows Rekuest's image — see [`Self::takt_image`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takt_image: Option<String>,
     /// Present once the hub is authorized. See [`ReporterBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reporter: Option<ReporterBlock>,
-    pub lovekit: ServiceBlock,
+    /// The hub's services, by name.
+    ///
+    /// **Every service of the catalogue has a block**, switched on or not: a service that
+    /// was never chosen keeps the image and secret key it would start with, so adding it
+    /// later starts from what the profile says. A profile that lacks one — written by a
+    /// build whose catalogue was shorter — is given the seeded, disabled block as it is
+    /// read. **A service outside the catalogue has a block from the moment it is added**
+    /// and never before: nothing here can seed one for a name it has not been told.
+    ///
+    /// So [`Self::service`] cannot miss for a catalogue service or for anything
+    /// [`Self::enabled_services`] returned; [`Self::get`] is for a name of unknown origin.
+    #[serde(deserialize_with = "every_catalogue_service")]
+    pub services: BTreeMap<ServiceId, ServiceBlock>,
+}
+
+/// Reads the `services` map, and completes it to the invariant [`HubConfig::services`]
+/// states: a catalogue service the profile has no block for gets the seeded, disabled one.
+fn every_catalogue_service<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<ServiceId, ServiceBlock>, D::Error> {
+    let mut services = BTreeMap::<ServiceId, ServiceBlock>::deserialize(deserializer)?;
+    for id in SERVICE_IDS {
+        services.entry(*id).or_insert_with(|| {
+            let mut block = build_service_block(*id, false);
+            block.enabled = false;
+            block
+        });
+    }
+    Ok(services)
 }
 
 /// The port takt listens on inside the stack; its image's default.
@@ -688,6 +794,48 @@ pub fn takt_image_for(rekuest_image: &str) -> String {
 }
 
 impl HubConfig {
+    /// The block of a service this hub has one for, or `None`: for a name that came from
+    /// somewhere that does not promise it is one of this hub's.
+    pub fn get(&self, id: ServiceId) -> Option<&ServiceBlock> {
+        self.services.get(&id)
+    }
+
+    /// The block of one of this hub's services.
+    ///
+    /// For an id that is known to have one — a catalogue service, or one this hub's own
+    /// lists returned (see [`Self::services`] for the invariant). Asking for any other is
+    /// a bug in the caller, and panics saying which; [`Self::get`] is the asking form.
+    pub fn service(&self, id: ServiceId) -> &ServiceBlock {
+        self.services
+            .get(&id)
+            .unwrap_or_else(|| panic!("this hub has no service called `{id}`"))
+    }
+
+    /// The mutable half of [`Self::service`].
+    pub fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
+        self.services
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("this hub has no service called `{id}`"))
+    }
+
+    /// Every service this hub has a block for, running or not, in generation order.
+    pub fn service_ids(&self) -> Vec<ServiceId> {
+        crate::catalog::in_generation_order(self.services.keys().copied())
+    }
+
+    /// The service that runs as the compose service `host`, if one of this hub's does.
+    pub fn service_at(&self, host: &str) -> Option<ServiceId> {
+        self.service_ids()
+            .into_iter()
+            .find(|id| self.service(*id).host == host)
+    }
+
+    /// Rekuest's block. It is the one service the rest of a hub is wired around — takt runs
+    /// beside it, and it is the provenance authority — so it is asked for by name.
+    pub fn rekuest(&self) -> &ServiceBlock {
+        self.service(ServiceId::Rekuest)
+    }
+
     /// The compose service of takt, when this hub runs a Rekuest of its own.
     ///
     /// takt is Rekuest's other half (its own image, the same `rekuest.yaml`): every agent
@@ -695,22 +843,18 @@ impl HubConfig {
     /// server's upkeep jobs. A Rekuest without it serves GraphQL and nothing else — no agent
     /// connects, nothing is assigned, and its health check fails.
     pub fn takt_host(&self) -> Option<String> {
-        self.rekuest
-            .runs()
-            .then(|| format!("{}-takt", self.rekuest.host))
+        let rekuest = self.rekuest();
+        rekuest.runs().then(|| format!("{}-takt", rekuest.host))
     }
 
     /// The image takt runs: the pinned one, else the one that belongs to Rekuest's.
     pub fn takt_image(&self) -> Option<String> {
-        let rekuest = self
-            .rekuest
-            .image
-            .as_deref()
-            .filter(|_| self.rekuest.runs())?;
+        let rekuest = self.rekuest();
+        let image = rekuest.image.as_deref().filter(|_| rekuest.runs())?;
         Some(
             self.takt_image
                 .clone()
-                .unwrap_or_else(|| takt_image_for(rekuest)),
+                .unwrap_or_else(|| takt_image_for(image)),
         )
     }
 
@@ -719,78 +863,46 @@ impl HubConfig {
     /// only the path from this; a Rekuest image from before the socket still uses it whole.
     pub fn takt_url(&self) -> Option<String> {
         self.takt_host()
-            .map(|host| format!("http://{host}:{TAKT_INTERNAL_PORT}/{}", self.rekuest.host))
+            .map(|host| format!("http://{host}:{TAKT_INTERNAL_PORT}/{}", self.rekuest().host))
     }
 
-    pub fn service(&self, id: ServiceId) -> &ServiceBlock {
-        match id {
-            ServiceId::Rekuest => &self.rekuest,
-            ServiceId::Mikro => &self.mikro,
-            ServiceId::Fluss => &self.fluss,
-            ServiceId::Kabinet => &self.kabinet,
-            ServiceId::Kraph => &self.kraph,
-            ServiceId::Elektro => &self.elektro,
-            ServiceId::Alpaka => &self.alpaka,
-            ServiceId::Lovekit => &self.lovekit,
-            ServiceId::Bank => &self.bank,
-            ServiceId::Kuvert => &self.kuvert,
-            ServiceId::Dokuments => &self.dokuments,
-            ServiceId::Lokate => &self.lokate,
-        }
-    }
-
-    /// Give every service an instance key it does not have yet; true when any was added.
+    /// Provides every running service with what its image says it needs, from `said` (by
+    /// compose service); true when anything was added.
     ///
-    /// Idempotent: a key, once minted, is kept — rotating it is re-authorizing with a new one
-    /// on purpose, not a side effect of loading a profile. Rekuest's pre-instance-key
-    /// provenance pair becomes its instance key, so its provenance tokens keep verifying.
-    pub fn ensure_instance_keys(&mut self) -> bool {
+    /// This is where a description becomes part of the hub: buckets are named, an instance
+    /// key and the declared secrets are minted, and the block remembers them — see
+    /// [`ServiceBlock::provide`], which keeps whatever is there. A service `said` does not
+    /// hold is left as it is: nothing is assumed of an image that was not asked.
+    ///
+    /// What this build wires beside one service in particular is settled here too:
+    /// Lovekit's LiveKit credentials are minted once Lovekit runs, and kept with the rest
+    /// of its [`LivekitBlock`] when it is taken out again.
+    pub fn provide(&mut self, said: &crate::contract::Said) -> bool {
         let mut changed = false;
-        for id in crate::catalog::SERVICE_IDS {
+        for id in self.enabled_services() {
             let block = self.service_mut(id);
-            if block.instance_key_pair.is_none() {
-                block.instance_key_pair = Some(
-                    block
-                        .provenance_key_pair
-                        .take()
-                        .unwrap_or_else(crate::secrets::generate_ed25519_key_pair),
-                );
-                changed = true;
-            } else if block.provenance_key_pair.take().is_some() {
-                changed = true;
+            if let Some(description) = said.get(&block.host) {
+                changed |= block.provide(description);
             }
         }
-        changed
-    }
-
-    /// Give an enabled Kuvert the Fernet key it encrypts mailbox credentials with, if it has
-    /// none yet; true when one was added.
-    ///
-    /// Idempotent like [`Self::ensure_instance_keys`]: once minted the key is kept, because
-    /// a new one cannot decrypt what the old one encrypted. Only an *enabled* Kuvert gets
-    /// one, so a hub without it never writes a `kuvert` block. A Kuvert disabled later keeps
-    /// its block and key in the profile (see [`ServiceBlock::is_disposable`]).
-    ///
-    /// Lovekit's LiveKit credentials are minted the same way, once Lovekit runs, and kept
-    /// with the rest of its [`LivekitBlock`] when it is taken out again.
-    pub fn ensure_service_secrets(&mut self) -> bool {
-        let mut changed = false;
-        let kuvert = &mut self.kuvert;
-        if kuvert.enabled && kuvert.fernet_key.is_none() {
-            kuvert.fernet_key = Some(crate::secrets::generate_fernet_key());
-            changed = true;
-        }
-        if self.lovekit.runs() && self.livekit.is_none() {
+        if self.runs(ServiceId::Lovekit) && self.livekit.is_none() {
             self.livekit = Some(LivekitBlock::minted());
             changed = true;
         }
         changed
     }
 
+    /// Whether `id` is one of this hub's services and part of its stack.
+    pub fn runs(&self, id: ServiceId) -> bool {
+        self.get(id).is_some_and(ServiceBlock::runs)
+    }
+
     /// The LiveKit this stack runs, if it runs one: only while Lovekit does, like
     /// [`Self::running_ollama`].
     pub fn running_livekit(&self) -> Option<&LivekitBlock> {
-        self.livekit.as_ref().filter(|_| self.lovekit.runs())
+        self.livekit
+            .as_ref()
+            .filter(|_| self.runs(ServiceId::Lovekit))
     }
 
     /// Point LiveKit at the address clients should send media to, from the hosts this hub
@@ -803,29 +915,11 @@ impl HubConfig {
         }
     }
 
-    /// The mutable half of [`Self::service`], used by [`Self::set_service_image`].
-    pub(crate) fn service_mut(&mut self, id: ServiceId) -> &mut ServiceBlock {
-        match id {
-            ServiceId::Rekuest => &mut self.rekuest,
-            ServiceId::Mikro => &mut self.mikro,
-            ServiceId::Fluss => &mut self.fluss,
-            ServiceId::Kabinet => &mut self.kabinet,
-            ServiceId::Kraph => &mut self.kraph,
-            ServiceId::Elektro => &mut self.elektro,
-            ServiceId::Alpaka => &mut self.alpaka,
-            ServiceId::Lovekit => &mut self.lovekit,
-            ServiceId::Bank => &mut self.bank,
-            ServiceId::Kuvert => &mut self.kuvert,
-            ServiceId::Dokuments => &mut self.dokuments,
-            ServiceId::Lokate => &mut self.lokate,
-        }
-    }
-
     /// The services whose database and buckets the stack provisions: the enabled ones,
     /// and the ones taken out that keep their data (see [`ServiceBlock::retained`]), in
     /// generation order.
     pub fn provisioned_services(&self) -> Vec<ServiceId> {
-        crate::catalog::HUB_SERVICE_ORDER
+        self.service_ids()
             .into_iter()
             .filter(|id| {
                 let block = self.service(*id);
@@ -845,41 +939,59 @@ impl HubConfig {
     pub fn running_ollama(&self) -> Option<&OllamaBlock> {
         self.local_ollama
             .as_ref()
-            .filter(|o| o.enabled && self.alpaka.enabled)
+            .filter(|o| o.enabled && self.service(ServiceId::Alpaka).enabled)
     }
 
     /// Switch a service on in an existing profile. Its block is reused as it stands — the
-    /// instance key, Django secret and Kuvert's Fernet key it had before are what its data
-    /// was written with — and only an image it never had is seeded. Rekuest is decided by
-    /// `rekuest_server`, so adding it makes this hub run its own, as the wizard does.
+    /// instance key, Django secret and secrets it had before are what its data was written
+    /// with — and only an image it never had is seeded, from the catalogue. Rekuest is
+    /// decided by `rekuest_server`, so adding it makes this hub run its own, as the wizard
+    /// does.
+    ///
+    /// A service outside the catalogue gets its block here, the first time it is added,
+    /// and no image: that is [`Self::add_service_on`]'s to give it.
     pub fn add_service(&mut self, id: ServiceId) {
         if id == ServiceId::Rekuest {
             self.rekuest_server = "local".into();
         }
-        let block = self.service_mut(id);
+        let block = self
+            .services
+            .entry(id)
+            .or_insert_with(|| build_service_block(id, false));
         block.enabled = true;
         block.retained = false;
         if block.image.is_none() {
-            block.image = seed(id).image.map(str::to_string);
+            block.image = id.default_image().map(str::to_string);
         }
+    }
+
+    /// [`Self::add_service`], running `image`: how a service is added by the image it is,
+    /// which is the only way one outside the catalogue can be.
+    pub fn add_service_on(&mut self, id: ServiceId, image: &str) {
+        self.add_service(id);
+        self.service_mut(id).image = Some(image.trim().to_string());
     }
 
     /// Switch a service off in an existing profile, keeping its data provisioned — see
     /// [`ServiceBlock::retained`]. Taking Rekuest out leaves the hub without one
-    /// (`rekuest_server: none`), not trusting some other.
+    /// (`rekuest_server: none`), not trusting some other. A name this hub has no service
+    /// for is not something to switch off.
     pub fn remove_service(&mut self, id: ServiceId) {
+        let Some(block) = self.services.get_mut(&id) else {
+            return;
+        };
+        block.enabled = false;
+        block.retained = true;
         if id == ServiceId::Rekuest {
             self.rekuest_server = "none".into();
         }
-        let block = self.service_mut(id);
-        block.enabled = false;
-        block.retained = true;
     }
 
-    /// The services the stack runs, in the order the generator feeds them: enabled, with
-    /// an image (see [`ServiceBlock::runs`]).
+    /// The services the stack runs, in the order the generator feeds them — the
+    /// catalogue's in [`crate::catalog::HUB_SERVICE_ORDER`], then any other by name:
+    /// enabled, with an image (see [`ServiceBlock::runs`]).
     pub fn enabled_services(&self) -> Vec<ServiceId> {
-        crate::catalog::HUB_SERVICE_ORDER
+        self.service_ids()
             .into_iter()
             .filter(|id| self.service(*id).runs())
             .collect()
@@ -949,8 +1061,10 @@ impl HubConfig {
     /// moved without being moved. `every_service_in_the_stack_can_be_written_back` in
     /// `rollback` walks `stack_images` through this and fails if one is unreachable.
     ///
-    /// Written as a chain of comparisons rather than a lookup because the profile is a
-    /// struct: there is no map to write into.
+    /// Written as a chain of comparisons rather than a lookup because the names are the
+    /// blocks' own `host`s, and only the services are a map. A service that is switched on
+    /// and has no image yet — one outside the catalogue, at the moment it is given the
+    /// image it was named by — is reachable too.
     pub fn set_service_image(&mut self, service: &str, image: &str) {
         if service == DB_COMPOSE_SERVICE {
             self.db.image = image.to_string();
@@ -996,12 +1110,24 @@ impl HubConfig {
             self.takt_image = Some(image.to_string());
             return;
         }
-        for id in self.enabled_services() {
-            if self.service(id).host == service {
-                self.service_mut(id).image = Some(image.to_string());
-                return;
-            }
+        if let Some(block) = self
+            .services
+            .values_mut()
+            .find(|block| block.enabled && block.host == service)
+        {
+            block.image = Some(image.to_string());
         }
+    }
+
+    /// The compose services that are switched on and have no image to run: services
+    /// outside the catalogue that were named without one.
+    pub fn imageless_services(&self) -> Vec<String> {
+        self.service_ids()
+            .into_iter()
+            .map(|id| self.service(id))
+            .filter(|block| block.enabled && block.image.is_none())
+            .map(|block| block.host.clone())
+            .collect()
     }
 }
 
@@ -1011,15 +1137,16 @@ impl HubConfig {
 /// A service is seeded on a **major** (`jhnnsrs/rekuest:6`), not on `latest`: within a
 /// major a service reads the config it always read, so a hub follows the tag freely, and a
 /// release that reads something else is a new major, which only arrives with a Konstruktor
-/// that generates for it. That is the whole contract between the two, and [`seed`] is
-/// where it is written down — raising a major there goes with a new layout
+/// that generates for it. That is the whole contract between the two, and the catalogue
+/// ([`crate::catalog::Known::image`]) is where it is written down — raising a major there
+/// goes with a new layout
 /// ([`crate::migrate::CURRENT_LAYOUT`]), since older hubs then have to move.
 ///
 /// Behind is the seeded repository at `latest` (what earlier Konstruktors seeded) or at an
 /// older major, with or without a digest pinned beside it. Anything else was chosen by
 /// somebody — an exact version, another repository, a local build — and is left alone.
 pub fn caught_up_image(id: ServiceId, image: &str) -> Option<String> {
-    let supported = seed(id).image?;
+    let supported = id.default_image()?;
     let (repository, major) = supported.rsplit_once(':')?;
     let named = image.split('@').next().unwrap_or(image);
     let (found, tag) = named.rsplit_once(':')?;
@@ -1037,7 +1164,7 @@ pub fn caught_up_image(id: ServiceId, image: &str) -> Option<String> {
 /// Whether `image` is the one this build generates for: the seeded repository on the
 /// seeded major, or an exact version of that major.
 pub fn is_supported_image(id: ServiceId, image: &str) -> bool {
-    let Some((repository, major)) = seed(id).image.and_then(|s| s.rsplit_once(':')) else {
+    let Some((repository, major)) = id.default_image().and_then(|s| s.rsplit_once(':')) else {
         return true;
     };
     let named = image.split('@').next().unwrap_or(image);
@@ -1046,172 +1173,61 @@ pub fn is_supported_image(id: ServiceId, image: &str) -> bool {
         .is_some_and(|(found, tag)| found == repository && tag.split('.').next() == Some(major))
 }
 
-/// Everything a service block needs beyond the shared defaults.
-struct ServiceSeed {
-    enabled: bool,
-    image: Option<&'static str>,
-    db: &'static str,
-    github_repo: &'static str,
+/// The database a service gets: called after it, with the one character a service's name
+/// may hold and a plain Postgres identifier may not (`omero-ark` → `omero_ark`).
+fn database_named_after(service: &str) -> String {
+    service.replace('-', "_")
 }
 
-fn seed(id: ServiceId) -> ServiceSeed {
-    match id {
-        ServiceId::Rekuest => ServiceSeed {
-            enabled: true,
-            image: Some("jhnnsrs/rekuest:7"),
-            db: "rekuest",
-            github_repo: "https://github.com/arkitektio/rekuest-server-next",
-        },
-        ServiceId::Mikro => ServiceSeed {
-            enabled: true,
-            image: Some("jhnnsrs/mikro:7"),
-            db: "mikro",
-            github_repo: "https://github.com/arkitektio/mikro-server-next",
-        },
-        ServiceId::Fluss => ServiceSeed {
-            enabled: true,
-            image: Some("jhnnsrs/fluss:4"),
-            db: "fluss",
-            github_repo: "https://github.com/arkitektio/fluss-server-next",
-        },
-        ServiceId::Kabinet => ServiceSeed {
-            enabled: true,
-            image: Some("jhnnsrs/kabinet:6"),
-            db: "kabinet",
-            github_repo: "https://github.com/arkitektio/kabinet-server",
-        },
-        ServiceId::Kraph => ServiceSeed {
-            enabled: true,
-            image: Some("jhnnsrs/kraph:2"),
-            db: "kraph",
-            github_repo: "https://github.com/arkitektio/kraph-server",
-        },
-        ServiceId::Elektro => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/elektro:5"),
-            db: "elektro",
-            github_repo: "https://github.com/arkitektio/elektro-server",
-        },
-        ServiceId::Alpaka => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/alpaka:5"),
-            db: "alpaka",
-            github_repo: "https://github.com/arkitektio/alpaka-server",
-        },
-        // Experimental, like the ones below. Upstream still seeds it enabled and without
-        // an image, which is what older profiles say; see `ServiceBlock::runs`.
-        ServiceId::Lovekit => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/lovekit:3"),
-            db: "lovekit",
-            github_repo: "https://github.com/arkitektio/lovekit-server",
-        },
-        // Experimental: offered, never switched on unless asked for.
-        ServiceId::Bank => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/bank:4"),
-            db: "bank",
-            github_repo: "https://github.com/jhnnsrs/bank",
-        },
-        ServiceId::Kuvert => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/kuvert:4"),
-            db: "kuvert",
-            github_repo: "https://github.com/jhnnsrs/kuvert",
-        },
-        ServiceId::Dokuments => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/dokuments:2"),
-            db: "dokuments",
-            github_repo: "https://github.com/jhnnsrs/dokuments-server",
-        },
-        ServiceId::Lokate => ServiceSeed {
-            enabled: false,
-            image: Some("jhnnsrs/lokate:3"),
-            db: "lokate",
-            github_repo: "https://github.com/arkitektio/lokate-server",
-        },
-    }
-}
-
-/// What a profile written before Bank existed reads as: the seeded, disabled block.
-fn disabled_bank() -> ServiceBlock {
-    build_service_block(ServiceId::Bank, false)
-}
-
-/// What a profile written before Kuvert existed reads as. See [`disabled_bank`].
-fn disabled_kuvert() -> ServiceBlock {
-    build_service_block(ServiceId::Kuvert, false)
-}
-
-/// What a profile written before Dokuments existed reads as. See [`disabled_bank`].
-fn disabled_dokuments() -> ServiceBlock {
-    build_service_block(ServiceId::Dokuments, false)
-}
-
-/// What a profile written before Lokate existed reads as. See [`disabled_bank`].
-fn disabled_lokate() -> ServiceBlock {
-    build_service_block(ServiceId::Lokate, false)
-}
-
+/// The block a service starts with, before its image has been asked anything.
+///
+/// For a catalogue service that is the catalogue's image and repository, switched on when
+/// the catalogue pre-ticks it. For any other there is only the name: no image, no
+/// repository, switched off until somebody adds it. Either way the conventions every
+/// service is held to — it listens on port 80, is served under its own name, and gets a
+/// database called after it — and nothing its image has to say first: no buckets, no key,
+/// no secrets. Those are [`ServiceBlock::provide`]'s, once the image has answered.
 fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
-    let seed = seed(id);
+    let known = id.known();
     let name = id.as_str();
 
     let mut block = ServiceBlock {
-        admin_config: Kinded::global(),
+        admin_config: Some(Kinded::global()),
         allowed_hosts: vec!["*".to_string()],
         auth_config: Kinded::local(),
-        db_config: LocalDb {
+        db_config: Some(LocalDb {
             kind: "local".into(),
-            db: seed.db.into(),
-        },
+            db: database_named_after(name),
+        }),
         debug: false,
-        enabled: seed.enabled,
-        github_repo: seed.github_repo.into(),
+        enabled: known.is_some_and(|known| known.default),
+        github_repo: known.map(|known| known.github_repo.to_string()),
         host: name.into(),
-        image: seed.image.map(str::to_string),
+        identifier: None,
+        health: None,
+        image: known.map(|known| known.image.to_string()),
         internal_port: 80,
-        media_bucket: LocalBucket::new(&format!("{name}media")),
-        mount_github,
+        // Only a service with a repository can run from a checkout of it.
+        mount_github: mount_github && known.is_some(),
         path_config: Kinded::local(),
-        redis_config: Kinded::local(),
+        redis_config: Some(Kinded::local()),
         secret_key: generate_django_secret_key(),
-        zarr_bucket: None,
-        parquet_bucket: None,
-        bigfile_bucket: None,
-        fabriks_bucket: None,
-        konnektion_bucket: None,
+        buckets: Buckets::default(),
+        instance_key_pair: None,
+        secrets: BTreeMap::new(),
         ollama_config: None,
         ensured_repositories: None,
         provenance_issuer: None,
         provenance_kid: None,
-        provenance_key_pair: None,
-        instance_key_pair: None,
-        fernet_key: None,
         retained: false,
     };
 
+    // What this build wires for one service in particular. A service it has never heard
+    // of passes through untouched.
     match id {
         ServiceId::Rekuest => {
             block.provenance_issuer = Some("rekuest".into());
             block.provenance_kid = Some("rekuest-prov-1".into());
-        }
-        ServiceId::Mikro => {
-            block.zarr_bucket = Some(LocalBucket::new("mikrozarr"));
-            block.parquet_bucket = Some(LocalBucket::new("mikroparquet"));
-            block.bigfile_bucket = Some(LocalBucket::new("mikrobigfile"));
-            block.fabriks_bucket = Some(LocalBucket::new("mikrofabriks"));
-            block.konnektion_bucket = Some(LocalBucket::new("mikrokonnektion"));
-        }
-        ServiceId::Elektro => {
-            block.zarr_bucket = Some(LocalBucket::new("elektrozarr"));
-            block.parquet_bucket = Some(LocalBucket::new("elektroparquet"));
-            block.bigfile_bucket = Some(LocalBucket::new("elektrobigfile"));
-        }
-        ServiceId::Kraph => {
-            block.zarr_bucket = Some(LocalBucket::new("kraphzarr"));
-            block.bigfile_bucket = Some(LocalBucket::new("kraphbigfile"));
         }
         ServiceId::Kabinet => {
             block.ensured_repositories = Some(vec![
@@ -1221,13 +1237,6 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         }
         ServiceId::Alpaka => {
             block.ollama_config = Some(Kinded::local());
-        }
-        ServiceId::Bank => {
-            block.bigfile_bucket = Some(LocalBucket::new("bankbigfile"));
-        }
-        // The Fernet key is minted by `ensure_service_secrets`, once Kuvert is enabled.
-        ServiceId::Kuvert => {
-            block.bigfile_bucket = Some(LocalBucket::new("kuvertbigfile"));
         }
         _ => {}
     }
@@ -1504,16 +1513,24 @@ fn blank(value: Option<&str>) -> Option<String> {
 /// Build a complete hub profile.
 ///
 /// `rekuest.enabled` deliberately ignores the service selection and follows
-/// `rekuest_server` instead — the Python CLI applies the same rule after its own picker,
-/// and a hub that trusts a remote Rekuest must not start a second one.
+/// `rekuest_server` instead: a hub that trusts a remote Rekuest must not start a second
+/// one.
+///
+/// Every service of the catalogue gets a block, and so does every selected service that
+/// is not in it — without an image, which whoever named it has to give it
+/// ([`HubConfig::set_service_image`]). No image has been asked anything yet, so no block
+/// holds buckets, a key or secrets: [`HubConfig::provide`] adds those from what the
+/// images say.
 pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
-    let mut blocks: Vec<(ServiceId, ServiceBlock)> = SERVICE_IDS
-        .into_iter()
-        .map(|id| (id, build_service_block(id, options.dev_hub)))
+    let selected = options.services.as_deref().unwrap_or_default();
+    let mut services: BTreeMap<ServiceId, ServiceBlock> = SERVICE_IDS
+        .iter()
+        .chain(selected)
+        .map(|id| (*id, build_service_block(*id, options.dev_hub)))
         .collect();
 
-    if let Some(selected) = &options.services {
-        for (id, block) in blocks.iter_mut() {
+    if options.services.is_some() {
+        for (id, block) in services.iter_mut() {
             block.enabled = selected.contains(id);
         }
     }
@@ -1521,9 +1538,10 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     // A dev hub mounts every service's source; asking for one service on its own mounts
     // that one. Both write the same field, so the generator and `git::checkouts` never
     // have to know which of the two answers put it there.
-    for (id, block) in blocks.iter_mut() {
+    for (id, block) in services.iter_mut() {
         if let Some(asked) = options.service_options.get(id) {
-            block.mount_github = block.mount_github || asked.from_source;
+            block.mount_github =
+                block.mount_github || (asked.from_source && block.github_repo.is_some());
             block.debug = block.debug || asked.debug;
 
             // Kabinet's app repositories: an answer replaces the seeded pair outright
@@ -1534,7 +1552,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             }
 
             // Alpaka's provider. `local` means one runs in this stack, `global` means it
-            // is somewhere else — the same two words upstream's model already uses.
+            // is somewhere else.
             if let Some(ollama) = &asked.ollama {
                 if ollama.run_locally {
                     block.ollama_config = Some(Kinded::local());
@@ -1545,38 +1563,17 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         }
     }
 
-    let take = |blocks: &mut Vec<(ServiceId, ServiceBlock)>, id: ServiceId| {
-        let index = blocks
-            .iter()
-            .position(|(i, _)| *i == id)
-            .expect("every id is seeded");
-        blocks.remove(index).1
-    };
-
-    let mut rekuest = take(&mut blocks, ServiceId::Rekuest);
+    let rekuest = services
+        .get_mut(&ServiceId::Rekuest)
+        .expect("every catalogue service is seeded");
     rekuest.enabled = options.rekuest_server.trim() == "local";
     // Rekuest's instance key is also its provenance key; a caller may pin it (tests).
-    rekuest.instance_key_pair = Some(
-        options
-            .provenance_key_pair
-            .clone()
-            .unwrap_or_else(crate::secrets::generate_ed25519_key_pair),
-    );
+    // Otherwise it is minted with every other service's, once the images are asked.
+    rekuest.instance_key_pair = options.provenance_key_pair.clone();
 
     let mut config = HubConfig {
-        rekuest,
-        mikro: take(&mut blocks, ServiceId::Mikro),
-        fluss: take(&mut blocks, ServiceId::Fluss),
-        kabinet: take(&mut blocks, ServiceId::Kabinet),
-        kraph: take(&mut blocks, ServiceId::Kraph),
-        elektro: take(&mut blocks, ServiceId::Elektro),
-        alpaka: take(&mut blocks, ServiceId::Alpaka),
-        lovekit: take(&mut blocks, ServiceId::Lovekit),
-        bank: take(&mut blocks, ServiceId::Bank),
-        kuvert: take(&mut blocks, ServiceId::Kuvert),
-        dokuments: take(&mut blocks, ServiceId::Dokuments),
-        lokate: take(&mut blocks, ServiceId::Lokate),
-        // Minted below, once Lovekit is known to run.
+        services,
+        // Minted once Lovekit is known to run: see `HubConfig::provide`.
         livekit: None,
 
         coord_server: options.coord_server.clone(),
@@ -1656,7 +1653,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     // Alpaka's provider, once the blocks are in place. Only when Alpaka actually runs:
     // an Ollama container for a service this hub does not have would be several
     // gigabytes pulled for nothing.
-    if config.alpaka.enabled {
+    if config.service(ServiceId::Alpaka).enabled {
         config.local_ollama = options
             .service_options
             .get(&ServiceId::Alpaka)
@@ -1675,10 +1672,5 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         config.lok = Some(build_lok_block(&options.lok.clone().unwrap_or_default()));
     }
 
-    // Every service keeps the host it was seeded with; `service_mut` exists for the
-    // orchestration that folds a mesh key in after the fact.
-    let _ = config.service_mut(ServiceId::Rekuest);
-    config.ensure_instance_keys();
-    config.ensure_service_secrets();
     config
 }

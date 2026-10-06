@@ -10,7 +10,7 @@ use crate::config::mesh::{
     MESH_SOCKET_VOLUME as TAILSCALE_SOCKET_VOLUME, MESH_STATE_DIR,
 };
 use crate::credentials::CREDENTIALS_FILENAME;
-use crate::generate::service::{fernet_key_file, fernet_key_path, list, map, s};
+use crate::generate::service::{list, map, s, secret_file, secret_path};
 use crate::profile::HUB_CONFIG_FILENAME as PROFILE_FILENAME;
 
 /// `docker-compose.yaml`, and the bucket manifest the storage init container reads.
@@ -25,13 +25,9 @@ fn insert(target: &mut Value, key: &str, value: Value) {
     }
 }
 
-/// The bucket names a service declares, in `bucket_purposes()` order.
-fn buckets_of(id: ServiceId, service: &ServiceBlock) -> Vec<String> {
-    service
-        .bucket_names(id)
-        .into_iter()
-        .map(|(_, name)| name)
-        .collect()
+/// The bucket names a service declared, in the order it declared their purposes.
+fn buckets_of(service: &ServiceBlock) -> Vec<String> {
+    service.buckets.names()
 }
 
 /// `enabled`, then the services taken out that keep their data — whose database and
@@ -75,15 +71,16 @@ fn compose_service(
         "./configs/{}.yaml:/workspace/config.yaml",
         service.host
     )));
-    if service.fernet_key.is_some() {
+    // Each secret the service declared, as a file only it is handed.
+    for name in service.secrets.keys() {
         volumes.push(s(&format!(
             "./{}:{}:ro",
-            fernet_key_file(service),
-            fernet_key_path(service)
+            secret_file(service, name),
+            secret_path(service, name)
         )));
     }
     // Rekuest reaches takt's internal API through the socket in the volume the two share.
-    if service.host == config.rekuest.host && config.takt_image().is_some() {
+    if service.host == config.rekuest().host && config.takt_image().is_some() {
         volumes.push(s(&format!("{TAKT_SOCKET_VOLUME}:{TAKT_SOCKET_DIR}")));
     }
 
@@ -108,16 +105,8 @@ fn compose_service(
     }
     entries.extend(vec![
         // By the profile's own names: the object storage was renamed from `minio` to
-        // `rustfs`, and a dependency on a service that is not in the file is an error
-        // compose refuses the whole project over.
-        (
-            "depends_on",
-            list(vec![
-                s(&config.local_redis.host),
-                s(DB_COMPOSE_SERVICE),
-                s(&config.minio.host),
-            ]),
-        ),
+        // `rustfs`. See `infrastructure` for what each is waited on for.
+        ("depends_on", dependencies(config, service)),
         ("stop_grace_period", s("2s")),
         ("volumes", list(volumes)),
         (
@@ -136,20 +125,104 @@ fn compose_service(
     map(entries)
 }
 
+/// One entry of a `depends_on` map: wait for `service` to be in `condition`.
+fn after<'a>(service: &'a str, condition: &str) -> (&'a str, Value) {
+    (service, map(vec![("condition", s(condition))]))
+}
+
+/// What something that uses the database, the Redis and — when `stores` — the object
+/// store is started after, as a `depends_on` map.
+///
+/// Not merely *started*, for the two that have a moment between running and usable:
+///
+/// - the database has to be **healthy** ([`database_healthcheck`]): a service whose first
+///   act is to open a connection would otherwise crash into its restart policy on every
+///   cold start, and takt's own health check would count the wait against it;
+/// - the bucket job has to have **completed**: it is the one-off container that creates
+///   the buckets and the services' own user in the store, and a service started before it
+///   has finished finds neither.
+///
+/// The Redis and the store itself only have to be started: both listen at once.
+///
+/// This orders `compose up`. It is not in the way of what is done to one service at a
+/// time: Konstruktor's own preparation starts the database alone and runs each job with
+/// `--no-deps`, an update recreates a service with `--no-deps`, and `stop` and `restart`
+/// do not read conditions at all.
+pub(crate) fn infrastructure(
+    config: &HubConfig,
+    database: bool,
+    redis: bool,
+    stores: bool,
+) -> Vec<(&str, Value)> {
+    let mut out = Vec::new();
+    if database {
+        out.push(after(DB_COMPOSE_SERVICE, "service_healthy"));
+    }
+    if redis {
+        out.push(after(&config.local_redis.host, "service_started"));
+    }
+    if stores {
+        out.push(after(&config.minio.host, "service_started"));
+        out.push(after(
+            &config.minio.init_container_host,
+            "service_completed_successfully",
+        ));
+    }
+    out
+}
+
+/// The infrastructure a service is started after: each part only for a service that
+/// declared it uses it — which is also exactly what the file then holds, and a dependency
+/// on a service that is not in the file is an error compose refuses the whole project
+/// over.
+fn dependencies(config: &HubConfig, service: &ServiceBlock) -> Value {
+    map(infrastructure(
+        config,
+        service.db_config.is_some(),
+        service.redis_config.is_some(),
+        service.uses_datalayer(),
+    ))
+}
+
+/// How compose tells that the database takes connections: `pg_isready`, over TCP.
+///
+/// Over TCP on purpose. While a new cluster is being initialised the image runs a
+/// temporary server that listens on its socket only — to create the databases — and
+/// answers there before the real one is up; on the loopback address only the server that
+/// stays answers. Asked often, since everything else in the stack waits on it.
+fn database_healthcheck(config: &HubConfig) -> Value {
+    map(vec![
+        (
+            "test",
+            list(vec![
+                s("CMD"),
+                s("pg_isready"),
+                s("-h"),
+                s("127.0.0.1"),
+                s("-U"),
+                s(&config.db.postgres_user),
+            ]),
+        ),
+        ("interval", s("3s")),
+        ("timeout", s("5s")),
+        ("retries", Value::from(40)),
+    ])
+}
+
 /// The compose service Rekuest's reaper ran as, before takt took its work over.
 ///
 /// Nothing generates it any more. It is named only to recognise a hub whose files predate
 /// takt: such a hub runs a compose file with this service and without takt's, and must be
 /// regenerated before its Rekuest can move to an image that expects takt.
 pub fn legacy_reaper_host(config: &HubConfig) -> String {
-    format!("{}-reaper", config.rekuest.host)
+    format!("{}-reaper", config.rekuest().host)
 }
 
 /// The compose services that move with `service` when its image moves, and are restarted
 /// with it when its config changes: takt, for Rekuest. The two are one release and read one
 /// config file.
 pub fn companions(config: &HubConfig, service: &str) -> Vec<String> {
-    if service == config.rekuest.host {
+    if service == config.rekuest().host {
         config.takt_host().into_iter().collect()
     } else {
         Vec::new()
@@ -158,26 +231,24 @@ pub fn companions(config: &HubConfig, service: &str) -> Vec<String> {
 
 /// The service `companion` moves with, if it is one: Rekuest, for takt.
 pub fn companion_of(config: &HubConfig, companion: &str) -> Option<String> {
-    (config.takt_host().as_deref() == Some(companion)).then(|| config.rekuest.host.clone())
+    (config.takt_host().as_deref() == Some(companion)).then(|| config.rekuest().host.clone())
 }
 
 /// takt: its own image, Rekuest's config (read-only: the same file, mounted where the image
 /// looks for it) and the volume its internal socket lives in, which only Rekuest mounts
 /// too — no source mount, no object storage. Its health is the
 /// image's own `HEALTHCHECK` (`takt healthcheck`), which only passes once Rekuest has
-/// migrated, so it depends on Rekuest having started and waits for the rest itself.
+/// migrated, so it depends on Rekuest having started — and on the database being healthy,
+/// like everything that opens a connection to it.
 fn takt_service(config: &HubConfig, image: &str) -> Value {
-    let rekuest = &config.rekuest;
+    let rekuest = config.rekuest();
     map(vec![
         ("image", s(image)),
-        (
-            "depends_on",
-            list(vec![
-                s(DB_COMPOSE_SERVICE),
-                s(&config.local_redis.host),
-                s(&rekuest.host),
-            ]),
-        ),
+        ("depends_on", {
+            let mut waits = infrastructure(config, true, true, false);
+            waits.push(after(&rekuest.host, "service_started"));
+            map(waits)
+        }),
         ("stop_grace_period", s("2s")),
         // The internal API is not on the port agents reach: only Rekuest mounts this socket.
         (
@@ -298,7 +369,7 @@ fn livekit_service(config: &HubConfig, livekit: &LivekitBlock) -> Value {
 pub fn build_minio_init(config: &HubConfig, enabled: &[ServiceId]) -> Option<Value> {
     let buckets: Vec<String> = provisioned(config, enabled)
         .iter()
-        .flat_map(|id| buckets_of(*id, config.service(*id)))
+        .flat_map(|id| buckets_of(config.service(*id)))
         .chain(
             config
                 .running_lok()
@@ -344,7 +415,7 @@ pub fn build_compose(
     let lok = config.running_lok();
     let databases: Vec<String> = provisioned
         .iter()
-        .map(|id| config.service(*id).db_config.db.clone())
+        .filter_map(|id| config.service(*id).database().map(str::to_string))
         .chain(lok.map(|lok| lok.db.clone()))
         .collect();
 
@@ -362,6 +433,7 @@ pub fn build_compose(
                         ("POSTGRES_USER", s(&config.db.postgres_user)),
                     ]),
                 ),
+                ("healthcheck", database_healthcheck(config)),
                 (
                     "volumes",
                     list(vec![s(&format!(
@@ -386,7 +458,7 @@ pub fn build_compose(
     let has_buckets = lok.is_some()
         || provisioned
             .iter()
-            .any(|id| !buckets_of(*id, config.service(*id)).is_empty());
+            .any(|id| !buckets_of(config.service(*id)).is_empty());
 
     if has_buckets {
         insert(

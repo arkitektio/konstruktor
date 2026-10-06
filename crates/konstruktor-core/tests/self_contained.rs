@@ -1,13 +1,13 @@
 use konstruktor_core::catalog::ServiceId;
-use konstruktor_core::config::hub::{
-    build_hub_config, HubConfig, HubConfigOptions, LokOptions, LOCAL_COORD_SERVER,
-};
+use konstruktor_core::config::hub::{HubConfig, HubConfigOptions, LokOptions, LOCAL_COORD_SERVER};
 use konstruktor_core::connect::manifest::AdvertisedHost;
 use konstruktor_core::generate::lok::{build_access, preconfigured_hub, ACCESS_FILE};
 use konstruktor_core::generate::{generate_hub_files, GeneratedFiles, IssuedIdentity};
 use konstruktor_core::hosts::HostCategory;
 use konstruktor_core::secrets::KeyPair;
 use serde_norway::Value;
+
+mod support;
 
 // A self-contained hub: one that runs its own coordination server.
 //
@@ -29,7 +29,7 @@ fn signing_key() -> KeyPair {
 }
 
 fn self_contained(services: Vec<ServiceId>) -> HubConfig {
-    build_hub_config(&HubConfigOptions {
+    support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: LOCAL_COORD_SERVER.into(),
         services: Some(services),
@@ -56,7 +56,7 @@ fn default_hub() -> HubConfig {
 }
 
 fn files_of(config: &HubConfig) -> GeneratedFiles {
-    generate_hub_files(config, &IssuedIdentity::default(), &Default::default())
+    generate_hub_files(config, &IssuedIdentity::default(), &support::said())
 }
 
 fn yaml(files: &GeneratedFiles, name: &str) -> Value {
@@ -99,7 +99,7 @@ fn the_issuer_is_a_name_and_login_follows_the_request() {
 /// Neither the port nor the advertised address is part of what a token says.
 #[test]
 fn the_issuer_does_not_depend_on_where_the_hub_is_published() {
-    let elsewhere = build_hub_config(&HubConfigOptions {
+    let elsewhere = support::hub(&HubConfigOptions {
         coord_server: LOCAL_COORD_SERVER.into(),
         http_port: Some(80),
         https_port: None,
@@ -223,7 +223,7 @@ fn the_seed_names_line_up_the_way_lok_looks_them_up() {
 #[test]
 fn the_hub_advertises_every_service_the_store_and_lok_at_the_gateway() {
     let config = default_hub();
-    let hub = preconfigured_hub(&config, config.running_lok().unwrap());
+    let hub = preconfigured_hub(&config, config.running_lok().unwrap(), &support::said());
 
     let advertised: Vec<&str> = hub
         .instances
@@ -276,10 +276,13 @@ fn the_hub_advertises_every_service_the_store_and_lok_at_the_gateway() {
 fn no_instance_pins_a_key_its_health_check_cannot_answer_for() {
     let config = default_hub();
     assert!(
-        config.rekuest.instance_key_pair.is_some(),
+        config
+            .service(konstruktor_core::catalog::ServiceId::Rekuest)
+            .instance_key_pair
+            .is_some(),
         "the services still have theirs"
     );
-    let hub = preconfigured_hub(&config, config.running_lok().unwrap());
+    let hub = preconfigured_hub(&config, config.running_lok().unwrap(), &support::said());
     for instance in &hub.instances {
         assert!(
             instance.manifest.challenge_key.is_none(),
@@ -327,7 +330,7 @@ fn the_stack_runs_lok_with_a_database_and_a_bucket_of_its_own() {
 /// A coordination server alone still needs somewhere to keep its sessions and its media.
 #[test]
 fn lok_brings_its_infrastructure_even_with_no_other_service() {
-    let config = build_hub_config(&HubConfigOptions {
+    let config = support::hub(&HubConfigOptions {
         coord_server: LOCAL_COORD_SERVER.into(),
         rekuest_server: "none".into(),
         services: Some(Vec::new()),
@@ -369,7 +372,7 @@ fn the_gateway_routes_lok_and_serves_its_well_known_from_the_root() {
 /// The byte-compared Caddyfile of every other hub is what it was.
 #[test]
 fn a_hub_that_trusts_a_remote_server_gets_none_of_it() {
-    let config = build_hub_config(&HubConfigOptions {
+    let config = support::hub(&HubConfigOptions {
         coord_server: "go.arkitekt.live".into(),
         ..Default::default()
     });
@@ -450,7 +453,7 @@ fn the_access_document_prefers_localhost_among_the_advertised_addresses() {
         host: host.into(),
         kind,
     };
-    let config = build_hub_config(&HubConfigOptions {
+    let config = support::hub(&HubConfigOptions {
         coord_server: LOCAL_COORD_SERVER.into(),
         http_port: Some(PORT),
         https_port: None,
@@ -467,7 +470,7 @@ fn the_access_document_prefers_localhost_among_the_advertised_addresses() {
     let access = build_access(&config, config.running_lok().unwrap());
     assert_eq!(access["fakts_url"], format!("http://localhost:{PORT}"));
 
-    let lan = build_hub_config(&HubConfigOptions {
+    let lan = support::hub(&HubConfigOptions {
         coord_server: LOCAL_COORD_SERVER.into(),
         http_port: Some(PORT),
         https_port: None,

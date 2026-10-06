@@ -25,21 +25,28 @@ fn config_of(name: &str) -> Value {
 }
 
 fn str_at<'a>(config: &'a Value, service: &str, key: &str) -> &'a str {
-    config[service][key].as_str().unwrap_or_else(|| {
+    let block = match config
+        .get("services")
+        .and_then(|services| services.get(service))
+    {
+        Some(block) => block,
+        None => &config[service],
+    };
+    block[key].as_str().unwrap_or_else(|| {
         panic!("{service}.{key} is missing or not a string");
     })
 }
 
 /// Reads the services a parsed profile runs, in whatever order; the emitter re-orders them
-/// by `HUB_SERVICE_ORDER` itself, which is part of what is under test.
+/// into generation order itself, which is part of what is under test.
 ///
-/// Runs, not merely enables: the fixtures are upstream's, which switch Lovekit on without
-/// an image — a block that never ran anything (see `ServiceBlock::runs`).
+/// Runs, not merely enables: the fixtures switch Lovekit on without an image — a block
+/// that runs nothing (see `ServiceBlock::runs`).
 fn services_of(config: &Value) -> Vec<CaddyService<'_>> {
     SERVICE_IDS
         .iter()
         .filter(|id| {
-            let block = config.get(id.as_str());
+            let block = config["services"].get(id.as_str());
             block
                 .and_then(|s| s.get("enabled"))
                 .and_then(Value::as_bool)
@@ -49,19 +56,16 @@ fn services_of(config: &Value) -> Vec<CaddyService<'_>> {
                     .is_some_and(|image| !image.is_null())
         })
         .map(|&id| {
-            let block = &config[id.as_str()];
+            let block = &config["services"][id.as_str()];
             CaddyService {
                 id,
                 host: str_at(config, id.as_str(), "host"),
                 internal_port: block["internal_port"].as_u64().expect("a port") as u16,
-                // Through the real lookup, so a bucket the fixture predates gets the same
-                // `<service><purpose>` fallback the generator gives an older hub.
+                // Through the real block, in the order it holds them.
                 buckets: serde_norway::from_value::<ServiceBlock>(block.clone())
                     .expect("a service block")
-                    .bucket_names(id)
-                    .into_iter()
-                    .map(|(_, name)| name)
-                    .collect(),
+                    .buckets
+                    .names(),
                 // As the generator decides it: takt serves the agent endpoints of a Rekuest
                 // this hub runs itself.
                 agent_upstream: (id == konstruktor_core::catalog::ServiceId::Rekuest

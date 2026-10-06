@@ -246,7 +246,7 @@ fn restore_files(dir: &Path, name: &str, images: &[(String, String)]) -> Result<
         serde_norway::from_str(&text).map_err(|e| RollbackError::Profile(e.to_string()))?;
     // The reaper of a hub from before takt runs Rekuest's image.
     let reaper = crate::generate::compose::legacy_reaper_host(&profile.config);
-    let rekuest = profile.config.rekuest.host.clone();
+    let rekuest = profile.config.rekuest().host.clone();
     if let Some(services) = compose
         .get_mut("services")
         .and_then(|services| services.as_mapping_mut())
@@ -382,7 +382,8 @@ mod tests {
         let mut config = config();
         // Already digest-pinned here — a hub that has been rolled back once before — while
         // the record for it names only the floating tag, with nothing pulled behind it.
-        config.mikro.image = Some("jhnnsrs/mikro:next@sha256:new".into());
+        config.service_mut(crate::catalog::ServiceId::Mikro).image =
+            Some("jhnnsrs/mikro:next@sha256:new".into());
         let entry = previous(&[
             ("rekuest", "jhnnsrs/rekuest:next", Some("sha256:old")),
             // Same reference it is on now: nothing to do.
@@ -484,7 +485,12 @@ mod tests {
             "{compose}"
         );
         assert_eq!(
-            read_profile(&dir).unwrap().config.rekuest.image.as_deref(),
+            read_profile(&dir)
+                .unwrap()
+                .config
+                .service(crate::catalog::ServiceId::Rekuest)
+                .image
+                .as_deref(),
             Some("jhnnsrs/rekuest:latest@sha256:old")
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -502,7 +508,11 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let config = config();
-        let channel = config.rekuest.image.clone().unwrap();
+        let channel = config
+            .service(crate::catalog::ServiceId::Rekuest)
+            .image
+            .clone()
+            .unwrap();
         crate::profile::rewrite(&dir, config.clone(), &[]).unwrap();
         // It ran `old`, was updated to `new`, and runs `new` now.
         let mut held = lock::read(&dir);
@@ -529,7 +539,12 @@ mod tests {
         apply(&dir, &plan).unwrap();
 
         assert_eq!(
-            read_profile(&dir).unwrap().config.rekuest.image.as_deref(),
+            read_profile(&dir)
+                .unwrap()
+                .config
+                .service(crate::catalog::ServiceId::Rekuest)
+                .image
+                .as_deref(),
             Some(channel.as_str()),
             "the profile keeps the channel"
         );

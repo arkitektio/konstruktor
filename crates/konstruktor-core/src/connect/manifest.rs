@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{ServiceId, HUB_SERVICE_ORDER};
 use crate::config::hub::HubConfig;
 use crate::hosts::HostCategory;
 
@@ -15,229 +14,15 @@ pub struct ManifestEntry {
     pub description: String,
 }
 
-fn entries(pairs: &[(&str, &str)]) -> Vec<ManifestEntry> {
-    pairs
+/// The scopes or roles a service's image declared for it, as the manifest lists them.
+fn declared(scopes: &[crate::contract::Scope]) -> Vec<ManifestEntry> {
+    scopes
         .iter()
-        .map(|(key, description)| ManifestEntry {
-            key: (*key).to_string(),
-            description: (*description).to_string(),
+        .map(|scope| ManifestEntry {
+            key: scope.key.clone(),
+            description: scope.description.clone(),
         })
         .collect()
-}
-
-/// The scopes or roles a service's image declared for it, if it described itself.
-fn declared(
-    options: &HubManifestOptions,
-    host: &str,
-    which: impl Fn(&crate::contract::Description) -> &Vec<crate::contract::Scope>,
-) -> Option<Vec<ManifestEntry>> {
-    options.described.get(host).map(|said| {
-        which(said)
-            .iter()
-            .map(|scope| ManifestEntry {
-                key: scope.key.clone(),
-                description: scope.description.clone(),
-            })
-            .collect()
-    })
-}
-
-fn roles_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
-    match id {
-        ServiceId::Rekuest => &[
-            ("agent", "Can act as a workflow agent"),
-            ("caller", "Can call remote procedures"),
-            ("admin", "Full administrative access"),
-        ],
-        ServiceId::Mikro => &[
-            ("admin", "Full administrative access"),
-            ("user", "Standard user access"),
-            ("viewer", "Read-only access to images"),
-            ("uploader", "Can upload new images"),
-        ],
-        ServiceId::Fluss => &[
-            ("admin", "Full administrative access"),
-            ("user", "Standard user access"),
-            ("designer", "Can design workflows"),
-            ("viewer", "Read-only access"),
-        ],
-        ServiceId::Kabinet => &[
-            ("admin", "Full administrative access"),
-            ("deployer", "Can deploy containers"),
-            ("user", "Standard user access"),
-            ("viewer", "Read-only access"),
-        ],
-        ServiceId::Kraph => &[
-            ("admin", "Full administrative access"),
-            ("user", "Standard user access"),
-            ("editor", "Can edit graph data"),
-            ("viewer", "Read-only access"),
-        ],
-        ServiceId::Elektro => &[
-            ("admin", "Full administrative access"),
-            ("user", "Standard user access"),
-            ("analyst", "Can analyze recordings"),
-            ("viewer", "Read-only access"),
-        ],
-        ServiceId::Alpaka => &[
-            ("admin", "Full administrative access"),
-            ("user", "Standard user access"),
-            ("modeler", "Can manage ML models"),
-            ("viewer", "Read-only access"),
-        ],
-        // None declares roles of its own; their upload grants use the datalayer's
-        // default roles.
-        ServiceId::Lovekit
-        | ServiceId::Bank
-        | ServiceId::Kuvert
-        | ServiceId::Dokuments
-        | ServiceId::Lokate => &[],
-    }
-}
-
-fn scopes_of(id: ServiceId) -> &'static [(&'static str, &'static str)] {
-    match id {
-        ServiceId::Rekuest => &[
-            ("rekuest_agent", "Act as an agent"),
-            ("rekuest_call", "Call other apps with rekuest"),
-            ("read", "Read access to rekuest resources"),
-            ("write", "Write access to rekuest resources"),
-        ],
-        ServiceId::Mikro => &[
-            ("mikro_read", "Read images from the database"),
-            ("mikro_write", "Write images to the database"),
-            ("read_image", "Read image data"),
-            ("read", "Generic read access"),
-            ("write", "Generic write access"),
-        ],
-        ServiceId::Fluss => &[
-            ("fluss_read", "Read workflow definitions"),
-            ("fluss_write", "Create and modify workflows"),
-            ("fluss_execute", "Execute workflows"),
-            ("read", "Generic read access"),
-            ("write", "Generic write access"),
-        ],
-        ServiceId::Kabinet => &[
-            ("kabinet_add_repo", "Add repositories to the database"),
-            ("kabinet_deploy", "Deploy containers"),
-            ("kabinet_read", "Read container definitions"),
-            ("read", "Generic read access"),
-            ("write", "Generic write access"),
-        ],
-        ServiceId::Kraph => &[
-            ("kraph_read", "Read graph data"),
-            ("kraph_write", "Write graph data"),
-            ("kraph_query", "Execute graph queries"),
-            ("read", "Generic read access"),
-            ("write", "Generic write access"),
-        ],
-        ServiceId::Elektro => &[
-            ("elektro_read", "Read electrophysiology data"),
-            ("elektro_write", "Write electrophysiology data"),
-            ("elektro_analyze", "Run analysis on recordings"),
-            ("read", "Generic read access"),
-            ("write", "Generic write access"),
-        ],
-        ServiceId::Alpaka => &[
-            ("alpaka_infer", "Run inference on models"),
-            ("alpaka_train", "Train ML models"),
-            ("alpaka_manage", "Manage model registry"),
-            ("read", "Generic read access"),
-            ("write", "Generic write access"),
-        ],
-        ServiceId::Lovekit => &[],
-        ServiceId::Bank => &[
-            ("bank_read", "Read bank accounts, transactions and budgets"),
-            (
-                "bank_write",
-                "Link accounts, import statements and edit budgets",
-            ),
-        ],
-        ServiceId::Kuvert => &[
-            ("kuvert_read", "Read synced mail"),
-            ("kuvert_write", "Link mailboxes, organise and send mail"),
-        ],
-        ServiceId::Dokuments => &[
-            (
-                "dokuments_read",
-                "Read documents, their pages and their text",
-            ),
-            (
-                "dokuments_write",
-                "Add documents and write their pages and text",
-            ),
-        ],
-        ServiceId::Lokate => &[
-            ("lokate_read", "Read your backed-up location timeline"),
-            ("lokate_write", "Back up your location timeline"),
-        ],
-    }
-}
-
-/// Display metadata the manifest carries for each service: name, description, repository.
-fn describe(id: ServiceId) -> (&'static str, &'static str, &'static str) {
-    match id {
-        ServiceId::Rekuest => (
-            "Rekuest",
-            "Task orchestration and workflow execution",
-            "https://github.com/arkitektio/rekuest-server-next",
-        ),
-        ServiceId::Mikro => (
-            "Mikro",
-            "Microscopy data management and analysis",
-            "https://github.com/arkitektio/mikro-server-next",
-        ),
-        ServiceId::Fluss => (
-            "Fluss",
-            "Workflow definition and management",
-            "https://github.com/arkitektio/fluss-server-next",
-        ),
-        ServiceId::Kabinet => (
-            "Kabinet",
-            "Container and deployment management",
-            "https://github.com/arkitektio/kabinet-server",
-        ),
-        ServiceId::Kraph => (
-            "Kraph",
-            "Knowledge graph and data relationships",
-            "https://github.com/arkitektio/kraph-server",
-        ),
-        ServiceId::Elektro => (
-            "Elektro",
-            "Electrophysiology data management",
-            "https://github.com/arkitektio/elektro-server",
-        ),
-        ServiceId::Alpaka => (
-            "Alpaka",
-            "AI/ML model management",
-            "https://github.com/arkitektio/alpaka-server",
-        ),
-        ServiceId::Lovekit => (
-            "Lovekit",
-            "Live video and audio streams, over LiveKit",
-            "https://github.com/arkitektio/lovekit-server",
-        ),
-        ServiceId::Bank => (
-            "Bank",
-            "Bank accounts, transactions and budgets",
-            "https://github.com/jhnnsrs/bank",
-        ),
-        ServiceId::Kuvert => (
-            "Kuvert",
-            "Your mailboxes, synced and searchable",
-            "https://github.com/jhnnsrs/kuvert",
-        ),
-        ServiceId::Dokuments => (
-            "Dokuments",
-            "Documents, their pages and their text",
-            "https://github.com/jhnnsrs/dokuments-server",
-        ),
-        ServiceId::Lokate => (
-            "Lokate",
-            "A backup of your phone's location timeline",
-            "https://github.com/arkitektio/lokate-server",
-        ),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,9 +258,10 @@ pub struct HubManifestOptions {
     pub internal_host: Option<String>,
     pub expiration_seconds: Option<u64>,
     /// What the services' own images said of themselves, by compose service
-    /// ([`crate::contract`]). The scopes and roles a service declares there are the ones
-    /// sent for it; a service that has not described itself — a hub being created, before
-    /// any image is on the machine — gets the ones this installer knows.
+    /// ([`crate::contract`]). An instance is registered as what its image says it is, with
+    /// the scopes and roles it declares there — so a service that has not described itself
+    /// is not in the manifest at all, and whoever builds one asks the images first
+    /// ([`crate::contract::undescribed`] names the ones that did not answer).
     pub described: std::collections::BTreeMap<String, crate::contract::Description>,
 }
 
@@ -521,44 +307,54 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
         aliases
     };
 
-    let mut instances: Vec<InstanceRequest> = HUB_SERVICE_ORDER
+    let mut instances: Vec<InstanceRequest> = config
+        .enabled_services()
         .into_iter()
-        .filter(|id| config.service(*id).runs())
-        .map(|id| {
+        .filter_map(|id| {
             let block = config.service(id);
-            let (name, description, repo) = describe(id);
-            let aliases = aliases_at(&block.host);
+            let said = options.described.get(&block.host)?;
+            let known = id.known();
+            // Its health check, where its image says it answers one.
+            let aliases = aliases_at(&block.host)
+                .into_iter()
+                .map(|alias| StagingAlias {
+                    challenge: Some(said.health_path().to_string()),
+                    ..alias
+                })
+                .collect();
+            let summary = (!said.summary.trim().is_empty()).then(|| said.summary.clone());
 
-            InstanceRequest {
-                identifier: name.to_string(),
-                description: Some(description.to_string()),
+            Some(InstanceRequest {
+                // What the catalogue calls it, where it has a word for it; the image's own
+                // name otherwise.
+                identifier: known
+                    .map(|known| known.name.to_string())
+                    .unwrap_or_else(|| said.name.clone()),
+                description: summary.clone(),
                 manifest: ServiceManifest {
-                    // The image's own word for it, once it described itself.
-                    identifier: options
-                        .described
-                        .get(&block.host)
-                        .map(|said| said.identifier.clone())
-                        .unwrap_or_else(|| format!("live.arkitekt.{}", id.as_str())),
+                    identifier: said.identifier.clone(),
                     version: "1.0.0".to_string(),
-                    description: Some(description.to_string()),
+                    description: summary,
                     logo: None,
-                    roles: declared(options, &block.host, |said| &said.needs.roles)
-                        .unwrap_or_else(|| entries(roles_of(id))),
-                    scopes: declared(options, &block.host, |said| &said.needs.scopes)
-                        .unwrap_or_else(|| entries(scopes_of(id))),
+                    roles: declared(&said.needs.roles),
+                    scopes: declared(&said.needs.scopes),
                     node_id: options.node_id.clone(),
                     instance_id: "default".to_string(),
-                    public_sources: vec![PublicSource {
-                        kind: "github".to_string(),
-                        url: repo.to_string(),
-                    }],
+                    // Only the catalogue knows where a service's source is.
+                    public_sources: known
+                        .map(|known| PublicSource {
+                            kind: "github".to_string(),
+                            url: known.github_repo.to_string(),
+                        })
+                        .into_iter()
+                        .collect(),
                     challenge_key: block
                         .instance_key_pair
                         .as_ref()
                         .and_then(crate::secrets::raw_public_key_b64),
                 },
                 aliases,
-            }
+            })
         })
         .collect();
 
@@ -645,7 +441,17 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::ServiceId;
     use crate::config::hub::{build_hub_config, HubConfigOptions};
+    use crate::support;
+
+    /// Manifest options carrying what the catalogue's services say of themselves.
+    fn described() -> HubManifestOptions {
+        HubManifestOptions {
+            described: support::said(),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn scopes_an_address_by_how_far_it_reaches() {
@@ -774,17 +580,18 @@ mod tests {
         assert!(!confirmed[1].public);
     }
 
-    /// A Lovekit block as profiles from before it had an image say it — switched on, with
-    /// nothing to run. Advertising it would register an instance nothing serves.
+    /// A service that is switched on with nothing to run — one outside the catalogue that
+    /// was never given its image — is not advertised: it would register an instance
+    /// nothing serves.
     #[test]
     fn advertises_only_the_services_that_actually_run() {
-        let mut config = build_hub_config(&HubConfigOptions {
+        let mut config = support::hub(&HubConfigOptions {
             services: Some(vec![ServiceId::Mikro]),
             ..Default::default()
         });
-        config.lovekit.enabled = true;
-        config.lovekit.image = None;
-        let request = build_hub_request(&config, &HubManifestOptions::default());
+        config.service_mut(ServiceId::Lovekit).enabled = true;
+        config.service_mut(ServiceId::Lovekit).image = None;
+        let request = build_hub_request(&config, &described());
 
         let ids: Vec<&str> = request
             .hub
@@ -798,11 +605,53 @@ mod tests {
         assert!(!ids.contains(&LIVEKIT_MANIFEST), "{ids:?}");
     }
 
+    /// What a service is registered as, and with what, is its image's to say. One that
+    /// was not asked is not registered at all, rather than under a guess.
+    #[test]
+    fn an_instance_is_what_its_image_says_it_is() {
+        let config = support::hub(&HubConfigOptions {
+            services: Some(vec![ServiceId::Mikro]),
+            ..Default::default()
+        });
+        let request = build_hub_request(&config, &described());
+        let mikro = request
+            .hub
+            .instances
+            .iter()
+            .find(|i| i.manifest.identifier == "live.arkitekt.mikro")
+            .expect("mikro is registered");
+        // The catalogue's display name and repository, the image's own line and scopes.
+        assert_eq!(mikro.identifier, "Mikro");
+        assert_eq!(
+            mikro.description.as_deref(),
+            Some("Microscopy data management and analysis")
+        );
+        assert_eq!(
+            mikro.manifest.public_sources[0].url,
+            "https://github.com/arkitektio/mikro-server-next"
+        );
+        let scopes: Vec<&str> = mikro
+            .manifest
+            .scopes
+            .iter()
+            .map(|s| s.key.as_str())
+            .collect();
+        assert!(scopes.contains(&"mikro_read"), "{scopes:?}");
+        assert!(mikro.manifest.challenge_key.is_some());
+
+        let nothing_said = build_hub_request(&config, &HubManifestOptions::default());
+        assert!(nothing_said
+            .hub
+            .instances
+            .iter()
+            .all(|i| !i.manifest.identifier.contains("mikro")));
+    }
+
     /// An app needs both to hold a room: Lovekit for the token, LiveKit to connect it to.
     /// The media server is advertised on its own port, at the root, wherever the hub is.
     #[test]
     fn a_hub_with_lovekit_advertises_its_media_server() {
-        let config = build_hub_config(&HubConfigOptions {
+        let config = support::hub(&HubConfigOptions {
             services: Some(vec![ServiceId::Mikro, ServiceId::Lovekit]),
             ..Default::default()
         });
@@ -815,7 +664,7 @@ mod tests {
                 }],
                 mesh_alias: true,
                 internal_host: Some("gateway".to_string()),
-                ..Default::default()
+                ..described()
             },
         );
 
@@ -844,19 +693,6 @@ mod tests {
             .instances
             .iter()
             .all(|i| i.manifest.identifier != LIVEKIT_MANIFEST));
-    }
-
-    /// The scopes are the ones the services' own configs declare.
-    #[test]
-    fn the_newer_services_declare_their_scopes() {
-        let keys = |id| -> Vec<&str> { scopes_of(id).iter().map(|(key, _)| *key).collect() };
-        assert_eq!(
-            keys(ServiceId::Dokuments),
-            ["dokuments_read", "dokuments_write"]
-        );
-        assert_eq!(keys(ServiceId::Lokate), ["lokate_read", "lokate_write"]);
-        assert!(roles_of(ServiceId::Dokuments).is_empty());
-        assert!(roles_of(ServiceId::Lokate).is_empty());
     }
 
     #[test]
@@ -1040,8 +876,8 @@ mod tests {
         }
     }
 
-    /// What a service's image declares is what the coordination server is told; the table
-    /// here only stands in until an image has spoken.
+    /// What a service's image declares is what the coordination server is told — and of a
+    /// service whose image has not spoken, nothing is told at all.
     #[test]
     fn a_service_that_described_itself_is_announced_with_its_own_scopes() {
         use crate::contract::{Description, Needs, Scope};
@@ -1094,6 +930,10 @@ mod tests {
             .manifest
             .roles
             .is_empty());
-        assert!(scopes("live.arkitekt.fluss").contains(&"fluss_execute".to_string()));
+        assert!(request
+            .hub
+            .instances
+            .iter()
+            .all(|instance| instance.manifest.identifier != "live.arkitekt.fluss"));
     }
 }

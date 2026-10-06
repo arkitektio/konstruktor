@@ -4,15 +4,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::hub::HubConfig;
 
-/// The on-disk profile, in the envelope the `arkitekt-next` CLI reads
-/// (`arkitekt_next/server/utils.py :: ProfileFile`):
+/// The on-disk profile: the hub's config in a small envelope that says what the file is.
 ///
 /// ```yaml
-/// version: '1.0'
+/// version: '2.0'
 /// kind: hub
 /// backend: docker
-/// config: { ...full model dump... }
+/// config: { ...the whole HubConfig... }
 /// ```
+///
+/// The version is the shape of `config`, and it is checked: see [`PROFILE_VERSION`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub version: String,
@@ -21,21 +22,36 @@ pub struct Profile {
     pub config: HubConfig,
 }
 
+/// The shape of profile this build writes, and the only one it reads.
+///
+/// `2.0` is the profile whose services are one `services:` map, each block holding what
+/// its image asked for. A profile of an earlier shape is not migrated: what it lacks is
+/// exactly what only the images can say, so the hub is created again instead.
+pub const PROFILE_VERSION: &str = "2.0";
+
 pub const HUB_CONFIG_FILENAME: &str = "hub_config.yaml";
 
 pub fn profile_path(dir: &Path) -> PathBuf {
     dir.join(HUB_CONFIG_FILENAME)
 }
 
-/// The envelope a freshly built config is stored in, so the Python CLI can still read the
-/// folder.
+/// The envelope a config is stored in.
 pub fn hub_profile(config: HubConfig) -> Profile {
     Profile {
-        version: "1.0".into(),
+        version: PROFILE_VERSION.into(),
         kind: "hub".into(),
         backend: "docker".into(),
         config,
     }
+}
+
+/// The part of a profile that is read before the rest is trusted to have a shape.
+#[derive(Deserialize)]
+struct Envelope {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +66,13 @@ pub enum ProfileError {
     },
     #[error("{path} describes a {found} deployment, not a hub one")]
     WrongKind { path: String, found: String },
+    /// Written by a konstruktor from before services were data. Not migrated.
+    #[error(
+        "The hub in {folder} was written by an earlier konstruktor (its profile is {found}, \
+         this one reads version {PROFILE_VERSION}) and cannot be read by this one. It has to \
+         be created again: `konstruktor hub create`."
+    )]
+    Earlier { folder: String, found: String },
     /// The files on disk are of a layout this build must not rewrite in passing. See
     /// [`crate::migrate::behind`].
     #[error("{0}")]
@@ -59,19 +82,32 @@ pub enum ProfileError {
 pub fn read_profile(dir: &Path) -> Result<Profile, ProfileError> {
     let path = profile_path(dir);
     let text = std::fs::read_to_string(&path)?;
-    let profile: Profile =
-        serde_norway::from_str(&text).map_err(|source| ProfileError::Malformed {
-            path: path.to_string_lossy().to_string(),
-            source,
-        })?;
+    let malformed = |source| ProfileError::Malformed {
+        path: path.to_string_lossy().to_string(),
+        source,
+    };
 
-    if profile.kind != "hub" {
+    // The envelope first, on its own: a profile of another shape would fail to parse as
+    // this build's config, and "missing field `services`" is not what its owner needs to
+    // be told.
+    let envelope: Envelope = serde_norway::from_str(&text).map_err(malformed)?;
+    if let Some(kind) = envelope.kind.filter(|kind| kind != "hub") {
         return Err(ProfileError::WrongKind {
             path: path.to_string_lossy().to_string(),
-            found: profile.kind,
+            found: kind,
         });
     }
-    Ok(profile)
+    if envelope.version.as_deref() != Some(PROFILE_VERSION) {
+        return Err(ProfileError::Earlier {
+            folder: dir.to_string_lossy().to_string(),
+            found: match envelope.version {
+                Some(version) => format!("version {version}"),
+                None => "unversioned".to_string(),
+            },
+        });
+    }
+
+    serde_norway::from_str(&text).map_err(malformed)
 }
 
 pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> {
@@ -82,8 +118,8 @@ pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> 
 
 /// Points services at different images, and regenerates the deployment from the result.
 ///
-/// The only way to move a running container onto another image: generation reads
-/// `config.<service>.image` out of the profile, so nothing changes until the profile does.
+/// The only way to move a running container onto another image: generation reads each
+/// service's image out of the profile, so nothing changes until the profile does.
 /// Two callers need it — `rollback`, putting older images back, and `update --infra`,
 /// advancing a pin — and they must not each grow their own copy of the sequence.
 ///
@@ -282,5 +318,53 @@ mod tests {
     #[test]
     fn an_empty_folder_holds_nothing() {
         assert_eq!(holds_a_deployment(&tmpdir()), None);
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    fn folder_with(profile: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("konstruktor-version-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(profile_path(&dir), profile).unwrap();
+        dir
+    }
+
+    /// A hub written before services were a map is refused, not migrated — and told what
+    /// to do, with the folder it is about.
+    #[test]
+    fn a_profile_of_an_earlier_shape_is_refused() {
+        // What every earlier konstruktor wrote: version 1.0, a key per service.
+        let earlier = "version: '1.0'\nkind: hub\nbackend: docker\nconfig:\n  rekuest:\n    \
+                       enabled: true\n  mikro:\n    enabled: true\n";
+        let dir = folder_with(earlier);
+        let refused = read_profile(&dir).unwrap_err();
+        assert!(matches!(refused, ProfileError::Earlier { .. }), "{refused}");
+        let said = refused.to_string();
+        assert!(said.contains("earlier konstruktor"), "{said}");
+        assert!(said.contains("created again"), "{said}");
+        assert!(said.contains("hub create"), "{said}");
+        assert!(said.contains(&*dir.to_string_lossy()), "{said}");
+        assert!(said.contains("version 1.0"), "{said}");
+
+        // No version at all is no better.
+        let unversioned = folder_with("kind: hub\nbackend: docker\nconfig: {}\n");
+        let refused = read_profile(&unversioned).unwrap_err();
+        assert!(matches!(refused, ProfileError::Earlier { .. }), "{refused}");
+        assert!(refused.to_string().contains("unversioned"), "{refused}");
+    }
+
+    /// What this build writes, it reads: the version it stamps is the one it checks.
+    #[test]
+    fn a_profile_this_build_wrote_is_read_back() {
+        let config = crate::config::hub::build_hub_config(&Default::default());
+        let dir = folder_with("");
+        write_profile(&dir, &hub_profile(config.clone())).unwrap();
+        let read = read_profile(&dir).unwrap();
+        assert_eq!(read.version, PROFILE_VERSION);
+        assert_eq!(read.config, config);
     }
 }
