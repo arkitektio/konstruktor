@@ -56,6 +56,9 @@ jobs:
         env:
           KONSTRUKTOR_E2E: "1"
           KONSTRUKTOR_E2E_SETTLE_SECS: ${{ inputs.settle_secs || '60' }}
+          # The rollback round trip: an earlier build of a service that answers the hub
+          # contract, to be updated away from, rolled back to, held on and released from.
+          KONSTRUKTOR_E2E_EARLIER_KRAPH: jhnnsrs/kraph:1.2.0
         run: cargo test -p konstruktor-core --test hub_upgrade -- --ignored --nocapture
       - name: containers at failure
         if: failure()
