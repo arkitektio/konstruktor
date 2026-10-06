@@ -1,6 +1,7 @@
 name: "Hub E2E"
 
-# Spawns a real hub in Docker and fails unless every service is healthy after it settles.
+# Spawns real hubs in Docker: one checked for every service being healthy after it settles,
+# and a self-contained one that an app then connects to.
 # It pulls every image and takes minutes, so it runs nightly and on demand, never on push:
 # a flaky upstream image must not be able to block a release.
 on:
@@ -60,6 +61,40 @@ jobs:
           # contract, to be updated away from, rolled back to, held on and released from.
           KONSTRUKTOR_E2E_EARLIER_KRAPH: jhnnsrs/kraph:1.2.0
         run: cargo test -p konstruktor-core --test hub_upgrade -- --ignored --nocapture
+      - name: containers at failure
+        if: failure()
+        run: docker ps -a
+
+  # A self-contained hub — one that runs its own coordination server — started and then
+  # *used*: a redeem token traded for an access token, and a service accepting it. First
+  # from Rust, against the generator; then from Python, against the wheel, which is how
+  # every other repository's integration tests reach it.
+  hub-local:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: spawn a self-contained hub and connect to it
+        env:
+          KONSTRUKTOR_E2E: "1"
+        run: cargo test -p konstruktor-core --test hub_local -- --ignored --nocapture
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: the same, through the Python package
+        run: |
+          uvx maturin build --out dist-python
+          uv venv
+          uv pip install dist-python/konstruktor-*.whl "pytest>=8"
+          .venv/bin/python -m pytest -m konstruktor
       - name: containers at failure
         if: failure()
         run: docker ps -a

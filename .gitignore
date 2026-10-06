@@ -27,3 +27,9 @@ dist-ssr
 /target
 # ...and of a `cargo` run from inside a member crate, which builds beside it
 /crates/*/target
+
+# Python package (python/) and its wheels
+__pycache__/
+*.pyc
+.pytest_cache/
+/dist-python

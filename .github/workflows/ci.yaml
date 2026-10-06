@@ -59,6 +59,33 @@ jobs:
       - name: test
         run: cargo test -p konstruktor-core -p konstruktor-cli
 
+  # The Python package under `python/`: built the way a release builds it — a wheel with
+  # the CLI inside — and tested from the installed wheel, so the packaging is part of
+  # what is tested. No Docker here; the tests that build a real stack run in `Hub E2E`.
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: build the wheel
+        run: uvx maturin build --out dist-python
+      - name: install it
+        run: |
+          uv venv
+          uv pip install dist-python/konstruktor-*.whl "pytest>=8"
+      - name: the binary came with it
+        run: .venv/bin/konstruktor --version && .venv/bin/python -m konstruktor --version
+      - name: test
+        run: .venv/bin/python -m pytest -m "not konstruktor"
+
   frontend:
     runs-on: ubuntu-latest
     steps:

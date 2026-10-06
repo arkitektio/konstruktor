@@ -322,6 +322,75 @@ jobs:
             jhnnsrs/reporter:${{ needs.version.outputs.version }}
             jhnnsrs/reporter:latest
 
+  # The Python package: the same CLI in a wheel, with the thin wrapper under `python/`
+  # beside it (see `pyproject.toml`). One wheel per platform, each carrying that platform's
+  # binary; there is no sdist, because a source build would need this whole workspace.
+  #
+  # Linux wheels are built against an old glibc inside the manylinux image rather than as
+  # musl: a `musllinux` wheel is one pip only installs on Alpine, and the point of the
+  # wheel is that `pip install konstruktor` works where people run Python. Alpine gets its
+  # own wheel beside them.
+  publish-wheels:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
+          - platform: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2_28"
+          - platform: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            manylinux: "off"
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: "off"
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: "off"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+
+  # Uploaded only once every platform built: a release with half its wheels is one where
+  # `pip install` works on some machines and falls over on others.
+  #
+  # Trusted publishing — no token in the repository. PyPI has to be told once that this
+  # workflow, in this repository, may publish the `konstruktor` project.
+  publish-pypi:
+    needs: [version, publish-wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - name: list the wheels
+        run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
   # One checksum file for the whole release: the installer refuses to install without it.
   publish-checksums:
     needs: [version, publish-cli]

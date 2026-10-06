@@ -1,0 +1,47 @@
+# The `konstruktor` Python package: the CLI in a wheel, and a thin wrapper around it.
+#
+# The wheel carries the same static binary the releases do (`bindings = "bin"`), so
+# `pip install konstruktor` is the whole install and the wrapper can never be a different
+# version than the generator it drives. Everything that decides what a deployment looks
+# like stays in the Rust crates; the Python under `python/` only runs the binary and reads
+# back what it wrote.
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "konstruktor"
+description = "Create and manage Arkitekt deployments — the konstruktor CLI, and a Python interface to it."
+readme = "python/README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dynamic = ["version"]
+classifiers = [
+    "Framework :: Pytest",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Repository = "https://github.com/arkitektio/konstruktor"
+
+[project.entry-points.pytest11]
+konstruktor = "konstruktor.pytest_plugin"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/konstruktor-cli/Cargo.toml"
+module-name = "konstruktor"
+python-source = "python"
+strip = true
+# Bytecode a test run left beside the sources is not part of the package.
+exclude = ["**/__pycache__/**", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+markers = [
+    "konstruktor: builds a real deployment with konstruktor (needs Docker).",
+]
