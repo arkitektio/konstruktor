@@ -9,6 +9,11 @@ A thin layer over the ``konstruktor`` executable, which this package ships::
     hub.redeem_token("my-app")     # what it trades for a client, unattended
     hub.destroy()
 
+or, for a hub that is gone when the block is left::
+
+    with create_hub("./hub", service_images=["jhnnsrs/mikro:7"]) as hub:
+        ...
+
 With pytest, the ``konstruktor_hub`` fixture does the same and cleans up after the
 session -- see :mod:`konstruktor.pytest_plugin`.
 """

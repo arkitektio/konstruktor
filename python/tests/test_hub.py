@@ -157,6 +157,48 @@ def test_every_app_gets_a_redeem_token_of_its_own(fake_konstruktor, tmp_path: Pa
         hub.redeem_token("one too many")
 
 
+def test_a_token_stays_with_its_app_for_whoever_opens_the_hub_again(fake_konstruktor, tmp_path: Path) -> None:
+    """The coordination server pins a token to the app that redeemed it, for as long as the
+    hub lives: so which app has which is written down in the hub, not kept in one process."""
+    hub = create_hub(tmp_path / "lab", redeem_tokens=2)
+    greeter = hub.redeem_token("greeter")
+
+    again = Hub.load(tmp_path / "lab")
+    assert again.redeem_token("greeter") == greeter
+    assert again.redeem_token("caller") != greeter
+    # And the first one learns of what the second took.
+    with pytest.raises(NoRedeemTokenLeftError):
+        hub.redeem_token("one too many")
+
+
+def test_a_hub_used_as_a_block_is_gone_after_it(fake_konstruktor, tmp_path: Path) -> None:
+    with create_hub(tmp_path / "lab") as hub:
+        assert hub.fakts_url
+    assert fake_konstruktor.calls[-1][:2] == ["destroy", str(tmp_path / "lab")]
+
+    with pytest.raises(RuntimeError, match="in the middle"), create_hub(tmp_path / "other"):
+        raise RuntimeError("in the middle")
+    assert fake_konstruktor.calls[-1][:2] == ["destroy", str(tmp_path / "other")]
+
+
+def test_a_service_can_run_from_a_source_tree_on_this_machine(fake_konstruktor, tmp_path: Path) -> None:
+    """The tree is put where the hub's own checkout would go, so nothing is cloned."""
+    tree = tmp_path / "mikro-server"
+    tree.mkdir()
+    (tree / "manage.py").write_text("")
+
+    create_hub(tmp_path / "lab", services=["mikro"], debug=["mikro"], mounts={"mikro": tree})
+
+    args = fake_konstruktor.calls[0]
+    assert args[args.index("--debug") + 1] == "mikro"
+    assert args[args.index("--from-source") + 1] == "mikro"
+    assert (tmp_path / "lab" / "mounts" / "mikro" / "manage.py").is_file()
+    assert (tmp_path / "lab" / "mounts" / "mikro").resolve() == tree.resolve()
+
+    with pytest.raises(FileNotFoundError, match="nothing to mount"):
+        create_hub(tmp_path / "other", mounts={"mikro": tmp_path / "nowhere"})
+
+
 def test_lifecycle_commands_name_the_folder(fake_konstruktor, tmp_path: Path) -> None:
     hub = create_hub(tmp_path / "lab", start=False)
     folder = os.fspath(tmp_path / "lab")

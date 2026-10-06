@@ -19,6 +19,11 @@ from konstruktor._binary import find_konstruktor_bin
 
 #: Where ``hub create --server local`` writes how to reach the hub.
 ACCESS_FILE = "secrets/access.json"
+#: Where this package writes down which app was handed which redeem token. Beside the
+#: access document, because it is as secret, and in the hub's folder, because it is the
+#: hub's: a token is pinned to its app by the coordination server, for as long as the hub
+#: lives and whichever process asks.
+TAKEN_FILE = "secrets/redeem-tokens-taken.json"
 
 
 class KonstruktorError(RuntimeError):
@@ -114,6 +119,22 @@ def _run(
     return result
 
 
+def _read_taken(directory: Path) -> dict[str, str]:
+    """Which app was handed which redeem token, as written down in the hub's folder."""
+    try:
+        taken = json.loads((directory / TAKEN_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(app): str(token) for app, token in taken.items()} if isinstance(taken, dict) else {}
+
+
+def _write_taken(directory: Path, taken: Mapping[str, str]) -> None:
+    """Write that down, readable by its owner alone like the access document beside it."""
+    path = directory / TAKEN_FILE
+    path.write_text(json.dumps(dict(sorted(taken.items())), indent=2) + "\n")
+    path.chmod(0o600)
+
+
 @dataclass
 class Hub:
     """A self-contained hub on this machine: where it is, and how to get in.
@@ -184,7 +205,16 @@ class Hub:
             },
             data_dir=Path(data_dir) if data_dir is not None else None,
             binary=find_konstruktor_bin(binary),
+            _taken=_read_taken(directory),
         )
+
+    def __enter__(self) -> "Hub":
+        """Use the hub for the length of a ``with`` block, and destroy it afterwards."""
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        """Destroy the hub, whether or not the block raised."""
+        self.destroy()
 
     def _konstruktor(
         self, *args: str, timeout: float | None = None
@@ -205,6 +235,8 @@ class Hub:
             NoRedeemTokenLeftError: If every token is taken. Create the hub with
                 more ``redeem_tokens``.
         """
+        # Read again: another process may have taken one since this hub was loaded.
+        self._taken = {**_read_taken(self.directory), **self._taken}
         if app not in self._taken:
             free = [token for token in self.redeem_tokens if token not in self._taken.values()]
             if not free:
@@ -214,6 +246,7 @@ class Hub:
                     "Create the hub with more `redeem_tokens`."
                 )
             self._taken[app] = free[0]
+            _write_taken(self.directory, self._taken)
         return self._taken[app]
 
     def env(self, app: str) -> dict[str, str]:
@@ -292,6 +325,8 @@ def create_hub(
     user_password: str | None = None,
     redeem_tokens: int = 1,
     images: Mapping[str, str] | None = None,
+    debug: Sequence[str] = (),
+    mounts: Mapping[str, str | os.PathLike[str]] | None = None,
     start: bool = True,
     wait: bool = True,
     timeout: float = 600.0,
@@ -328,6 +363,15 @@ def create_hub(
         images: Images to run instead of the ones a new hub gets, by compose
             service: ``{"rekuest": "jhnnsrs/rekuest:1.2.3"}``. For pinning what a
             suite runs against.
+        debug: Services to run with their development server and Django's debug
+            mode (``--debug``). Debug shows internals to anyone who can reach the
+            service: for a hub on this machine.
+        mounts: Source trees on this machine to run instead of what an image
+            holds, by service: ``{"mikro": "~/Code/mikro-server"}``. The tree is
+            mounted over the image's own code, so the image supplies the
+            dependencies and the tree the service; with ``debug`` the server
+            reloads when a file in it changes. For developing a service against
+            a real hub.
         start: Start the hub once it is written.
         wait: After starting, block until everything a client opens answers.
         timeout: How long ``wait`` waits, in seconds.
@@ -366,6 +410,20 @@ def create_hub(
     ]
     for service, image in (images or {}).items():
         args += ["--image", f"{service}={image}"]
+    for service in debug:
+        args += ["--debug", service]
+    for service, tree in (mounts or {}).items():
+        # A checkout the hub is asked to run from source is left exactly as it is when
+        # it is already there: so the tree is put where the checkout would go, as a
+        # link, and nothing is cloned.
+        source = Path(tree).expanduser().resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(f"{source} is not a directory: nothing to mount as {service}")
+        checkout = directory / "mounts" / service
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        if not checkout.exists():
+            checkout.symlink_to(source, target_is_directory=True)
+        args += ["--from-source", service]
     if identifier is not None:
         args += ["--identifier", identifier]
     if user_password is not None:

@@ -9,6 +9,21 @@ from konstruktor import create_hub
 from konstruktor.pytest_plugin import reap_dead_runs
 
 
+@pytest.fixture(autouse=True)
+def _the_plugin_is_loaded_in_the_inner_run(pytester: pytest.Pytester) -> None:
+    """An installed package announces its plugin to pytest; a source checkout on the path
+    does not. The suites pytest runs inside these tests load it themselves in that case, so
+    the tests say the same thing from a wheel and from a checkout."""
+    pytester.makeconftest(
+        """
+        from importlib.metadata import entry_points
+
+        if not any(entry.name == "konstruktor" for entry in entry_points(group="pytest11")):
+            pytest_plugins = ["konstruktor.pytest_plugin"]
+        """
+    )
+
+
 def test_the_fixture_builds_a_hub_and_destroys_it(fake_konstruktor, pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
