@@ -1064,7 +1064,13 @@ fn parse_from_source(spec: &str) -> Result<FromSource> {
     let home = source.strip_prefix("~/").and_then(|rest| {
         std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(rest))
     });
-    if source.starts_with('/') || source.starts_with('.') || home.is_some() {
+    // `is_absolute` is what makes `C:\\src\\mikro` a folder on Windows, where no path starts
+    // with a slash.
+    if source.starts_with('/')
+        || source.starts_with('.')
+        || home.is_some()
+        || std::path::Path::new(source).is_absolute()
+    {
         let folder = home.unwrap_or_else(|| std::path::PathBuf::from(source));
         let folder = std::fs::canonicalize(&folder)
             .ok()
