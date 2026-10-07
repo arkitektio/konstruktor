@@ -4,7 +4,8 @@
 # `pip install konstruktor` is the whole install and the wrapper can never be a different
 # version than the generator it drives. Everything that decides what a deployment looks
 # like stays in the Rust crates; the Python under `python/` only runs the binary and reads
-# back what it wrote.
+# back what it wrote. A hub is handed to the caller as a dokker deployment, so dokker is
+# the one thing it needs beside the binary.
 [build-system]
 requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
@@ -16,6 +17,8 @@ readme = "python/README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dynamic = ["version"]
+# 2.10 is where a project may start and stop its own stack, which a hub has to.
+dependencies = ["dokker>=2.10"]
 classifiers = [
     "Framework :: Pytest",
     "Programming Language :: Python :: 3",

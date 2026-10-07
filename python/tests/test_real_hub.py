@@ -1,4 +1,4 @@
-"""The real executable, and a real stack: an app's side of a self-contained hub."""
+"""The real executable, and a real stack: an app's side of a self-contained hub, and a look inside it."""
 
 import json
 import urllib.parse
@@ -59,3 +59,30 @@ def test_an_app_redeems_a_token_and_rekuest_accepts_it(hub: Hub) -> None:
     )
     assert "errors" not in answer, answer
     assert isinstance(answer["data"]["agents"], list)
+
+
+def test_the_hubs_containers_can_be_listed(hub: Hub) -> None:
+    running = {container.service: container for container in hub.ps()}
+    assert {"lok", "rekuest"} <= set(running)
+    assert running["rekuest"].is_running
+    # The same stack konstruktor started, not a second one beside it.
+    assert running["rekuest"].name.startswith(hub.directory.name)
+
+
+def test_a_service_can_be_asked_and_read(hub: Hub) -> None:
+    said = hub.exec("rekuest", ["python", "-c", "print('from inside')"])
+    assert "from inside" in said.stdout
+    assert hub.logs("rekuest", tail=20)
+
+
+def test_every_service_is_healthy_by_its_own_account(hub: Hub) -> None:
+    assert {check.service for check in hub.health_checks} == set(hub.services)
+    hub.check_health()
+
+
+def test_a_service_can_be_restarted_and_watched_coming_back(hub: Hub) -> None:
+    with hub.create_watcher("rekuest", wait_for_first_log=False) as watcher:
+        hub.restart("rekuest", await_health=False)
+        hub.wait_ready(120)
+    assert watcher.collected_logs
+    hub.check_health(services=["rekuest"])

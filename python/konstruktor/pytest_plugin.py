@@ -13,6 +13,10 @@ for the fixture::
     def test_my_app(hub):
         ...  # connect to hub.fakts_url with hub.redeem_token("my-app")
 
+The hub is a :class:`konstruktor.Hub`, entered for the session: started and
+answering when the factory returns it, and open to everything a hub can be asked
+(``hub.ps()``, ``hub.logs("mikro")``, ``hub.exec(...)``, ``hub.create_watcher(...)``).
+
 Tests marked ``konstruktor`` are skipped where Docker is not running. Hubs are
 destroyed when the session ends -- and, should a session be killed before it
 could, by the next one that starts.
@@ -26,20 +30,16 @@ import contextlib
 import os
 import shutil
 import subprocess
-import sys
-import tempfile
-import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
 import pytest
+from dokker import DokkerError
 
 from konstruktor._binary import KonstruktorNotFoundError, find_konstruktor_bin
-from konstruktor.hub import ACCESS_FILE, Hub, KonstruktorError, create_hub
+from konstruktor.hub import Hub, testing_hub
+from konstruktor.runs import run_dir
 
-#: Where one session keeps its hubs: ``<tmp>/konstruktor-pytest/<pid>-<random>``.
-#: The pid in the name is how a later session knows this one is gone.
-_RUNS = "konstruktor-pytest"
 _HUBS = pytest.StashKey[list[Hub]]()
 
 
@@ -110,54 +110,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
-def _is_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        # There `os.kill` with any signal but the two console events *terminates*
-        # the process. Not knowing is the safe answer: nothing is reaped.
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # it exists, and belongs to somebody else
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def reap_dead_runs(runs: Path, binary: Path) -> list[Path]:
-    """Destroy the hubs of sessions that died before they could.
-
-    A session that is killed -- a cancelled CI job, an out-of-memory kill -- leaves
-    its containers running and its volumes behind, with nobody left who knows they
-    are there. Each session's folder carries the pid that owned it; a folder whose
-    owner is gone is destroyed, hub by hub, by the same command a living session
-    would have used.
-
-    Returns:
-        The run folders that were removed.
-    """
-    removed: list[Path] = []
-    if not runs.is_dir():
-        return removed
-    for run in runs.iterdir():
-        pid, _, _ = run.name.partition("-")
-        if not pid.isdigit() or _is_alive(int(pid)):
-            continue
-        hubs = run / "hubs"
-        for directory in sorted(hubs.iterdir()) if hubs.is_dir() else []:
-            try:
-                Hub.load(directory, data_dir=run / "registry", binary=binary).destroy()
-            except (KonstruktorError, FileNotFoundError, ValueError, KeyError):
-                # Half written, or already gone. Nothing here is worth failing a
-                # new session over; the folder goes either way.
-                pass
-        shutil.rmtree(run, ignore_errors=True)
-        removed.append(run)
-    return removed
-
-
 @pytest.fixture(scope="session")
 def konstruktor_bin(pytestconfig: pytest.Config) -> Path:
     """The ``konstruktor`` executable the session uses."""
@@ -165,16 +117,13 @@ def konstruktor_bin(pytestconfig: pytest.Config) -> Path:
 
 
 @pytest.fixture(scope="session")
-def konstruktor_run_dir(konstruktor_bin: Path) -> Iterator[Path]:
+def konstruktor_run_dir() -> Iterator[Path]:
     """This session's folder: its hubs, and a registry of its own.
 
     The registry is separate from the user's, so hubs a test creates never show up
     in the desktop app and a test can never touch a hub it did not create.
     """
-    runs = Path(tempfile.gettempdir()) / _RUNS
-    reap_dead_runs(runs, konstruktor_bin)
-    run = runs / f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    (run / "hubs").mkdir(parents=True)
+    run = run_dir()
     yield run
     # Only what is empty: a kept hub's folder stays where it was printed.
     if not any((run / "hubs").iterdir()):
@@ -190,7 +139,7 @@ def konstruktor_hub(
 ) -> Iterator[HubFactory]:
     """A factory for self-contained hubs that live as long as the session.
 
-    Call it with what :func:`konstruktor.create_hub` takes, minus the folder::
+    Call it with what :func:`konstruktor.testing_hub` takes::
 
         hub = konstruktor_hub(services=["rekuest", "mikro"], redeem_tokens=2)
 
@@ -198,8 +147,9 @@ def konstruktor_hub(
 
         hub = konstruktor_hub(service_images=["jhnnsrs/mikro:7"])
 
-    The hub is started and answering when it is returned. A hub's address is part
-    of every token it issues, so each one gets a free port of its own.
+    The hub is entered, started and answering when it is returned, and stays
+    entered until the session ends. A hub's address is part of every token it
+    issues, so each one gets a free port of its own.
     """
     hubs = pytestconfig.stash[_HUBS]
     keep = bool(pytestconfig.getoption("--konstruktor-keep"))
@@ -219,55 +169,45 @@ def konstruktor_hub(
         http_port: int | None = None,
         name: str | None = None,
     ) -> Hub:
-        # The folder's name is the compose project, and Docker has one namespace for
-        # those: a folder called `hub` here would be the same project as a real hub
-        # in a folder called `hub` anywhere else on the machine — same containers,
-        # same volumes, destroyed together. So the folder carries this run's id.
-        identifier = name or f"hub{len(hubs) + 1}"
-        directory = konstruktor_run_dir / "hubs" / f"pytest-{konstruktor_run_dir.name}-{identifier}"
-        try:
-            hub = create_hub(
-                directory,
-                identifier=identifier,
-                services=services,
-                service_images=service_images,
-                http_port=http_port,
-                organization=organization,
-                user=user,
-                user_password=user_password,
-                redeem_tokens=redeem_tokens,
-                images=images,
-                debug=debug,
-                mounts=mounts,
-                timeout=timeout,
-                data_dir=konstruktor_run_dir / "registry",
-                binary=konstruktor_bin,
-            )
-        except KonstruktorError:
-            # Written and started, but not answering: keep it for teardown, and say
-            # why before it is gone.
-            if (directory / ACCESS_FILE).is_file():
-                failed = Hub.load(
-                    directory, data_dir=konstruktor_run_dir / "registry", binary=konstruktor_bin
-                )
-                hubs.append(failed)
-                with contextlib.suppress(KonstruktorError):
-                    print(failed.logs(tail=120))
-            raise
+        hub = testing_hub(
+            name=name or f"hub{len(hubs) + 1}",
+            services=services,
+            service_images=service_images,
+            http_port=http_port,
+            organization=organization,
+            user=user,
+            user_password=user_password,
+            redeem_tokens=redeem_tokens,
+            images=images,
+            debug=debug,
+            mounts=mounts,
+            binary=konstruktor_bin,
+            # Kept: leaving the session leaves the hub exactly as it is.
+            policy="manual" if keep else "testing",
+        )
+        hub.enter()
+        # Before anything can fail: whatever was started is this session's to remove.
         hubs.append(hub)
+        try:
+            hub.up()
+            hub.wait_ready(timeout)
+        except DokkerError:
+            # Written and started, but not answering: say why before it is gone.
+            with contextlib.suppress(Exception):
+                print(hub.logs(tail=120).stdout)
+            raise
         return hub
 
     yield factory
 
     reporter = pytestconfig.pluginmanager.get_plugin("terminalreporter")
-    for hub in hubs:
-        if keep:
-            if reporter is not None:
-                reporter.write_line(f"konstruktor: kept {hub.gateway_url} in {hub.directory}")
-            continue
+    # Last made, first left: the first hub entered owns the loop the others run on.
+    for hub in reversed(hubs):
+        if keep and reporter is not None and hub.project.exists:
+            reporter.write_line(f"konstruktor: kept {hub.gateway_url} in {hub.directory}")
         try:
-            hub.destroy()
-        except KonstruktorError as error:
+            hub.exit()
+        except Exception as error:  # noqa: BLE001 -- one hub that will not go must not keep the others
             if reporter is not None:
                 reporter.write_line(f"konstruktor: could not destroy {hub.directory}: {error}")
     hubs.clear()
@@ -287,5 +227,5 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     if item.get_closest_marker("konstruktor") is None:
         return
     for hub in item.config.stash.get(_HUBS, []):
-        with contextlib.suppress(KonstruktorError):
-            report.sections.append((f"konstruktor logs: {hub.identifier}", hub.logs(tail=80)))
+        with contextlib.suppress(Exception):
+            report.sections.append((f"konstruktor logs: {hub.identifier}", hub.logs(tail=80).stdout))

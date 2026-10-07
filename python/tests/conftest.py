@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,7 @@ if args[:2] == ["hub", "create"]:
     }}
     (directory / "secrets").mkdir(parents=True, exist_ok=True)
     (directory / "secrets" / "access.json").write_text(json.dumps(access))
+    (directory / "docker-compose.yaml").write_text("services: {{}}\\n")
     print(directory)
 elif args[:1] == ["wait"]:
     print(json.dumps([{{"name": "fakts", "url": "http://localhost/.well-known/fakts", "status": 200, "ready": True}}]))
@@ -105,11 +107,13 @@ def fake_konstruktor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeKon
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     log = tmp_path / "calls.jsonl"
     monkeypatch.setenv("KONSTRUKTOR_BIN", os.fspath(path))
-    # Where the plugin keeps a session's hubs. Not the machine's real temp directory:
+    # Where a process keeps the hubs it makes for tests. Not the machine's real temp directory:
     # the stand-in destroys nothing, so reaping a real dead run there would delete its
     # folder and leave its containers running.
     scratch = tmp_path / "tmp"
     scratch.mkdir()
     monkeypatch.setenv("TMPDIR", os.fspath(scratch))
+    # And for this process, which asked for the temp directory long ago and remembers.
+    monkeypatch.setattr(tempfile, "tempdir", os.fspath(scratch))
     monkeypatch.setenv("FAKE_KONSTRUKTOR_LOG", os.fspath(log))
     return FakeKonstruktor(path, log)
