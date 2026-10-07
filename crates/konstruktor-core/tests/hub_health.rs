@@ -125,7 +125,18 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
         eprintln!("{service} runs {image}");
         config.set_service_image(service, image);
     }
-    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
+    // As creation does: every image is asked what it is before anything is written, and the
+    // hub is made from the answers. Generated without them a service has no command, and a
+    // container of its image prints its description and exits.
+    let said = konstruktor_core::contract::describe_all(&config, &Default::default()).await;
+    let silent = konstruktor_core::contract::undescribed(&config, &said);
+    assert!(
+        silent.is_empty(),
+        "these do not describe themselves: {silent:?}"
+    );
+    konstruktor_core::contract::acceptable(&config, &said).expect("the descriptions fit one hub");
+    config.provide(&said);
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &said);
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hub-e2e");
     // A run that crashed hard (no drop) may have left its stack behind.
@@ -136,6 +147,7 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
     std::fs::create_dir_all(&dir).expect("hub dir");
     write_profile(&dir, &hub_profile(config.clone())).expect("profile is written");
     konstruktor_core::migrate::write_hub(&dir, &config, &files).expect("files are written");
+    konstruktor_core::contract::remember(&dir, &config, &said).expect("the answers are kept");
 
     let _teardown = Teardown(dir.clone());
     // Started as `konstruktor up` starts it: every image is fetched and its build written
