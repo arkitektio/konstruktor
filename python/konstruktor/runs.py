@@ -61,6 +61,18 @@ def registry_dir() -> Path:
     return run_dir() / "registry"
 
 
+def discard_run_if_empty(hub_directory: Path) -> None:
+    """Remove the run folder a destroyed test hub lived in, once it holds no hub.
+
+    A run folder outlives its hubs only as litter: its owner is alive, so nobody reaps
+    it, and it holds nothing but a registry that lists nothing.
+    """
+    run = hub_directory.parent.parent
+    hubs = run / "hubs"
+    if run.parent == runs_dir() and hubs.is_dir() and not any(hubs.iterdir()):
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def _is_alive(pid: int) -> bool:
     if sys.platform == "win32":
         # There `os.kill` with any signal but the two console events *terminates*

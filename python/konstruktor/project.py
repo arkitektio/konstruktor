@@ -18,7 +18,7 @@ from dokker.command import astream_command
 from pydantic import BaseModel, Field
 
 from konstruktor._binary import find_konstruktor_bin
-from konstruktor.runs import areap_dead_runs
+from konstruktor.runs import areap_dead_runs, discard_run_if_empty
 
 #: Where ``hub create --server local`` writes how to reach the hub.
 ACCESS_FILE = "secrets/access.json"
@@ -209,6 +209,8 @@ class KonstruktorProject(BaseModel):
         been taken down a moment ago, by the ``down`` that runs before this.
         """
         await self.arun("destroy", self._target(), "--yes", "--local-only")
+        if self.reap_runs is not None:
+            discard_run_if_empty(self.directory)
 
     async def abefore_pull(self) -> None:
         """Nothing to prepare."""

@@ -125,8 +125,10 @@ def konstruktor_run_dir() -> Iterator[Path]:
     """
     run = run_dir()
     yield run
-    # Only what is empty: a kept hub's folder stays where it was printed.
-    if not any((run / "hubs").iterdir()):
+    # Only what is empty: a kept hub's folder stays where it was printed. And it may be
+    # gone already: the last hub destroyed takes the folder with it.
+    hubs = run / "hubs"
+    if hubs.is_dir() and not any(hubs.iterdir()):
         shutil.rmtree(run, ignore_errors=True)
 
 

@@ -217,6 +217,8 @@ def test_a_testing_hub_is_gone_after_its_block(fake_konstruktor) -> None:
     # Its coordination server is its own, and already down: nobody is asked to forget it.
     assert fake_konstruktor.calls[3] == ["destroy", os.fspath(folder), "--yes", "--local-only"]
     assert not folder.exists()
+    # Nor is the folder this process kept it in, now that it holds no hub.
+    assert list(runs_dir().iterdir()) == []
     # A registry of its own, so the hub never shows up beside the user's real ones.
     registries = {entry["data_dir"] for entry in fake_konstruktor.entries}
     assert len(registries) == 1 and None not in registries
