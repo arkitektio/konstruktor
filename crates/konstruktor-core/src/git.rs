@@ -123,6 +123,22 @@ pub fn clone_service(
     Ok(true)
 }
 
+/// Puts a fresh checkout at `revision`, detached: the commit a service's image says it was
+/// built from, so the code that runs from the checkout is the code that was in the image.
+///
+/// Detached on purpose. The image names a commit, not a branch, and guessing which branch
+/// it was on would be a guess; somebody who wants to work in the checkout switches to a
+/// branch, which is one command.
+pub fn checkout_revision(repo: &str, at: &Path, revision: &str) -> Result<(), CloneError> {
+    git_in(at, &["checkout", "--detach", revision])
+        .map(|_| ())
+        .map_err(|message| CloneError::Failed {
+            repo: repo.to_string(),
+            branch: Some(revision.to_string()),
+            message,
+        })
+}
+
 /// One service's checkout inside a dev hub's `mounts/` folder.
 ///
 /// Every field is answered independently and a failure is a field rather than an error:
@@ -356,6 +372,15 @@ pub fn checkout_dir(dir: &Path, service_host: &str) -> std::path::PathBuf {
         .join(service_host)
 }
 
+/// Where the source `service` runs from is on this machine: its checkout under
+/// `mounts/`, or the folder somebody named for it, which is used where it is.
+pub fn source_dir(dir: &Path, service: &crate::config::hub::ServiceBlock) -> std::path::PathBuf {
+    match service.runs_from() {
+        Some(crate::config::hub::RunsFrom::Folder(folder)) => std::path::PathBuf::from(folder),
+        _ => checkout_dir(dir, &service.host),
+    }
+}
+
 /// Every checkout this deployment has, in the profile's service order.
 ///
 /// Empty means "not a dev hub" — nothing else has to be asked, and no front end needs a
@@ -366,13 +391,13 @@ pub fn checkouts(dir: &Path, config: &crate::config::hub::HubConfig) -> Vec<Chec
         .into_iter()
         .map(|id| config.service(id))
         .filter(|service| service.mount_github)
-        // Only a service with a repository this build knows runs from a checkout.
-        .filter_map(|service| {
-            Some(read_checkout(
+        // A folder somebody named is listed too, where it is: it may well be a checkout.
+        .map(|service| {
+            read_checkout(
                 &service.host,
-                service.github_repo.as_deref()?,
-                &checkout_dir(dir, &service.host),
-            ))
+                service.repository().unwrap_or_default(),
+                &source_dir(dir, service),
+            )
         })
         .collect()
 }

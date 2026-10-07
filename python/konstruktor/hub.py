@@ -297,6 +297,30 @@ class Hub:
         """Remove the hub completely: containers, data, folder and registry entry."""
         self._konstruktor("destroy", os.fspath(self.directory), "--yes")
 
+    def job(self, service: str, job: str, *extra: str, timeout: float | None = 600.0) -> str:
+        """Run one of a service's declared jobs, in a container of its own (``konstruktor job run``).
+
+        ``extra`` is passed on to the job. Returns what it printed.
+
+        Raises:
+            KonstruktorError: If the service offers no such job, or the job failed.
+        """
+        args = ["job", "run", "--in", os.fspath(self.directory), service, job]
+        if extra:
+            args += ["--", *extra]
+        result = self._konstruktor(*args, timeout=timeout)
+        return result.stdout + result.stderr
+
+    def superuser(self, service: str, username: str, password: str) -> None:
+        """Create an account for one running service's admin site (``konstruktor superuser``).
+
+        Each service keeps its own accounts. For a hub made for a test: the password is on
+        the command line of the process that runs this.
+        """
+        self._konstruktor(
+            "superuser", service, "--in", os.fspath(self.directory), "--username", username, "--password", password
+        )
+
     def logs(self, service: str | None = None, *, tail: int = 200) -> str:
         """The last ``tail`` log lines, of one service or of all of them."""
         args = ["logs", os.fspath(self.directory), "--tail", str(tail)]

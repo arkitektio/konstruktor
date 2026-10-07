@@ -6,8 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::catalog::ServiceId;
 use crate::config::hub::{
-    build_hub_config, trusted_origins, HubConfig, HubConfigOptions, LokOptions, ServiceOptions,
-    StorageMode, LOCAL_COORD_SERVER,
+    build_hub_config, trusted_origins, HubConfig, HubConfigOptions, LokOptions, RunsFrom,
+    ServiceOptions, StorageMode, LOCAL_COORD_SERVER,
 };
 use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshOptions};
 use crate::connect::authorize::{self, HubAuthorizationError};
@@ -291,7 +291,6 @@ pub async fn create_hub(
 ) -> Result<CreatedHub, CreateError> {
     validate_identifier(&answers.identifier)?;
     validate_service_options(&answers.service_options)?;
-    validate_sources(answers)?;
     let self_contained = answers.coord_server.trim() == LOCAL_COORD_SERVER;
     if self_contained {
         validate_self_contained(answers)?;
@@ -423,6 +422,7 @@ pub async fn create_hub(
     crate::contract::acceptable(&config, &said).map_err(CreateError::Answers)?;
     // Now the hub can provide each with what it asked for: buckets, a key, its secrets.
     config.provide(&said);
+    sources_are_known(&config)?;
     // LiveKit announces one of the addresses the hub is about to advertise.
     config.place_livekit(&host_names(&hosts));
 
@@ -729,13 +729,18 @@ async fn authorize_new_hub(
     Ok((config, credentials, mesh_granted))
 }
 
-/// Clones the source of each of `services` that runs from a checkout into
-/// `mounts/<service>`, and puts the empty `config.yaml` placeholder in it.
+/// Gets the source of each of `services` that runs from source to where compose mounts it
+/// from: cloned into `mounts/<service>`, with the empty `config.yaml` placeholder put in
+/// it — or, for a folder somebody named, nothing at all, since that is used where it is.
 ///
 /// Driven by the profile, not by the answers: `mount_github` is where both `--dev` and a
 /// single service's "run from source" end up, and it is the field the compose file's bind
 /// mounts were written from. Cloning anything else — or less — is how a container gets
 /// handed an empty workspace. A service that already has a checkout keeps it.
+///
+/// A fresh checkout is at the branch that was asked for; when none was and the image says
+/// which commit it was built from, at that commit, detached — so that what runs from the
+/// checkout is, to begin with, what ran from the image.
 pub(crate) fn check_sources_out(
     dir: &Path,
     config: &HubConfig,
@@ -749,10 +754,23 @@ pub(crate) fn check_sources_out(
         .filter(|id| config.service(*id).mount_github)
     {
         let service = config.service(id);
-        // Only a service of the catalogue has a repository to check out; `mount_github`
-        // is never set on any other.
-        let Some(repo) = service.github_repo.as_deref() else {
-            continue;
+        let (repo, revision) = match service.runs_from() {
+            Some(RunsFrom::Repository {
+                repository,
+                revision,
+            }) => (repository, revision),
+            Some(RunsFrom::Folder(folder)) => {
+                on(CreateEvent::Log {
+                    line: format!(
+                        "{} runs from {folder}, used where it is — nothing is cloned, and \
+                         nothing in it is touched",
+                        service.host
+                    ),
+                });
+                continue;
+            }
+            // Refused before anything was written (`sources_are_known`).
+            None => continue,
         };
         let branch = branch_of(id);
         let into = git::checkout_dir(dir, &service.host);
@@ -765,6 +783,16 @@ pub(crate) fn check_sources_out(
         });
 
         let cloned = git::clone_service(&service.host, repo, branch.as_deref(), &into)?;
+        if let (true, None, Some(revision)) = (cloned, &branch, revision) {
+            git::checkout_revision(repo, &into, revision)?;
+            on(CreateEvent::Log {
+                line: format!(
+                    "{} is checked out at {revision}, the commit its image was built from \
+                     (detached: switch to a branch to work in it)",
+                    service.host
+                ),
+            });
+        }
 
         // The config is bind-mounted at `/workspace/config.yaml`, which is *inside* the
         // checkout. Docker creates a missing mount point itself, as root — so the file is
@@ -781,6 +809,27 @@ pub(crate) fn check_sources_out(
         }
     }
     Ok(())
+}
+
+/// Refuses a hub in which a service is to run from source and nothing says which: its
+/// image does not say where its code came from, and nobody named a source for it.
+pub(crate) fn sources_are_known(config: &HubConfig) -> Result<(), CreateError> {
+    let lost = config.without_a_source();
+    if lost.is_empty() {
+        return Ok(());
+    }
+    let named = lost
+        .iter()
+        .map(|host| format!("`{host}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(CreateError::Answers(format!(
+        "{named} cannot run from source: its image does not say where its code came from. \
+         Name the source — `--from-source {0}=URL[@BRANCH]` for a repository to clone, \
+         `--from-source {0}=/a/folder` for one on this machine — or run it from its image. \
+         Nothing was written.",
+        lost[0]
+    )))
 }
 
 /// The files a hub with these answers would be written to, without writing any of them.
@@ -1126,33 +1175,6 @@ pub fn validate_identifier(identifier: &str) -> Result<(), CreateError> {
     Ok(())
 }
 
-/// Refuses a checkout of a service this build knows no repository for: `--dev` and
-/// `--from-source` run a service from its source, and only the catalogue says where a
-/// service's source is.
-fn validate_sources(answers: &HubAnswers) -> Result<(), CreateError> {
-    let from_source = |id: &ServiceId| {
-        answers.dev_hub
-            || answers
-                .service_options
-                .get(id)
-                .is_some_and(|asked| asked.from_source)
-    };
-    let asked_of = answers
-        .services
-        .iter()
-        .chain(answers.service_options.keys());
-    for id in asked_of {
-        if id.github_repo().is_none() && from_source(id) {
-            return Err(CreateError::Answers(format!(
-                "`{id}` cannot run from a checkout of its source: it is not a service this \
-                 konstruktor knows the repository of. Run it from its image — leave it out \
-                 of `--from-source`, and create the hub without `--dev`."
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// What can be refused about one service's answers before anything is created — the rules
 /// the wizard holds on its services step. A branch name is git's to validate; only shapes
 /// git can never accept are refused, so a typo is caught before the clone is attempted.
@@ -1172,6 +1194,16 @@ pub fn validate_service_options(
             {
                 return Err(CreateError::Answers(format!(
                     "`{branch}` is not a branch name git would accept (for {})",
+                    id.as_str()
+                )));
+            }
+        }
+        // A folder somebody named is used where it is, so it has to be there.
+        if let Some(source) = asked.source.as_deref().map(str::trim) {
+            if crate::config::hub::is_local_folder(source) && !Path::new(source).is_dir() {
+                return Err(CreateError::Answers(format!(
+                    "{} was told to run from the folder {source}, and there is no such \
+                     folder",
                     id.as_str()
                 )));
             }
@@ -1373,6 +1405,7 @@ pub async fn reauthorize(
     // that declares more — is provided now; the profile is rewritten below, so a key is
     // minted once and sent to the coordination server with this very request.
     config.provide(&said);
+    sources_are_known(&config)?;
     validate_identifier(&answers.identifier)?;
 
     let store = registry::load();
@@ -1522,4 +1555,405 @@ pub async fn reauthorize(
         reporter_enabled,
         services,
     })
+}
+
+#[cfg(test)]
+mod source_tests {
+    //! Running a service from its source: which source, where it is mounted, and what a
+    //! fresh checkout is at.
+
+    use super::*;
+    use crate::config::hub::{build_hub_config, HubConfigOptions, RunsFrom, ServiceOptions};
+    use crate::contract::{Said, Source};
+    use crate::generate::compose::build_compose;
+    use crate::support;
+    use std::process::Command;
+
+    fn example() -> ServiceId {
+        ServiceId::named("example")
+    }
+
+    /// What the images say, with `example`'s saying where its code came from.
+    fn said_with(source: Option<Source>) -> Said {
+        let mut example = support::example();
+        example.source = source;
+        let mut said = support::said();
+        said.insert("example".to_string(), example);
+        said
+    }
+
+    /// A hub of `example` alone, run from source as `asked` says, with what its image says
+    /// taken in.
+    fn hub(asked: ServiceOptions, said: &Said) -> HubConfig {
+        let mut config = build_hub_config(&HubConfigOptions {
+            services: Some(vec![example()]),
+            rekuest_server: "none".into(),
+            service_options: BTreeMap::from([(example(), asked)]),
+            ..Default::default()
+        });
+        config.set_service_image("example", "example:1");
+        config.provide(said);
+        config
+    }
+
+    fn from_source() -> ServiceOptions {
+        ServiceOptions {
+            from_source: true,
+            ..Default::default()
+        }
+    }
+
+    fn mounts(config: &HubConfig, said: &Said) -> Vec<String> {
+        let compose = build_compose(config, &config.enabled_services(), said);
+        compose["services"]["example"]["volumes"]
+            .as_sequence()
+            .expect("volumes")
+            .iter()
+            .map(|volume| volume.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "konstruktor-source-{tag}-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git(at: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args([
+                "-c",
+                "user.name=konstruktor",
+                "-c",
+                "user.email=konstruktor@example.org",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository with two commits on `main` and a third on `feature`: the commits, in
+    /// that order.
+    fn repository() -> (PathBuf, [String; 3]) {
+        let repo = scratch("repo");
+        git(&repo, &["init", "--quiet", "--initial-branch", "main"]);
+        let commit = |file: &str| {
+            std::fs::write(repo.join(file), file).unwrap();
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "--quiet", "-m", file]);
+            git(&repo, &["rev-parse", "HEAD"])
+        };
+        let first = commit("first");
+        let second = commit("second");
+        git(&repo, &["checkout", "--quiet", "-b", "feature"]);
+        let third = commit("third");
+        git(&repo, &["checkout", "--quiet", "main"]);
+        (repo, [first, second, third])
+    }
+
+    /// A service nobody has heard of runs from source like any other, once its image says
+    /// where its code came from: cloned from there, mounted where the image keeps it.
+    #[test]
+    fn an_unknown_service_runs_from_the_source_its_image_names() {
+        let said = said_with(Some(Source {
+            repository: "https://git.example.org/me/example".into(),
+            revision: Some("abc123".into()),
+            path: "/srv/example".into(),
+        }));
+        let config = hub(from_source(), &said);
+        let block = config.service(example());
+
+        assert_eq!(
+            block.runs_from(),
+            Some(RunsFrom::Repository {
+                repository: "https://git.example.org/me/example",
+                revision: Some("abc123"),
+            })
+        );
+        assert!(sources_are_known(&config).is_ok());
+        let mounts = mounts(&config, &said);
+        // The checkout, where the image says its code sits; the config where every
+        // service looks for it.
+        assert!(
+            mounts.contains(&"./mounts/example:/srv/example".to_string()),
+            "{mounts:?}"
+        );
+        assert!(
+            mounts.contains(&"./configs/example.yaml:/workspace/config.yaml".to_string()),
+            "{mounts:?}"
+        );
+        // And the profile remembers it, as the image said it.
+        let text = serde_norway::to_string(&config).unwrap();
+        let back: HubConfig = serde_norway::from_str(&text).unwrap();
+        assert_eq!(back, config);
+
+        // Left unsaid, the code sits in the workspace.
+        let said = said_with(Some(
+            serde_json::from_str(r#"{"repository": "https://git.example.org/me/example"}"#)
+                .unwrap(),
+        ));
+        let config = hub(from_source(), &said);
+        assert_eq!(config.service(example()).source_path(), "/workspace");
+        assert!(mounts_of(&config, &said).contains(&"./mounts/example:/workspace".to_string()));
+
+        // A service that runs from its image mounts no source at all.
+        let config = hub(ServiceOptions::default(), &said);
+        assert!(mounts_of(&config, &said)
+            .iter()
+            .all(|mount| !mount.contains("mounts/")));
+    }
+
+    fn mounts_of(config: &HubConfig, said: &Said) -> Vec<String> {
+        mounts(config, said)
+    }
+
+    /// A service whose image does not say where its code came from cannot run from source
+    /// unless somebody says — and is refused naming the flag that does.
+    #[test]
+    fn a_service_with_no_source_is_refused_naming_the_flag() {
+        let said = said_with(None);
+        let config = hub(from_source(), &said);
+        assert_eq!(config.without_a_source(), ["example"]);
+        let refused = sources_are_known(&config).unwrap_err().to_string();
+        assert!(refused.contains("`example`"), "{refused}");
+        assert!(
+            refused.contains("--from-source example=URL[@BRANCH]"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("--from-source example=/a/folder"),
+            "{refused}"
+        );
+
+        // `--dev` is the same question, asked of every service.
+        let mut dev = build_hub_config(&HubConfigOptions {
+            services: Some(vec![example()]),
+            rekuest_server: "none".into(),
+            dev_hub: true,
+            ..Default::default()
+        });
+        dev.set_service_image("example", "example:1");
+        dev.provide(&said);
+        assert!(sources_are_known(&dev).is_err());
+
+        // Run from its image, it needs none.
+        assert!(sources_are_known(&hub(ServiceOptions::default(), &said)).is_ok());
+    }
+
+    /// A repository somebody names is cloned in place of the image's — without the
+    /// image's revision, which is a commit of another repository.
+    #[test]
+    fn a_named_repository_takes_the_place_of_the_images() {
+        let said = said_with(Some(Source {
+            repository: "https://git.example.org/me/example".into(),
+            revision: Some("abc123".into()),
+            path: "/srv/example".into(),
+        }));
+        let asked = ServiceOptions {
+            source: Some("https://git.example.org/fork/example".into()),
+            ..from_source()
+        };
+        let config = hub(asked.clone(), &said);
+        assert_eq!(
+            config.service(example()).runs_from(),
+            Some(RunsFrom::Repository {
+                repository: "https://git.example.org/fork/example",
+                revision: None,
+            })
+        );
+        // Still mounted where the image keeps its code.
+        assert!(mounts(&config, &said).contains(&"./mounts/example:/srv/example".to_string()));
+
+        // And it is all a service whose image says nothing needs.
+        let silent = said_with(None);
+        let config = hub(asked, &silent);
+        assert!(sources_are_known(&config).is_ok());
+        assert!(mounts(&config, &silent).contains(&"./mounts/example:/workspace".to_string()));
+    }
+
+    /// A folder somebody names is used where it is: mounted from there, with the service's
+    /// config beside it rather than in it, nothing cloned and nothing written into it.
+    #[test]
+    fn a_named_folder_is_used_in_place_and_left_as_it_is() {
+        let folder = scratch("folder");
+        std::fs::write(folder.join("manage.txt"), "mine").unwrap();
+        let named = folder.to_string_lossy().to_string();
+        let said = said_with(None);
+        let config = hub(
+            ServiceOptions {
+                source: Some(named.clone()),
+                ..from_source()
+            },
+            &said,
+        );
+        assert_eq!(
+            config.service(example()).runs_from(),
+            Some(RunsFrom::Folder(&named))
+        );
+        assert!(sources_are_known(&config).is_ok());
+
+        let mounts = mounts(&config, &said);
+        assert!(
+            mounts.contains(&format!("{named}:/workspace:ro")),
+            "{mounts:?}"
+        );
+        // A file mounted into the folder would be created in it: the config is mounted
+        // outside it, and the service told where.
+        assert!(
+            mounts.contains(&"./configs/example.yaml:/hub/config.yaml".to_string()),
+            "{mounts:?}"
+        );
+        let compose = build_compose(&config, &config.enabled_services(), &said);
+        assert_eq!(
+            compose["services"]["example"]["environment"]["ARKITEKT_CONFIG_FILE"].as_str(),
+            Some("/hub/config.yaml")
+        );
+
+        // Getting the sources in place clones nothing and touches nothing.
+        let dir = scratch("hub");
+        let narrated = std::sync::Mutex::new(Vec::new());
+        check_sources_out(&dir, &config, &[example()], &|_| None, &|event| {
+            narrated.lock().unwrap().push(format!("{event:?}"))
+        })
+        .unwrap();
+        assert!(!dir.join("mounts").exists(), "nothing is cloned");
+        let left: Vec<String> = std::fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left, ["manage.txt"], "nothing was put into the folder");
+        let narrated = narrated.lock().unwrap().join("\n");
+        assert!(narrated.contains("used where it is"), "{narrated}");
+
+        // A folder that is not there is refused before anything is created.
+        let missing = BTreeMap::from([(
+            example(),
+            ServiceOptions {
+                source: Some("/no/such/folder/anywhere".into()),
+                ..from_source()
+            },
+        )]);
+        assert!(validate_service_options(&missing).is_err());
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A fresh checkout is at the commit the image says it was built from, detached, and
+    /// says so — unless a branch was asked for, which wins. One that is there is left.
+    #[test]
+    fn a_fresh_checkout_is_at_the_revision_the_image_names() {
+        if !git::probe().is_ready() {
+            eprintln!("skipping: no git on this machine");
+            return;
+        }
+        let (repo, [first, second, third]) = repository();
+        let said = said_with(Some(Source {
+            repository: repo.to_string_lossy().to_string(),
+            revision: Some(first.clone()),
+            path: "/workspace".into(),
+        }));
+        let config = hub(from_source(), &said);
+        let head = |dir: &Path| git(&dir.join("mounts/example"), &["rev-parse", "HEAD"]);
+
+        // Nobody asked for a branch: the image's commit, detached.
+        let dir = scratch("at-revision");
+        let narrated = std::sync::Mutex::new(Vec::new());
+        check_sources_out(&dir, &config, &[example()], &|_| None, &|event| {
+            narrated.lock().unwrap().push(format!("{event:?}"))
+        })
+        .unwrap();
+        assert_eq!(head(&dir), first);
+        let checkout = git::read_checkout(
+            "example",
+            &repo.to_string_lossy(),
+            &dir.join("mounts/example"),
+        );
+        assert!(checkout.detached, "{checkout:?}");
+        let said_so = narrated.lock().unwrap().join("\n");
+        assert!(
+            said_so.contains(&first) && said_so.contains("detached"),
+            "{said_so}"
+        );
+        // The placeholder the config is mounted over is there, as for any checkout.
+        assert!(dir.join("mounts/example/config.yaml").is_file());
+
+        // A second time it is left exactly where somebody may have moved it.
+        git(
+            &dir.join("mounts/example"),
+            &["checkout", "--quiet", &second],
+        );
+        check_sources_out(&dir, &config, &[example()], &|_| None, &|_| {}).unwrap();
+        assert_eq!(head(&dir), second);
+
+        // A branch that was asked for is what is checked out, whatever the image names.
+        let on_branch = scratch("on-branch");
+        check_sources_out(
+            &on_branch,
+            &config,
+            &[example()],
+            &|_| Some("feature".to_string()),
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(head(&on_branch), third);
+        let checkout = git::read_checkout(
+            "example",
+            &repo.to_string_lossy(),
+            &on_branch.join("mounts/example"),
+        );
+        assert_eq!(checkout.branch.as_deref(), Some("feature"));
+
+        // An image that names no commit gives the repository's own default branch.
+        let unsaid = said_with(Some(Source {
+            repository: repo.to_string_lossy().to_string(),
+            revision: None,
+            path: "/workspace".into(),
+        }));
+        let at_default = scratch("default");
+        check_sources_out(
+            &at_default,
+            &hub(from_source(), &unsaid),
+            &[example()],
+            &|_| None,
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(head(&at_default), second);
+
+        // A commit the repository does not have is an error that says so, not a checkout
+        // of something else.
+        let wrong = said_with(Some(Source {
+            repository: repo.to_string_lossy().to_string(),
+            revision: Some("0000000000000000000000000000000000000000".into()),
+            path: "/workspace".into(),
+        }));
+        let nowhere = scratch("nowhere");
+        assert!(check_sources_out(
+            &nowhere,
+            &hub(from_source(), &wrong),
+            &[example()],
+            &|_| None,
+            &|_| {}
+        )
+        .is_err());
+
+        for dir in [repo, dir, on_branch, at_default, nowhere] {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
 }

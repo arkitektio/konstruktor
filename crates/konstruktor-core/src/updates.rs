@@ -1816,7 +1816,8 @@ async fn apply_on(
     // changed under it is restarted, unless it was just recreated.
     if !report.rewritten.is_empty() && was_running {
         step("Bringing the rest of the hub to the rewritten files".into());
-        let restart: Vec<String> = crate::services::services_to_restart(
+        let restart: Vec<String> = crate::services::restarts(
+            dir,
             &config,
             &changed,
             &crate::services::ServicePlan::default(),

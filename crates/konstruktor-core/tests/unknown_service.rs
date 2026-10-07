@@ -88,7 +88,7 @@ fn it_gets_a_block_of_its_own() {
     );
     assert_eq!(block.host, "example");
     assert_eq!(block.internal_port, 80);
-    assert_eq!(block.github_repo, None);
+    assert_eq!(block.source, None);
     assert_eq!(block.database("main"), Some("example_main"));
     // What its image asked for, and only that.
     assert_eq!(block.identifier.as_deref(), Some("org.example.service"));

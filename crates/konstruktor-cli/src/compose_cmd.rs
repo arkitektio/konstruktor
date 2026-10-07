@@ -147,6 +147,12 @@ pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
         .map(|credentials| credentials.issued_identity())
         .unwrap_or_default();
     konstruktor_core::contract::render_hub(&dir, &config, &identity).await?;
+    // What the services host may be told differently now: taken in at once on a hub that
+    // is up, at its next start otherwise.
+    let print = |line: konstruktor_core::compose::ComposeLine| {
+        eprintln!("  {}", ui::dim(&line.line));
+    };
+    konstruktor_core::services::catalogue(&dir, &config, &print).await;
     ui::ok("The hub's files are what this Konstruktor generates.");
     ui::say("Nothing running has changed yet: `konstruktor restart` makes the hub read them.");
     validate(&dir).await

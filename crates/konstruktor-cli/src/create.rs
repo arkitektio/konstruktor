@@ -96,9 +96,15 @@ pub struct CreateArgs {
     /// The branch to check out, with `--dev`. Left out, each repository's default branch.
     #[arg(long)]
     pub dev_branch: Option<String>,
-    /// Run one service from a checkout of its source instead of its image: `mikro`, or
-    /// `mikro@my-branch`. Repeatable. Needs git. `--dev` is the same for every service.
-    #[arg(long = "from-source", value_name = "SERVICE[@BRANCH]")]
+    /// Run one service from its source instead of the code in its image. Repeatable.
+    ///
+    /// `mikro`, or `mikro@my-branch`: a checkout of the repository the service's image
+    /// says it was built from — at the commit it names, unless a branch is asked for.
+    /// `mikro=https://github.com/me/mikro[@branch]`: a checkout of another repository.
+    /// `mikro=/path/to/a/folder`: a folder on this machine, used where it is — nothing is
+    /// cloned, and nothing in it is touched. A checkout needs git; a folder does not.
+    /// `--dev` is the first form for every service.
+    #[arg(long = "from-source", value_name = "SERVICE[=URL|FOLDER][@BRANCH]")]
     pub from_source: Vec<String>,
     /// Turn Django's debug mode on for one service. Repeatable. Debug shows internals to
     /// anyone who can reach the service.
@@ -359,7 +365,15 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
 
     // Checked here rather than at the checkout: by then the hub has been authorized and
     // written, and "install git and try again" would mean creating it a second time.
-    let needs_git = args.dev || service_options.values().any(|o| o.from_source);
+    // A folder somebody named is used where it is: nothing is checked out for it.
+    let needs_git = args.dev
+        || service_options.values().any(|o| {
+            o.from_source
+                && !o
+                    .source
+                    .as_deref()
+                    .is_some_and(konstruktor_core::config::hub::is_local_folder)
+        });
     if needs_git && !konstruktor_core::git::probe().is_ready() {
         bail!("running services from source checks them out with git, which is not installed");
     }
@@ -968,13 +982,13 @@ fn service_options_from(
 
     let mut options: BTreeMap<ServiceId, ServiceOptions> = BTreeMap::new();
     for spec in &args.from_source {
-        let (name, branch) = match spec.split_once('@') {
-            Some((name, branch)) => (name, Some(branch.trim().to_string())),
-            None => (spec.as_str(), None),
-        };
-        let entry = options.entry(named(name, "--from-source")?).or_default();
+        let asked = parse_from_source(spec)?;
+        let entry = options
+            .entry(named(&asked.service, "--from-source")?)
+            .or_default();
         entry.from_source = true;
-        entry.branch = branch.filter(|b| !b.is_empty());
+        entry.branch = asked.branch;
+        entry.source = asked.source;
     }
     for name in &args.debug {
         options.entry(named(name, "--debug")?).or_default().debug = true;
@@ -1011,6 +1025,84 @@ fn service_options_from(
     // refused before anybody is sent to a browser.
     konstruktor_core::create::validate_service_options(&options)?;
     Ok(options)
+}
+
+/// One `--from-source`, taken apart.
+#[derive(Debug, PartialEq, Eq)]
+struct FromSource {
+    service: String,
+    /// A repository to clone, or the absolute path of a folder to use where it is. `None`
+    /// leaves it to what the service's image says.
+    source: Option<String>,
+    branch: Option<String>,
+}
+
+/// `SERVICE`, `SERVICE@BRANCH`, `SERVICE=URL[@BRANCH]` or `SERVICE=FOLDER`.
+///
+/// A folder is recognised by being a path — absolute, or starting with `.` or `~` — and
+/// is made absolute here, since it is mounted from wherever the hub's folder is. In a
+/// repository's address an `@` is only a branch where it follows the path:
+/// `git@github.com:me/mikro.git` has none, `git@github.com:me/mikro.git@dev` has one.
+fn parse_from_source(spec: &str) -> Result<FromSource> {
+    let clean = |value: &str| Some(value.trim().to_string()).filter(|v| !v.is_empty());
+    let Some((service, source)) = spec.split_once('=') else {
+        let (service, branch) = match spec.split_once('@') {
+            Some((service, branch)) => (service, clean(branch)),
+            None => (spec, None),
+        };
+        return Ok(FromSource {
+            service: service.trim().to_string(),
+            source: None,
+            branch,
+        });
+    };
+    let (service, source) = (service.trim().to_string(), source.trim());
+    if source.is_empty() {
+        bail!("--from-source {spec}: expected a repository or a folder after `=`");
+    }
+
+    let home = source.strip_prefix("~/").and_then(|rest| {
+        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(rest))
+    });
+    if source.starts_with('/') || source.starts_with('.') || home.is_some() {
+        let folder = home.unwrap_or_else(|| std::path::PathBuf::from(source));
+        let folder = std::fs::canonicalize(&folder)
+            .ok()
+            .filter(|folder| folder.is_dir())
+            .with_context(|| {
+                format!(
+                    "--from-source {spec}: there is no folder at {}",
+                    folder.display()
+                )
+            })?;
+        return Ok(FromSource {
+            service,
+            source: Some(folder.to_string_lossy().to_string()),
+            branch: None,
+        });
+    }
+
+    // Where the path of the address starts: after the authority of a URL, or after the
+    // colon of `user@host:path`. A branch is what follows an `@` from there on.
+    let path_from = match source.find("://") {
+        Some(scheme) => source[scheme + 3..]
+            .find('/')
+            .map(|slash| scheme + 3 + slash),
+        None => source.find(':'),
+    }
+    .unwrap_or(0);
+    let (repository, branch) = match source[path_from..].find('@') {
+        Some(at) => (
+            &source[..path_from + at],
+            clean(&source[path_from + at + 1..]),
+        ),
+        None => (source, None),
+    };
+    Ok(FromSource {
+        service,
+        source: Some(repository.to_string()),
+        branch,
+    })
 }
 
 /// `["rekuest=jhnnsrs/rekuest:1.2.3"]` → `{rekuest: jhnnsrs/rekuest:1.2.3}`. Split on the
@@ -1050,6 +1142,67 @@ fn parse_services(names: &[String]) -> Result<Vec<ServiceId>> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// The forms `--from-source` takes: the image's own repository, another one, or a
+    /// folder — and where an `@` is a branch.
+    #[test]
+    fn a_source_is_a_branch_a_repository_or_a_folder() {
+        let parsed = |spec: &str| parse_from_source(spec).expect("a valid form");
+        let from = |service: &str, source: Option<&str>, branch: Option<&str>| FromSource {
+            service: service.into(),
+            source: source.map(String::from),
+            branch: branch.map(String::from),
+        };
+        assert_eq!(parsed("mikro"), from("mikro", None, None));
+        assert_eq!(
+            parsed("mikro@feature/zarr"),
+            from("mikro", None, Some("feature/zarr"))
+        );
+        assert_eq!(
+            parsed("mikro=https://github.com/me/mikro"),
+            from("mikro", Some("https://github.com/me/mikro"), None)
+        );
+        assert_eq!(
+            parsed("mikro=https://github.com/me/mikro@feature/zarr"),
+            from(
+                "mikro",
+                Some("https://github.com/me/mikro"),
+                Some("feature/zarr")
+            )
+        );
+        // An `@` in the authority is a user, not a branch.
+        assert_eq!(
+            parsed("mikro=https://me@git.example.org/me/mikro.git"),
+            from(
+                "mikro",
+                Some("https://me@git.example.org/me/mikro.git"),
+                None
+            )
+        );
+        assert_eq!(
+            parsed("mikro=git@github.com:me/mikro.git"),
+            from("mikro", Some("git@github.com:me/mikro.git"), None)
+        );
+        assert_eq!(
+            parsed("mikro=git@github.com:me/mikro.git@dev"),
+            from("mikro", Some("git@github.com:me/mikro.git"), Some("dev"))
+        );
+
+        // A folder is used where it is, by its whole path.
+        let folder = std::env::temp_dir().join(format!("konstruktor-src-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let whole = std::fs::canonicalize(&folder).unwrap();
+        let asked = parsed(&format!("example={}", folder.display()));
+        assert_eq!(asked, from("example", Some(&whole.to_string_lossy()), None));
+        assert!(konstruktor_core::config::hub::is_local_folder(
+            asked.source.as_deref().unwrap()
+        ));
+        std::fs::remove_dir_all(&folder).ok();
+
+        let missing = parse_from_source("example=/no/such/folder/anywhere").unwrap_err();
+        assert!(missing.to_string().contains("no folder"), "{missing}");
+        assert!(parse_from_source("example=").is_err());
+    }
 
     #[derive(Parser)]
     struct Cli {
@@ -1098,6 +1251,8 @@ mod tests {
             Some(&["jhnnsrs/ome:main".to_string()][..])
         );
         assert!(!options.contains_key(&ServiceId::Kraph));
+        // Nobody named a source: it is the image's to say.
+        assert_eq!(mikro.source, None);
     }
 
     /// Naming a service the hub does not run is a mistake worth saying, not an answer to

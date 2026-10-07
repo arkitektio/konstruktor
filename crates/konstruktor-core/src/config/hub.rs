@@ -216,6 +216,26 @@ impl<'de> Deserialize<'de> for Buckets {
     }
 }
 
+/// Where a service that runs from source gets it. See [`ServiceBlock::runs_from`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunsFrom<'a> {
+    /// A repository, cloned into `mounts/<service>`: at `revision` when the image says
+    /// which commit it was built from and nobody asked for a branch.
+    Repository {
+        repository: &'a str,
+        revision: Option<&'a str>,
+    },
+    /// A folder on this machine, mounted where it is: never cloned into, never written to.
+    Folder(&'a str),
+}
+
+/// Whether a source somebody named is a folder on this machine rather than a repository
+/// to clone: an absolute path. A repository is a URL or `user@host:path`, neither of which
+/// starts that way.
+pub fn is_local_folder(source: &str) -> bool {
+    std::path::Path::new(source).is_absolute()
+}
+
 /// One service of a hub: where it runs, on which image, and everything the hub provides
 /// it with.
 ///
@@ -240,10 +260,16 @@ pub struct ServiceBlock {
     pub databases: BTreeMap<String, String>,
     pub debug: bool,
     pub enabled: bool,
-    /// Where the service's source lives, for a service of the catalogue. One outside it
-    /// has no repository this build knows, and so no checkout to run from.
+    /// Where the code in the service's image came from and where it sits in it, as the
+    /// image says ([`crate::contract::Source`]): what it takes to run the service from a
+    /// checkout. Absent for an image that does not say, and until it is asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github_repo: Option<String>,
+    pub source: Option<crate::contract::Source>,
+    /// The source this service runs from when somebody named one, in place of what its
+    /// image says: a repository to clone, or a folder on this machine that is used where
+    /// it is. See [`Self::runs_from`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_override: Option<String>,
     pub host: String,
     /// What the service is registered as at the coordination server, and listed under in
     /// the hub's trust bundle (`live.arkitekt.mikro`): its image's own word for it. Absent
@@ -260,6 +286,8 @@ pub struct ServiceBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     pub internal_port: u16,
+    /// Run the service from its source instead of the code in its image: see
+    /// [`Self::runs_from`] for which source that is.
     pub mount_github: bool,
     pub path_config: Kinded,
     /// The hub's Redis. Absent for a service whose image says it does not use it.
@@ -321,6 +349,45 @@ impl ServiceBlock {
         self.health.as_deref().unwrap_or(crate::health::HEALTH_PATH)
     }
 
+    /// The source a service that runs from source runs from, if anything says: what
+    /// somebody named for it, else what its image says it was built from.
+    pub fn runs_from(&self) -> Option<RunsFrom<'_>> {
+        match self.source_override.as_deref() {
+            Some(named) if is_local_folder(named) => Some(RunsFrom::Folder(named)),
+            Some(named) => Some(RunsFrom::Repository {
+                repository: named,
+                // The revision is of the repository the image was built from, not of one
+                // somebody pointed at instead.
+                revision: None,
+            }),
+            None => self.source.as_ref().map(|source| RunsFrom::Repository {
+                repository: &source.repository,
+                revision: source.revision.as_deref(),
+            }),
+        }
+    }
+
+    /// The repository the service's code is in, where one is known: for a bug report, the
+    /// hub's manifest, the dashboard. Not a folder on this machine.
+    pub fn repository(&self) -> Option<&str> {
+        match self.runs_from() {
+            Some(RunsFrom::Repository { repository, .. }) => Some(repository),
+            _ => self
+                .source
+                .as_ref()
+                .map(|source| source.repository.as_str()),
+        }
+    }
+
+    /// Where a checkout is mounted in the service's container: where its image says its
+    /// code sits, or the place every service has kept it so far.
+    pub fn source_path(&self) -> &str {
+        self.source
+            .as_ref()
+            .map(|source| source.path.as_str())
+            .unwrap_or(crate::contract::WORKSPACE)
+    }
+
     /// What the hub calls the database the service asked for under `name`, if it did.
     pub fn database(&self, name: &str) -> Option<&str> {
         self.databases.get(name).map(String::as_str)
@@ -354,6 +421,7 @@ impl ServiceBlock {
         let needs = &said.needs;
 
         self.identifier = Some(said.identifier.clone());
+        self.source = said.source.clone();
         self.health = Some(said.health_path())
             .filter(|path| *path != crate::health::HEALTH_PATH)
             .map(str::to_string);
@@ -1049,6 +1117,18 @@ impl HubConfig {
             .collect()
     }
 
+    /// The services that are to run from source and have none to run from: their image
+    /// does not say where its code came from, and nobody named a source for them. Asked
+    /// once the images have answered ([`Self::provide`]), before anything is written.
+    pub fn without_a_source(&self) -> Vec<String> {
+        self.enabled_services()
+            .into_iter()
+            .map(|id| self.service(id))
+            .filter(|block| block.mount_github && block.runs_from().is_none())
+            .map(|block| block.host.clone())
+            .collect()
+    }
+
     /// Whether `id` is one of this hub's services and part of its stack.
     pub fn runs(&self, id: ServiceId) -> bool {
         self.get(id).is_some_and(ServiceBlock::runs)
@@ -1332,9 +1412,9 @@ pub fn is_supported_image(id: ServiceId, image: &str) -> bool {
 
 /// The block a service starts with, before its image has been asked anything.
 ///
-/// For a catalogue service that is the catalogue's image and repository, switched on when
-/// the catalogue pre-ticks it. For any other there is only the name: no image, no
-/// repository, switched off until somebody adds it. Either way the conventions every
+/// For a catalogue service that is the catalogue's image, switched on when the catalogue
+/// pre-ticks it. For any other there is only the name: no image, switched off until
+/// somebody adds it. Either way the conventions every
 /// service is held to — it listens on port 80 and is served under its own name — and
 /// nothing its image has to say first: no databases, no buckets, no key, no secrets. Those are [`ServiceBlock::provide`]'s, once the image has answered.
 fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
@@ -1348,14 +1428,16 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         databases: BTreeMap::new(),
         debug: false,
         enabled: known.is_some_and(|known| known.default),
-        github_repo: known.map(|known| known.github_repo.to_string()),
+        source: None,
+        source_override: None,
         host: name.into(),
         identifier: None,
         health: None,
         image: known.map(|known| known.image.to_string()),
         internal_port: 80,
-        // Only a service with a repository can run from a checkout of it.
-        mount_github: mount_github && known.is_some(),
+        // Whether there is a source to run it from is not known until its image is asked:
+        // see `HubConfig::sources_are_known`.
+        mount_github,
         path_config: Kinded::local(),
         redis_config: Some(Kinded::local()),
         secret_key: generate_django_secret_key(),
@@ -1592,10 +1674,15 @@ pub struct ServiceOptions {
     /// image's workspace. Needs git, which the caller is responsible for having found.
     #[serde(default)]
     pub from_source: bool,
-    /// The branch to check out. Absent, the repository's own default branch is used —
-    /// they do not all agree on what it is called.
+    /// The branch to check out. Absent, the commit the image says it was built from is
+    /// checked out, or — when it does not say — the repository's own default branch.
     #[serde(default)]
     pub branch: Option<String>,
+    /// The source to run from in place of what the image says: a repository to clone, or
+    /// an absolute path of a folder on this machine, which is used where it is. Absent,
+    /// the repository the service's image names.
+    #[serde(default)]
+    pub source: Option<String>,
     /// Django's debug mode for this one service. It reaches the container: the generator
     /// already writes it as `django.debug` in `configs/<service>.yaml`.
     #[serde(default)]
@@ -1687,8 +1774,10 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     // have to know which of the two answers put it there.
     for (id, block) in services.iter_mut() {
         if let Some(asked) = options.service_options.get(id) {
-            block.mount_github =
-                block.mount_github || (asked.from_source && block.github_repo.is_some());
+            block.mount_github = block.mount_github || asked.from_source;
+            if let Some(source) = blank(asked.source.as_deref()) {
+                block.source_override = Some(source);
+            }
             block.debug = block.debug || asked.debug;
 
             // Kabinet's app repositories: an answer replaces the seeded pair outright

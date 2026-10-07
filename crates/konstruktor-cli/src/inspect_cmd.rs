@@ -147,6 +147,59 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
     if let Some(oldest) = &said.upgrade_from {
         rows.push(("upgradable from".into(), oldest.clone()));
     }
+    // Where its code came from: what `--from-source` clones, and where it mounts it.
+    rows.push((
+        "source".into(),
+        match &said.source {
+            Some(source) => format!(
+                "{}{}  (in the image at {})",
+                source.repository,
+                source
+                    .revision
+                    .as_deref()
+                    .map(|revision| format!(" at {revision}"))
+                    .unwrap_or_default(),
+                source.path
+            ),
+            None => "not said: `--from-source` has to name one".into(),
+        },
+    ));
+    // What exists on a hub because it is there: how many, and which.
+    let counted = |count: usize, what: &str, identifiers: Vec<&str>| {
+        if count == 0 {
+            "none".to_string()
+        } else {
+            format!(
+                "{count} {what}{}: {}",
+                if count == 1 { "" } else { "s" },
+                identifiers.join(", ")
+            )
+        }
+    };
+    rows.push((
+        "hosts".into(),
+        counted(
+            said.hosts.structures.len(),
+            "structure",
+            said.hosts
+                .structures
+                .iter()
+                .map(|structure| structure.identifier.as_str())
+                .collect(),
+        ),
+    ));
+    rows.push((
+        "announces".into(),
+        counted(
+            said.hosts.signals.len(),
+            "signal",
+            said.hosts
+                .signals
+                .iter()
+                .map(|signal| signal.identifier.as_str())
+                .collect(),
+        ),
+    ));
     ui::table(&rows);
 
     ui::say("");

@@ -97,6 +97,14 @@ pub struct Described {
 pub struct Rendering {
     pub from: String,
     pub config: String,
+    /// The hash of what the service was told its peers host, and of everything else it
+    /// was written from: what tells a config that changed only in what there is to
+    /// catalogue from one its service has to be restarted for. Absent on a config written
+    /// before the two were told apart. See [`crate::contract::owes_catalogue`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apart: Option<String>,
 }
 
 /// The file itself. Oldest first; the last entry is what the hub is on now.
@@ -121,6 +129,12 @@ pub struct Lock {
     /// The services an update leaves alone, by compose service.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub frozen: BTreeMap<String, Frozen>,
+    /// The services whose config was written again because what their peers host changed,
+    /// and whose `catalogue` job has not run since, by compose service. `true` when that
+    /// was all that changed: such a service is not restarted for it, the job is all it
+    /// takes. See [`crate::services::catalogue`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recatalogue: BTreeMap<String, bool>,
     /// The services whose next release asks for a key of their own, which they do not
     /// hold: an update refused them, and the next authorization mints the key and has
     /// the coordination server vouch for it. See [`crate::services::provide_declared`].

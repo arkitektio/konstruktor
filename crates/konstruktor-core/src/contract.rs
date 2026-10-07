@@ -126,6 +126,97 @@ pub struct Offers {
     pub endpoints: BTreeMap<String, String>,
 }
 
+/// Where the code in an image came from, and where it sits in it: what it takes to run the
+/// service from a checkout instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Source {
+    /// What to clone: `https://github.com/arkitektio/mikro-server-next`.
+    pub repository: String,
+    /// The commit the image was built from, when the build said.
+    #[serde(default)]
+    pub revision: Option<String>,
+    /// Where the service's code sits in the image: a checkout is mounted here.
+    #[serde(default = "workspace")]
+    pub path: String,
+}
+
+/// Where a service's code sits in its image unless the image says otherwise.
+pub const WORKSPACE: &str = "/workspace";
+
+fn workspace() -> String {
+    WORKSPACE.to_string()
+}
+
+/// One descriptor of a structure's objects (`@mikro/n_channels`, an `INT`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Descriptor {
+    pub key: String,
+    /// What its value is, in the service's own word for it; `ANY` when it does not say.
+    #[serde(rename = "type", default = "any")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn any() -> String {
+    "ANY".to_string()
+}
+
+/// A kind of object a service holds, known across the hub by its identifier
+/// (`@mikro/arraydataset`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Structure {
+    pub identifier: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub descriptors: Vec<Descriptor>,
+}
+
+/// What a service announces about a structure's objects, and with which descriptors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signal {
+    pub identifier: String,
+    /// `CREATED`, `UPDATED`, `DELETED`: which of them it announces.
+    #[serde(default = "created")]
+    pub kinds: Vec<String>,
+    /// The descriptor keys an announcement carries.
+    #[serde(default)]
+    pub descriptors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn created() -> Vec<String> {
+    vec!["CREATED".to_string()]
+}
+
+/// What exists on a hub because a service is there: the structures it holds and the
+/// signals it sends about them.
+///
+/// Said by the image, so that a hub knows it without asking the running service. Nothing
+/// here acts on it: it is handed, as it was said, to the service of the hub that keeps
+/// the catalogue of what there is ([`facts`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hosts {
+    #[serde(default)]
+    pub structures: Vec<Structure>,
+    #[serde(default)]
+    pub signals: Vec<Signal>,
+}
+
+impl Hosts {
+    pub fn is_empty(&self) -> bool {
+        self.structures.is_empty() && self.signals.is_empty()
+    }
+}
+
+/// The job a service offers for taking in what the other services of the hub host
+/// ([`Hosts`]): the one that declares it is the one that is told.
+pub const CATALOGUE_JOB: &str = "catalogue";
+
 /// Something that can be run in a service's image, as a container of its own, by name. The
 /// start is not one of them: that is the image's own command, and nothing here writes one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +279,14 @@ impl Description {
         } else {
             offered
         }
+    }
+
+    /// Whether the service keeps the hub's catalogue of what its services host: it offers
+    /// the job that takes that in ([`CATALOGUE_JOB`]). Such a service is told what every
+    /// other one hosts; one that offers no such job has no use for it, and a release from
+    /// before services said what they host would refuse facts that mention it.
+    pub fn catalogues(&self) -> bool {
+        self.jobs.contains_key(CATALOGUE_JOB)
     }
 
     /// The command of the job that prepares the service, if it has one to run.
@@ -256,6 +355,13 @@ pub struct Description {
     /// The oldest version a deployment can be moved to this release from directly.
     #[serde(default)]
     pub upgrade_from: Option<String>,
+    /// The structures the service holds and the signals it sends about them.
+    #[serde(default)]
+    pub hosts: Hosts,
+    /// Where the image's code came from. `None` for an image that does not say: it cannot
+    /// be run from a checkout without being told one.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 /// Asks `image` what it is, by running it with no command: a service's image answers with
@@ -643,6 +749,82 @@ pub fn remember(dir: &Path, config: &HubConfig, said: &Said) -> std::io::Result<
     crate::lock::write(dir, &held)
 }
 
+/// The key a peer's [`Hosts`] are told under, in the facts.
+const HOSTS: &str = "hosts";
+
+/// What a config is written from, as three hashes: all of it, what the service is told
+/// its peers host, and everything apart from that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marks {
+    pub from: String,
+    pub hosts: String,
+    pub apart: String,
+}
+
+/// The [`Marks`] of a config written by `image` from `facts`, with `overrides` laid over.
+///
+/// The two parts are told apart because they ask different things of a running service.
+/// Most of what a service is told it reads when it starts, so a change there restarts
+/// it. What its peers host it takes in through a job of its own ([`CATALOGUE_JOB`]),
+/// running, and restarting a hub's Rekuest — and with it every agent's connection —
+/// because Mikro gained a structure would be a high price for a line in a catalogue.
+pub fn marks(image: &str, facts: &Value, overrides: &str) -> Marks {
+    let mut apart = facts.clone();
+    let mut hosts = serde_norway::Mapping::new();
+    if let Some(Value::Mapping(peers)) = apart.get_mut("peers") {
+        for (name, peer) in peers.iter_mut() {
+            if let Value::Mapping(peer) = peer {
+                if let Some(hosted) = peer.remove(HOSTS) {
+                    hosts.insert(name.clone(), hosted);
+                }
+            }
+        }
+    }
+    let hash = |document: &Value| {
+        crate::lock::digest(
+            format!("{image}\n{}\n{overrides}", crate::generate::dump(document)).as_bytes(),
+        )
+    };
+    Marks {
+        from: hash(facts),
+        hosts: crate::lock::digest(crate::generate::dump(&Value::Mapping(hosts)).as_bytes()),
+        apart: hash(&apart),
+    }
+}
+
+/// Whether a service whose config is being written again owes a run of its catalogue job,
+/// and — `Some(true)` — whether that is all the rewriting asks of it, so that it is not
+/// restarted.
+///
+/// `previous` is what its config was last written from, `owed` what it already owed. A
+/// config written for the first time owes nothing: preparing a service's database runs
+/// its setup, the catalogue included.
+pub fn owes_catalogue(
+    previous: Option<&crate::lock::Rendering>,
+    marks: &Marks,
+    owed: Option<bool>,
+) -> Option<bool> {
+    let Some(previous) = previous else {
+        return owed;
+    };
+    let nothing_hosted = crate::lock::digest(
+        crate::generate::dump(&Value::Mapping(serde_norway::Mapping::new())).as_bytes(),
+    );
+    let hosts_changed = match previous.hosts.as_deref() {
+        Some(before) => before != marks.hosts,
+        // Written before what peers host was told at all: a change only if there is
+        // something to tell now.
+        None => marks.hosts != nothing_hosted,
+    };
+    let nothing_else = previous.apart.as_deref() == Some(marks.apart.as_str());
+    match (hosts_changed, owed) {
+        (true, owed) => Some(nothing_else && owed.unwrap_or(true)),
+        // It owed a run already, and now something else changed too: it is restarted.
+        (false, Some(only)) => Some(only && nothing_else),
+        (false, None) => None,
+    }
+}
+
 /// Has every service's image write its own config.
 ///
 /// For each: the hub's facts go into `facts/<service>.yaml` — the one file about a service
@@ -669,15 +851,15 @@ pub async fn render_hub(
                 image,
             });
         }
-        let document = crate::generate::dump(&facts(config, id, issued, &said));
+        let told = facts(config, id, issued, &said);
+        let document = crate::generate::dump(&told);
         let overrides = crate::overrides::path(dir, &host);
-        let from = crate::lock::digest(
-            format!(
-                "{image}\n{document}\n{}",
-                std::fs::read_to_string(&overrides).unwrap_or_default()
-            )
-            .as_bytes(),
+        let marks = marks(
+            &image,
+            &told,
+            &std::fs::read_to_string(&overrides).unwrap_or_default(),
         );
+        let from = marks.from.clone();
         let target = dir.join(format!("configs/{host}.yaml"));
         let on_disk = std::fs::read(&target)
             .map(|bytes| crate::lock::digest(&bytes))
@@ -701,7 +883,7 @@ pub async fn render_hub(
             let _ = std::fs::set_permissions(&facts_file, std::fs::Permissions::from_mode(0o600));
         }
         let command = said[&host].render.clone();
-        asking.push((host, image, command, facts_file, overrides, target, from));
+        asking.push((host, image, command, facts_file, overrides, target, marks));
     }
 
     let answers = futures_util::future::join_all(asking.iter().map(
@@ -711,7 +893,7 @@ pub async fn render_hub(
     ))
     .await;
 
-    for ((host, _, _, _, _, target, from), answer) in asking.into_iter().zip(answers) {
+    for ((host, _, _, _, _, target, marks), answer) in asking.into_iter().zip(answers) {
         let text = match answer {
             Rendered::Config(text) => text,
             Rendered::Refused(said) => {
@@ -732,11 +914,24 @@ pub async fn render_hub(
         let config_digest = crate::lock::digest(text.as_bytes());
         held.files
             .insert(format!("configs/{host}.yaml"), config_digest.clone());
+        // What its peers host changed: its catalogue job is owed, and run once the hub
+        // is up on these files ([`crate::services::catalogue`]).
+        let owed = owes_catalogue(
+            held.rendered.get(&host),
+            &marks,
+            held.recatalogue.get(&host).copied(),
+        );
+        match owed {
+            Some(only) => held.recatalogue.insert(host.clone(), only),
+            None => held.recatalogue.remove(&host),
+        };
         held.rendered.insert(
             host,
             crate::lock::Rendering {
-                from,
+                from: marks.from,
                 config: config_digest,
+                hosts: Some(marks.hosts),
+                apart: Some(marks.apart),
             },
         );
         crate::lock::write(dir, &held).map_err(written)?;
@@ -1026,6 +1221,11 @@ pub fn facts(
     }
 
     // --- the rest of the hub ----------------------------------------------------------
+    // Whether this is the service that keeps the hub's catalogue: the one that is told
+    // what every other one hosts.
+    let catalogues = described
+        .get(&service.host)
+        .is_some_and(Description::catalogues);
     let mut peers: Vec<(String, Value)> = Vec::new();
     for other in config.enabled_services() {
         let peer = config.service(other);
@@ -1059,6 +1259,17 @@ pub fn facts(
                 Value::Mapping(offers.into_iter().map(|(k, v)| (k.into(), v)).collect()),
             ),
         ]);
+        // What it hosts, as its image says it, for the service that catalogues it.
+        let hosts = described
+            .get(&peer.host)
+            .map(|said| &said.hosts)
+            .filter(|hosts| catalogues && !hosts.is_empty());
+        if let Some(hosts) = hosts {
+            entry.push((
+                HOSTS,
+                serde_norway::to_value(hosts).expect("what a service hosts is plain data"),
+            ));
+        }
         peers.push((peer.host.clone(), map(entry)));
     }
     // What runs beside the services and is no service of the hub: Rekuest's other half,

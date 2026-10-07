@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
 use konstruktor_core::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
-use konstruktor_core::contract::{Description, Job, Needs, Offers, Said, Scope, CONTRACT};
+use konstruktor_core::contract::{Description, Job, Needs, Offers, Said, Scope, Source, CONTRACT};
 
 fn scopes(pairs: &[(&str, &str)]) -> Vec<Scope> {
     pairs
@@ -207,6 +207,25 @@ fn summary_of(id: ServiceId) -> &'static str {
     }
 }
 
+/// Where each service's code is: what its image says it was built from.
+fn repository_of(id: ServiceId) -> &'static str {
+    match id {
+        ServiceId::Rekuest => "https://github.com/arkitektio/rekuest-server-next",
+        ServiceId::Mikro => "https://github.com/arkitektio/mikro-server-next",
+        ServiceId::Fluss => "https://github.com/arkitektio/fluss-server-next",
+        ServiceId::Kabinet => "https://github.com/arkitektio/kabinet-server",
+        ServiceId::Kraph => "https://github.com/arkitektio/kraph-server",
+        ServiceId::Elektro => "https://github.com/arkitektio/elektro-server",
+        ServiceId::Alpaka => "https://github.com/arkitektio/alpaka-server",
+        ServiceId::Lovekit => "https://github.com/arkitektio/lovekit-server",
+        ServiceId::Bank => "https://github.com/jhnnsrs/bank",
+        ServiceId::Kuvert => "https://github.com/jhnnsrs/kuvert",
+        ServiceId::Dokuments => "https://github.com/jhnnsrs/dokuments-server",
+        ServiceId::Lokate => "https://github.com/arkitektio/lokate-server",
+        _ => "",
+    }
+}
+
 /// What one of the catalogue's services says of itself.
 pub fn description_of(id: ServiceId) -> Description {
     let hooked = HOOKED.contains(&id);
@@ -246,6 +265,11 @@ pub fn description_of(id: ServiceId) -> Description {
                 BTreeMap::new()
             },
         },
+        source: Some(Source {
+            repository: repository_of(id).to_string(),
+            revision: None,
+            path: "/workspace".into(),
+        }),
         ..Description::default()
     }
 }

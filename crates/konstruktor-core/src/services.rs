@@ -383,7 +383,7 @@ pub async fn change_services(
     if apply {
         on(CreateEvent::Starting);
         let log = |line: ComposeLine| on(CreateEvent::Log { line: line.line });
-        let restart = services_to_restart(&config, &changed, &plan);
+        let restart = restarts(&answers.dir, &config, &changed, &plan);
         if let Err(error) = apply_services(&answers.dir, &restart, &log).await {
             on(CreateEvent::Log {
                 line: error.to_string(),
@@ -659,6 +659,77 @@ pub fn services_to_restart(
         }
     }
     out
+}
+
+/// [`services_to_restart`], for the hub in `dir`: without the services whose config
+/// changed only in what their peers host. Those take that in through their catalogue job
+/// ([`catalogue`]) while they run, and are not restarted for it.
+pub fn restarts(
+    dir: &Path,
+    config: &HubConfig,
+    changed: &[String],
+    plan: &ServicePlan,
+) -> Vec<String> {
+    let owed = crate::lock::read(dir).recatalogue;
+    let changed: Vec<String> = changed
+        .iter()
+        .filter(|file| {
+            file.strip_suffix(".yaml")
+                .is_none_or(|host| owed.get(host) != Some(&true))
+        })
+        .cloned()
+        .collect();
+    services_to_restart(config, &changed, plan)
+}
+
+/// Runs the catalogue job of every service that owes one: a service whose peers host
+/// something else than when its job last ran — a service came or went, a release gained a
+/// structure — takes that in, in a container of its own beside the running service.
+///
+/// What is owed is written down where the config is rewritten
+/// ([`crate::contract::render_hub`]) and struck off here, once the job has run. Called
+/// when the hub has been brought up on its files; a hub whose database is not running
+/// keeps owing it until it is. A failure is said and stays owed: the hub runs, with a
+/// catalogue that is behind.
+pub async fn catalogue(
+    dir: &Path,
+    config: &HubConfig,
+    on_line: &(dyn Fn(ComposeLine) + Send + Sync),
+) -> Vec<String> {
+    let owed: Vec<String> = crate::lock::read(dir).recatalogue.into_keys().collect();
+    if owed.is_empty() || !is_up(dir, DB_COMPOSE_SERVICE).await {
+        return Vec::new();
+    }
+    let say = |line: String| on_line(ComposeLine { line, stderr: true });
+    let mut ran = Vec::new();
+    for service in owed {
+        // Only a service that still runs here and still offers the job has one to run.
+        let job = match config.service_at(&service).filter(|id| config.runs(*id)) {
+            Some(_) => crate::contract::description_of(dir, config, &service)
+                .await
+                .and_then(|said| said.jobs.get(crate::contract::CATALOGUE_JOB).cloned()),
+            None => None,
+        };
+        if let Some(job) = job {
+            say(format!(
+                "What the hub's services host changed: {service} catalogues it"
+            ));
+            let command = crate::contract::job_command(&service, &job, &[]);
+            if let Err(error) = crate::compose::run_streamed(dir, command, on_line).await {
+                say(format!(
+                    "{service} could not catalogue what the hub's services host — it runs \
+                     on, with a catalogue that is behind, and tries again at the next \
+                     start: {error}"
+                ));
+                continue;
+            }
+            ran.push(service.clone());
+        }
+        let mut held = crate::lock::read(dir);
+        held.recatalogue.remove(&service);
+        let _ = crate::lock::write(dir, &held);
+    }
+    ran
 }
 
 /// Everything a standalone [`apply_services`] restarts: it cannot know which configs
@@ -1050,7 +1121,7 @@ mod tests {
         let block = config.service(example);
         assert!(block.runs());
         assert_eq!(block.image.as_deref(), Some("example:1"));
-        assert_eq!(block.github_repo, None);
+        assert_eq!(block.source, None);
 
         // Taken out and added back by name: the block remembers its image.
         let out = plan(&config, &change(&[], &[example])).unwrap();

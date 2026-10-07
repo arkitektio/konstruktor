@@ -199,6 +199,18 @@ def test_a_service_can_run_from_a_source_tree_on_this_machine(fake_konstruktor, 
         create_hub(tmp_path / "other", mounts={"mikro": tmp_path / "nowhere"})
 
 
+def test_a_job_and_an_account_are_asked_of_the_hubs_folder(fake_konstruktor, tmp_path: Path) -> None:
+    hub = create_hub(tmp_path / "lab", services=["mikro"])
+
+    hub.job("mikro", "ensureadmin", "--quiet")
+    assert fake_konstruktor.calls[-1] == ["job", "run", "--in", str(tmp_path / "lab"), "mikro", "ensureadmin", "--", "--quiet"]
+    hub.job("mikro", "plan")
+    assert fake_konstruktor.calls[-1] == ["job", "run", "--in", str(tmp_path / "lab"), "mikro", "plan"]
+
+    hub.superuser("mikro", "ada", "s3cret-pass")
+    assert fake_konstruktor.calls[-1][:4] == ["superuser", "mikro", "--in", str(tmp_path / "lab")]
+
+
 def test_lifecycle_commands_name_the_folder(fake_konstruktor, tmp_path: Path) -> None:
     hub = create_hub(tmp_path / "lab", start=False)
     folder = os.fspath(tmp_path / "lab")

@@ -12,8 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// name is kept once for the life of the process, which is what lets an id stay `Copy`
 /// and be passed around by value like the enum it used to be.
 ///
-/// The services this build knows more about — a default image, a repository, a line of
-/// display text — are the [catalogue](catalog), and are addressable as constants
+/// The services this build knows more about — a default image, a line of display text — are the [catalogue](catalog), and are addressable as constants
 /// (`ServiceId::Rekuest`). A service outside it is every bit as much a service.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ServiceId(&'static str);
@@ -126,12 +125,6 @@ impl ServiceId {
     pub fn default_image(self) -> Option<&'static str> {
         self.known().map(|known| known.image)
     }
-
-    /// Where the service's source lives, for the ones whose repository this build knows. A
-    /// service outside the catalogue has no checkout to run from.
-    pub fn github_repo(self) -> Option<&'static str> {
-        self.known().map(|known| known.github_repo)
-    }
 }
 
 impl fmt::Debug for ServiceId {
@@ -174,7 +167,6 @@ pub struct Known {
     /// The image a new hub is seeded with: the repository on a **major**, not on `latest`.
     /// See [`crate::config::hub::caught_up_image`] for the contract that tag stands for.
     pub image: &'static str,
-    pub github_repo: &'static str,
 }
 
 /// The catalogue, in declaration order. Not the generation order — see
@@ -197,7 +189,6 @@ const KNOWN: [Known; 12] = [
         default: true,
         experimental: false,
         image: "jhnnsrs/rekuest:7",
-        github_repo: "https://github.com/arkitektio/rekuest-server-next",
     },
     Known {
         id: ServiceId::Mikro,
@@ -209,7 +200,6 @@ const KNOWN: [Known; 12] = [
         default: true,
         experimental: false,
         image: "jhnnsrs/mikro:7",
-        github_repo: "https://github.com/arkitektio/mikro-server-next",
     },
     Known {
         id: ServiceId::Fluss,
@@ -221,7 +211,6 @@ const KNOWN: [Known; 12] = [
         default: true,
         experimental: false,
         image: "jhnnsrs/fluss:4",
-        github_repo: "https://github.com/arkitektio/fluss-server-next",
     },
     Known {
         id: ServiceId::Kabinet,
@@ -233,7 +222,6 @@ const KNOWN: [Known; 12] = [
         default: true,
         experimental: false,
         image: "jhnnsrs/kabinet:6",
-        github_repo: "https://github.com/arkitektio/kabinet-server",
     },
     Known {
         id: ServiceId::Kraph,
@@ -245,7 +233,6 @@ const KNOWN: [Known; 12] = [
         default: true,
         experimental: false,
         image: "jhnnsrs/kraph:2",
-        github_repo: "https://github.com/arkitektio/kraph-server",
     },
     Known {
         id: ServiceId::Elektro,
@@ -259,7 +246,6 @@ const KNOWN: [Known; 12] = [
         default: false,
         experimental: false,
         image: "jhnnsrs/elektro:5",
-        github_repo: "https://github.com/arkitektio/elektro-server",
     },
     Known {
         id: ServiceId::Alpaka,
@@ -272,7 +258,6 @@ const KNOWN: [Known; 12] = [
         default: true,
         experimental: false,
         image: "jhnnsrs/alpaka:5",
-        github_repo: "https://github.com/arkitektio/alpaka-server",
     },
     Known {
         id: ServiceId::Lovekit,
@@ -286,7 +271,6 @@ const KNOWN: [Known; 12] = [
         default: false,
         experimental: true,
         image: "jhnnsrs/lovekit:3",
-        github_repo: "https://github.com/arkitektio/lovekit-server",
     },
     Known {
         id: ServiceId::Bank,
@@ -299,7 +283,6 @@ const KNOWN: [Known; 12] = [
         default: false,
         experimental: true,
         image: "jhnnsrs/bank:4",
-        github_repo: "https://github.com/jhnnsrs/bank",
     },
     Known {
         id: ServiceId::Kuvert,
@@ -311,7 +294,6 @@ const KNOWN: [Known; 12] = [
         default: false,
         experimental: true,
         image: "jhnnsrs/kuvert:4",
-        github_repo: "https://github.com/jhnnsrs/kuvert",
     },
     Known {
         id: ServiceId::Dokuments,
@@ -323,7 +305,6 @@ const KNOWN: [Known; 12] = [
         default: false,
         experimental: true,
         image: "jhnnsrs/dokuments:2",
-        github_repo: "https://github.com/jhnnsrs/dokuments-server",
     },
     Known {
         id: ServiceId::Lokate,
@@ -336,7 +317,6 @@ const KNOWN: [Known; 12] = [
         default: false,
         experimental: true,
         image: "jhnnsrs/lokate:3",
-        github_repo: "https://github.com/arkitektio/lokate-server",
     },
 ];
 

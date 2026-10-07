@@ -606,7 +606,7 @@ pub async fn switch_checkout_branch(
         .into_iter()
         .map(|id| profile.config.service(id))
         .find(|s| s.host == service)
-        .and_then(|s| s.github_repo.clone())
+        .and_then(|s| s.repository().map(str::to_string))
         .unwrap_or_default();
 
     Ok(git::read_checkout(&service, &repo, &at))

@@ -67,7 +67,6 @@ config:
         main: alpaka_main
       debug: false
       enabled: true
-      github_repo: https://github.com/arkitektio/alpaka-server
       host: alpaka
       identifier: live.arkitekt.alpaka
       image: jhnnsrs/alpaka:latest
@@ -80,6 +79,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/alpaka-server
     elektro:
       admin_config:
         kind: global
@@ -104,7 +106,6 @@ config:
         main: elektro_main
       debug: false
       enabled: true
-      github_repo: https://github.com/arkitektio/elektro-server
       host: elektro
       identifier: live.arkitekt.elektro
       image: jhnnsrs/elektro:latest
@@ -115,6 +116,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/elektro-server
     fluss:
       admin_config:
         kind: global
@@ -130,7 +134,6 @@ config:
         main: fluss_main
       debug: false
       enabled: true
-      github_repo: https://github.com/arkitektio/fluss-server-next
       host: fluss
       identifier: live.arkitekt.fluss
       image: jhnnsrs/fluss:latest
@@ -141,6 +144,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/fluss-server-next
     kabinet:
       admin_config:
         kind: global
@@ -159,7 +165,6 @@ config:
       ensured_repositories:
       - jhnnsrs/ome:main
       - jhnnsrs/renderer:main
-      github_repo: https://github.com/arkitektio/kabinet-server
       host: kabinet
       identifier: live.arkitekt.kabinet
       image: jhnnsrs/kabinet:latest
@@ -170,6 +175,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/kabinet-server
     kraph:
       admin_config:
         kind: global
@@ -191,7 +199,6 @@ config:
         main: kraph_main
       debug: false
       enabled: true
-      github_repo: https://github.com/arkitektio/kraph-server
       host: kraph
       identifier: live.arkitekt.kraph
       image: jhnnsrs/kraph:latest
@@ -202,6 +209,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/kraph-server
     lovekit:
       admin_config:
         kind: global
@@ -217,7 +227,6 @@ config:
         main: lovekit_main
       debug: false
       enabled: true
-      github_repo: https://github.com/arkitektio/lovekit-server
       host: lovekit
       identifier: live.arkitekt.lovekit
       internal_port: 80
@@ -227,6 +236,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/lovekit-server
     mikro:
       admin_config:
         kind: global
@@ -257,7 +269,6 @@ config:
         main: mikro_main
       debug: false
       enabled: true
-      github_repo: https://github.com/arkitektio/mikro-server-next
       host: mikro
       identifier: live.arkitekt.mikro
       image: jhnnsrs/mikro:latest
@@ -268,6 +279,9 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/mikro-server-next
     rekuest:
       admin_config:
         kind: global
@@ -283,7 +297,6 @@ config:
         main: rekuest_main
       debug: false
       enabled: false
-      github_repo: https://github.com/arkitektio/rekuest-server-next
       host: rekuest
       identifier: live.arkitekt.rekuest
       image: jhnnsrs/rekuest:latest
@@ -312,5 +325,8 @@ config:
       redis_config:
         kind: local
       secret_key: fixture-secret-key-not-a-real-secret
+      source:
+        path: /workspace
+        repository: https://github.com/arkitektio/rekuest-server-next
 kind: hub
 version: '2.0'

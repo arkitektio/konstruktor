@@ -2,7 +2,7 @@ use serde_norway::{Mapping, Value};
 
 use crate::catalog::ServiceId;
 use crate::config::hub::{
-    HubConfig, LivekitBlock, ServiceBlock, DB_COMPOSE_SERVICE, LIVEKIT_INTERNAL_PORT,
+    HubConfig, LivekitBlock, RunsFrom, ServiceBlock, DB_COMPOSE_SERVICE, LIVEKIT_INTERNAL_PORT,
     TAKT_SOCKET_DIR, TAKT_SOCKET_PATH, TAKT_SOCKET_VOLUME,
 };
 use crate::config::mesh::{
@@ -53,6 +53,14 @@ pub fn mount_path(service: &ServiceBlock) -> String {
     format!("./{MOUNTS_DIR}/{}", service.host)
 }
 
+/// Where a service's config is mounted: `config.yaml` where the service runs, which is
+/// where it looks for it when nothing says otherwise.
+const CONFIG_IN_THE_WORKSPACE: &str = "/workspace/config.yaml";
+/// Where it is mounted for a service that runs from a folder somebody named, outside that
+/// folder — and the variable every service reads the path of its config from.
+const CONFIG_BESIDE_A_FOLDER: &str = "/hub/config.yaml";
+const CONFIG_FILE_VARIABLE: &str = "ARKITEKT_CONFIG_FILE";
+
 fn compose_service(
     config: &HubConfig,
     service: &ServiceBlock,
@@ -63,13 +71,38 @@ fn compose_service(
     // regardless of the order they are declared, so the config still lands on top of the
     // checkout rather than being hidden by it — but the two are written in that order
     // anyway, because reading them the other way round invites the wrong conclusion.
+    //
+    // The source is mounted where the image says its code sits. The config stays where
+    // every service looks for it — `config.yaml` where it runs — with one exception: a
+    // folder somebody named is theirs, used where it is, and a file mounted *into* it
+    // would be created in it by the engine, as root, if it were not there. Such a
+    // service is told where its config is instead, and nothing is put into the folder —
+    // by the service either: it is mounted read-only, so that what runs in the container
+    // (as root, as a rule) leaves no file of its own in somebody's working tree.
     let mut volumes = Vec::new();
-    if service.mount_github {
-        volumes.push(s(&format!("{}:/workspace", mount_path(service))));
-    }
+    let in_place = match (service.mount_github, service.runs_from()) {
+        (true, Some(RunsFrom::Folder(folder))) => {
+            volumes.push(s(&format!("{folder}:{}:ro", service.source_path())));
+            true
+        }
+        (true, _) => {
+            volumes.push(s(&format!(
+                "{}:{}",
+                mount_path(service),
+                service.source_path()
+            )));
+            false
+        }
+        (false, _) => false,
+    };
     volumes.push(s(&format!(
-        "./configs/{}.yaml:/workspace/config.yaml",
-        service.host
+        "./configs/{}.yaml:{}",
+        service.host,
+        if in_place {
+            CONFIG_BESIDE_A_FOLDER
+        } else {
+            CONFIG_IN_THE_WORKSPACE
+        }
     )));
     // Each secret the service declared, as a file only it is handed.
     for name in service.secrets.keys() {
@@ -101,6 +134,12 @@ fn compose_service(
         entries.push((
             "command",
             list(command.iter().map(|part| s(part)).collect()),
+        ));
+    }
+    if in_place {
+        entries.push((
+            "environment",
+            map(vec![(CONFIG_FILE_VARIABLE, s(CONFIG_BESIDE_A_FOLDER))]),
         ));
     }
     entries.extend(vec![

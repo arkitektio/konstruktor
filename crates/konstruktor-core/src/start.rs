@@ -222,7 +222,8 @@ async fn start_with(
             &configs_before,
             &crate::services::snapshot_configs(dir),
         );
-        let restart: Vec<String> = crate::services::services_to_restart(
+        let restart: Vec<String> = crate::services::restarts(
+            dir,
             config,
             &rewritten,
             &crate::services::ServicePlan::default(),
@@ -242,6 +243,9 @@ async fn start_with(
                 .await
                 .map_err(StartError::Compose)?;
         }
+        // --- 6. what the services host, taken in by the one that catalogues it ---------
+        // Now that the hub is up on its files. Not a restart: a job, beside the service.
+        crate::services::catalogue(dir, config, on_line).await;
     }
     Ok(report)
 }

@@ -271,8 +271,10 @@ export type StorageMode = "docker-volumes" | "deployment-folder";
 export type ServiceOptions = {
   /** Run this one from a checkout of its repository, mounted over the image. Needs git. */
   from_source: boolean;
-  /** The branch to check out. Null means the repository's own default. */
+  /** The branch to check out. Null means the commit the image was built from, or the repository's own default. */
   branch?: string | null;
+  /** A repository to clone, or a folder on this machine to use where it is, in place of what the image says. */
+  source?: string | null;
   /** Django's debug mode, for this service alone. */
   debug?: boolean;
   /** Alpaka only: where its language models come from. */

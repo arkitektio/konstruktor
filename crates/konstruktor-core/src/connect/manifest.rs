@@ -340,13 +340,16 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                     scopes: declared(&said.needs.scopes),
                     node_id: options.node_id.clone(),
                     instance_id: "default".to_string(),
-                    // Only the catalogue knows where a service's source is.
-                    public_sources: known
-                        .map(|known| PublicSource {
+                    // Where its code is, when its image says: listed as what the
+                    // coordination server knows how to show, a repository on GitHub.
+                    public_sources: said
+                        .source
+                        .iter()
+                        .filter(|source| source.repository.contains("github.com"))
+                        .map(|source| PublicSource {
                             kind: "github".to_string(),
-                            url: known.github_repo.to_string(),
+                            url: source.repository.clone(),
                         })
-                        .into_iter()
                         .collect(),
                     challenge_key: block
                         .instance_key_pair

@@ -63,7 +63,7 @@ pub async fn bug_report(
         .as_ref()
         .and_then(|p| p.config.service_at(&service).map(|id| p.config.service(id)));
     let repo = block
-        .and_then(|b| b.github_repo.as_deref())
+        .and_then(|b| b.repository())
         .map(|repo| repo.trim_end_matches('/').to_string());
     let image = block.and_then(|b| b.image.clone());
 
