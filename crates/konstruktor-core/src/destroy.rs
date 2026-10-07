@@ -1,4 +1,4 @@
-//! Removing a deployment completely: its containers, its data, its folder, its entry.
+//! Removing a deployment completely: its containers, its data, its files, its entry.
 //!
 //! The other destructive paths each leave something standing on purpose — `down` keeps
 //! the data, [`purge_data`] keeps the folder and the configuration, forgetting keeps
@@ -22,6 +22,10 @@
 //!
 //! What it deliberately does **not** touch:
 //!
+//! * **Anything in the folder that Konstruktor did not write.** A deployment folder is
+//!   whatever folder it was made in, a home directory included. [`delete`] removes what
+//!   [`crate::owned`] names and nothing else; the folder itself goes only if that left it
+//!   empty, and a home or root directory never does.
 //! * **Images.** `docker compose down --rmi local` would take them, but images are shared
 //!   between hubs and expensive to fetch again; removing them would slow down every other
 //!   deployment on the machine to tidy up after one.
@@ -52,11 +56,6 @@ pub enum DeleteError {
     )]
     NotADeployment(String),
     #[error(
-        "Refusing to delete `{0}`: it is a home or root directory. \
-         A deployment folder is never one of those."
-    )]
-    ProtectedDirectory(String),
-    #[error(
         "Docker could not take the stack down, so nothing was deleted — the containers \
          and volumes would have been left with no folder to remove them from. {0}"
     )]
@@ -77,8 +76,11 @@ pub enum DeleteError {
          works. {0}"
     )]
     ComposeFailedAfterDeregistering(String),
-    #[error("The stack was taken down, but the folder could not be removed: {0}")]
-    FolderNotRemoved(String),
+    #[error(
+        "The stack was taken down, but not everything Konstruktor wrote could be removed: \
+         {0}. Delete it again once that is sorted out."
+    )]
+    FilesNotRemoved(String),
     #[error("The stack was taken down, but this hub's data could not be removed: {0}")]
     DataNotRemoved(String),
     #[error("This hub's configuration could not be read, so its data could not be found: {0}")]
@@ -90,11 +92,18 @@ pub enum DeleteError {
 /// What deleting one deployment would take with it, worked out before anything is done.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeletionPlan {
-    /// The folder that will be removed, canonicalized.
+    /// The folder the deployment is in, canonicalized.
     pub path: String,
+    /// What a delete removes from it, as paths: everything Konstruktor wrote there that is
+    /// on disk now, and nothing else ([`crate::owned`]).
+    pub removes: Vec<String>,
+    /// The folder is a home or root directory. It stays whatever a delete leaves in it;
+    /// any other folder goes with the deployment when nothing else is in it.
+    pub folder_protected: bool,
     /// The hub's name, which is what the user is asked to type back.
     pub name: String,
-    /// Source checkouts under `mounts/`, which may hold work that exists nowhere else.
+    /// The source checkouts under `mounts/` that the lock says Konstruktor cloned, which
+    /// go with the hub and may hold work that exists nowhere else.
     pub checkouts: Vec<String>,
     /// The deployment holds an identifier on a coordination server.
     pub was_authorized: bool,
@@ -129,57 +138,39 @@ pub struct Deletion {
     pub server: ServerOutcome,
     /// The containers, networks and volumes are gone.
     pub stack_removed: bool,
-    /// The folder and everything in it is gone.
+    /// Everything Konstruktor wrote into the folder is gone.
+    pub files_removed: bool,
+    /// The folder itself is gone: it held nothing else, and was not a home or a root.
     pub folder_removed: bool,
+    /// The folder is a home or root directory, and was never going to be removed.
+    pub folder_protected: bool,
+    /// What the folder still holds, by name, when it stayed because it was not empty:
+    /// nothing Konstruktor recognises as its own.
+    pub left_behind: Vec<String>,
     /// Konstruktor no longer lists it.
     pub forgotten: bool,
 }
 
-/// Whether a path is shaped like something we are allowed to delete recursively.
+/// Whether a folder is one a delete may remove once it is empty.
 ///
-/// Pure, and separate from the filesystem checks, so the cases that matter can be tested
-/// without building a directory tree for each one. `home` is passed rather than looked up
-/// for the same reason.
+/// Never a reason to refuse the delete: a hub made in a home directory is deleted like
+/// any other, file by file, and what this decides is only whether the folder it was in is
+/// allowed to go afterwards. Pure, and separate from the filesystem, so the cases that
+/// matter can be tested without building a directory tree for each one; `home` is passed
+/// rather than looked up for the same reason.
 ///
-/// The depth rule is the blunt one that catches what the named checks miss: every real
-/// deployment folder is at least two levels below the root (`/home/someone/MyHub`), so
-/// refusing anything shallower costs nothing and rules out `/`, `/home` and `C:\`.
-pub fn check_shape(dir: &Path, home: Option<&Path>) -> Result<(), DeleteError> {
-    let shown = dir.display().to_string();
-
-    if let Some(home) = home {
-        if dir == home {
-            return Err(DeleteError::ProtectedDirectory(shown));
-        }
+/// The depth rule is the blunt one that catches what the named check misses: a folder
+/// made for a deployment is at least two levels below the root (`/home/someone/MyHub`),
+/// so keeping anything shallower costs nothing and rules out `/`, `/home` and `C:\`.
+pub fn may_remove_folder(dir: &Path, home: Option<&Path>) -> bool {
+    if home.is_some_and(|home| dir == home) {
+        return false;
     }
 
-    let depth = dir
-        .components()
+    dir.components()
         .filter(|c| matches!(c, std::path::Component::Normal(_)))
-        .count();
-    if depth < 2 {
-        return Err(DeleteError::ProtectedDirectory(shown));
-    }
-
-    Ok(())
-}
-
-/// The checkouts a dev hub has under `mounts/`, if any.
-///
-/// Named rather than counted: "this also deletes your source checkouts" is a different
-/// warning from "this deletes a folder", and the user should see which ones.
-fn checkouts(dir: &Path) -> Vec<String> {
-    let mounts = dir.join("mounts");
-    let Ok(entries) = std::fs::read_dir(&mounts) else {
-        return Vec::new();
-    };
-    let mut found: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .collect();
-    found.sort();
-    found
+        .count()
+        >= 2
 }
 
 /// Resolves and validates the folder a record points at, touching nothing.
@@ -191,8 +182,6 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
     let dir = std::fs::canonicalize(&record.path)
         .map_err(|e| DeleteError::Unresolvable(format!("{}: {e}", record.path)))?;
 
-    check_shape(&dir, dirs::home_dir().as_deref())?;
-
     // The one check that says "this is ours". A registry entry pointing somewhere that no
     // longer holds a deployment is a stale entry, not a licence to delete that folder.
     // What counts as a deployment is `profile::holds_a_deployment`'s to say, so that
@@ -202,8 +191,9 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
     };
 
     // A profile that will not parse costs the preview its data directories, not the whole
-    // plan: `delete` removes the folder wholesale and does not need them.
+    // plan: `delete` then removes what the fixed names and the lock say is ours.
     let profile = profile::read_profile(&dir).ok();
+    let owned = crate::owned::of(&dir, kind, profile.as_ref().map(|p| &p.config));
     let found = profile
         .as_ref()
         .map(|profile| reclaim::data_dirs(&dir, &profile.config))
@@ -215,8 +205,10 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
 
     let plan = DeletionPlan {
         path: dir.display().to_string(),
+        removes: owned.present(&dir),
+        folder_protected: !may_remove_folder(&dir, dirs::home_dir().as_deref()),
         name: record.name.clone(),
-        checkouts: checkouts(&dir),
+        checkouts: owned.checkouts(&dir),
         // A self-contained hub also has an identifier, but it is registered in its own
         // coordination server — which goes with the rest of it.
         was_authorized: record.identifier.is_some()
@@ -285,11 +277,11 @@ pub enum ServerSide {
 ///    with lives in a volume, so it can only be asked while the volumes are still there;
 /// 2. compose down, with volumes — it reads the compose file out of the folder, so it can
 ///    only run while the folder is still there;
-/// 3. the folder;
+/// 3. what Konstruktor wrote into the folder, and the folder itself if that emptied it;
 /// 4. the registry entry.
 ///
 /// A failure at step 1 or 2 **aborts**, leaving everything on this machine exactly as it
-/// was. Deleting the folder while the containers are still up is the one mistake here
+/// was. Deleting the files while the containers are still up is the one mistake here
 /// that cannot be undone from inside the app — the stack would keep running with nothing
 /// left to stop it by — and deleting the volumes of a hub the server would not let go of
 /// leaves it listed there with no login left to remove it. Being unable to delete a hub
@@ -305,13 +297,21 @@ pub async fn delete(id: &str, server: ServerSide) -> Result<Deletion, DeleteErro
 
     let (dir, plan) = plan(&record)?;
 
-    // Read before the stack goes down and long before the folder does: the images are in
-    // the profile, and the profile is inside the folder we are about to remove. A profile
-    // that will not parse is not fatal here — the delete simply loses its ability to
-    // repair ownership, and says so if it then hits one.
-    let images = profile::read_profile(&dir)
-        .map(|profile| reclaim::repair_images(&profile.config))
+    // Read before the stack goes down and long before the files do: the images are in
+    // the profile, and the profile is one of the files we are about to remove — as is the
+    // lock that says which the others are. A profile that will not parse is not fatal
+    // here — the delete simply loses its ability to repair ownership, and says so if it
+    // then hits one.
+    let config = profile::read_profile(&dir)
+        .ok()
+        .map(|profile| profile.config);
+    let images = config
+        .as_ref()
+        .map(reclaim::repair_images)
         .unwrap_or_default();
+    let kind = profile::holds_a_deployment(&dir)
+        .ok_or_else(|| DeleteError::NotADeployment(dir.display().to_string()))?;
+    let may_go = !plan.folder_protected;
 
     let outcome = match (plan.will_deregister, server) {
         (false, _) => ServerOutcome::NotRegistered,
@@ -330,7 +330,7 @@ pub async fn delete(id: &str, server: ServerSide) -> Result<Deletion, DeleteErro
 
     // Blocking, both of them, and long: a dev hub's checkouts take a while to remove.
     let removed = dir.clone();
-    tokio::task::spawn_blocking(move || {
+    let cleared = tokio::task::spawn_blocking(move || {
         compose_down(&removed).map_err(|error| match (outcome, error) {
             (
                 ServerOutcome::Removed | ServerOutcome::AlreadyGone,
@@ -339,15 +339,16 @@ pub async fn delete(id: &str, server: ServerSide) -> Result<Deletion, DeleteErro
             (_, error) => error,
         })?;
 
-        // The whole folder is going, so handing all of it back to its owner is
-        // proportionate. If the retry still fails, a dev hub's `mounts/` checkouts have
-        // been reowned to the desktop user — harmless, since they were the user's to
-        // begin with, but the error says so rather than leaving it to be discovered.
-        reclaim::remove_tree(&removed, &removed, &images)
-            .map_err(|e| DeleteError::FolderNotRemoved(e.to_string()))
+        // Named thing by named thing, never the folder: whatever else is in it was there
+        // before us or put there since, and is not ours. Worked out only now, because
+        // asking the server can itself leave something here — the rescued login of a hub
+        // with no reporter to hand it to.
+        let owned = crate::owned::of(&removed, kind, config.as_ref());
+        crate::owned::remove(&removed, &owned, may_go, &images)
+            .map_err(DeleteError::FilesNotRemoved)
     })
     .await
-    .map_err(|e| DeleteError::FolderNotRemoved(e.to_string()))??;
+    .map_err(|e| DeleteError::FilesNotRemoved(e.to_string()))??;
 
     store.deployments.retain(|d| d.id != id);
     registry::save(&store).map_err(|e| DeleteError::RegistryNotSaved(e.to_string()))?;
@@ -356,7 +357,10 @@ pub async fn delete(id: &str, server: ServerSide) -> Result<Deletion, DeleteErro
         path: dir.display().to_string(),
         server: outcome,
         stack_removed: true,
-        folder_removed: true,
+        files_removed: true,
+        folder_removed: cleared.folder_removed,
+        folder_protected: plan.folder_protected,
+        left_behind: cleared.left_behind,
         forgotten: true,
     })
 }
@@ -450,31 +454,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refuses_a_home_directory() {
+    fn a_home_directory_is_never_removed() {
         let home = Path::new("/home/someone");
-        assert!(matches!(
-            check_shape(home, Some(home)),
-            Err(DeleteError::ProtectedDirectory(_))
-        ));
+        assert!(!may_remove_folder(home, Some(home)));
     }
 
     #[test]
-    fn refuses_the_root_and_everything_directly_under_it() {
+    fn neither_is_the_root_or_anything_directly_under_it() {
         for shallow in ["/", "/home", "/opt"] {
             assert!(
-                matches!(
-                    check_shape(Path::new(shallow), None),
-                    Err(DeleteError::ProtectedDirectory(_))
-                ),
-                "{shallow} should have been refused"
+                !may_remove_folder(Path::new(shallow), None),
+                "{shallow} should have been kept"
             );
         }
-    }
-
-    #[test]
-    fn accepts_a_folder_two_levels_down() {
-        let home = Path::new("/home/someone");
-        assert!(check_shape(Path::new("/home/someone/MyHub"), Some(home)).is_ok());
     }
 
     /// A scratch directory of our own, since there is no `tempfile` here and this needs a
@@ -528,8 +520,8 @@ mod tests {
     fn plans_a_real_deployment_folder_without_touching_it() {
         let dir = scratch("real-hub");
         std::fs::write(dir.join(crate::profile::HUB_CONFIG_FILENAME), "{}").unwrap();
+        // No service of this profile runs from a checkout, so this one is somebody's own.
         std::fs::create_dir_all(dir.join("mounts").join("rekuest")).unwrap();
-        std::fs::create_dir_all(dir.join("mounts").join("mikro")).unwrap();
 
         let mut record = record_at(&dir);
         record.identifier = Some("mylab".into());
@@ -537,11 +529,7 @@ mod tests {
         let (resolved, plan) = plan(&record).expect("a real hub folder plans");
         assert_eq!(resolved, std::fs::canonicalize(&dir).unwrap());
         assert_eq!(plan.name, "MyHub");
-        // Named, so the confirmation can say which checkouts go with the folder.
-        assert_eq!(
-            plan.checkouts,
-            vec!["mikro".to_string(), "rekuest".to_string()]
-        );
+        assert!(plan.checkouts.is_empty(), "{:?}", plan.checkouts);
         assert!(plan.was_authorized);
         assert!(dir.exists());
 
@@ -659,8 +647,38 @@ mod tests {
     #[test]
     fn only_the_home_directory_itself_is_protected() {
         let home = Path::new("/home/someone");
-        assert!(check_shape(Path::new("/home/someone/MyHub"), Some(home)).is_ok());
-        assert!(check_shape(Path::new("/home/someone-else"), Some(home)).is_ok());
-        assert!(check_shape(Path::new("/srv/hubs/MyHub"), Some(home)).is_ok());
+        assert!(may_remove_folder(
+            Path::new("/home/someone/MyHub"),
+            Some(home)
+        ));
+        assert!(may_remove_folder(
+            Path::new("/home/someone-else"),
+            Some(home)
+        ));
+        assert!(may_remove_folder(Path::new("/srv/hubs/MyHub"), Some(home)));
+    }
+
+    /// A hub made in a home directory is planned like any other — it used to be refused,
+    /// and could then not be deleted at all — and the plan names only what is ours.
+    #[test]
+    fn a_plan_names_what_konstruktor_wrote_and_nothing_else() {
+        let dir = scratch("names");
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        std::fs::write(dir.join(crate::profile::HUB_CONFIG_FILENAME), "{}").unwrap();
+        std::fs::write(dir.join("docker-compose.yaml"), "services: {}").unwrap();
+        std::fs::write(dir.join("holiday-photos.txt"), "not a hub").unwrap();
+
+        let (_, plan) = plan(&record_at(&dir)).expect("plans");
+        let named = |name: &str| dir.join(name).display().to_string();
+        assert_eq!(
+            plan.removes,
+            [
+                named("docker-compose.yaml"),
+                named(crate::profile::HUB_CONFIG_FILENAME)
+            ]
+        );
+        assert!(!plan.folder_protected);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

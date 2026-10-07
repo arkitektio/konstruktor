@@ -23,11 +23,16 @@ const deleteDeployment = vi.fn(async (_id: string, _localOnly: boolean) => ({
   path: "/home/someone/MyHub",
   server: "removed" as const,
   stack_removed: true,
+  files_removed: true,
   folder_removed: true,
+  folder_protected: false,
+  left_behind: [] as string[],
   forgotten: true,
 }));
 const planDeletion = vi.fn(async (_id: string) => ({
   path: "/home/someone/MyHub",
+  removes: ["/home/someone/MyHub/hub_config.yaml"],
+  folder_protected: false,
   name: "MyHub",
   checkouts: ["rekuest", "mikro"],
   was_authorized: true,
@@ -279,6 +284,8 @@ describe("deleting a hub outright", () => {
   it("says an engine's registration stays, since nothing here can withdraw it", async () => {
     planDeletion.mockResolvedValueOnce({
       path: "/home/someone/MyHub",
+      removes: [],
+      folder_protected: false,
       name: "MyHub",
       checkouts: [],
       was_authorized: true,
@@ -405,6 +412,8 @@ describe("deleting a hub's data", () => {
   it("warns that a mesh hub loses its place on the tailnet", async () => {
     planDeletion.mockResolvedValueOnce({
       path: "/home/someone/MyHub",
+      removes: [],
+      folder_protected: false,
       name: "MyHub",
       checkouts: [],
       was_authorized: true,
@@ -422,6 +431,8 @@ describe("deleting a hub's data", () => {
   it("names data it refuses to touch instead of silently leaving it", async () => {
     planDeletion.mockResolvedValueOnce({
       path: "/home/someone/MyHub",
+      removes: [],
+      folder_protected: false,
       name: "MyHub",
       checkouts: [],
       was_authorized: false,

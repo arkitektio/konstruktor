@@ -18,7 +18,7 @@
 //! It says nothing about the database. An image can be put back; a migration that ran on
 //! start cannot be taken back. See `konstruktor rollback`, which says so at the prompt.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -153,6 +153,11 @@ pub struct Lock {
     /// prepares only for a build that is not the one written here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub prepared: BTreeMap<String, String>,
+    /// The services whose checkout under `mounts/` Konstruktor cloned itself, by compose
+    /// service. One that was already there when the hub was made is somebody's own and is
+    /// not here — which is what a delete goes by ([`crate::owned`]).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub checkouts: BTreeSet<String>,
     /// Layout steps whose files are written and whose closing commands have not all run:
     /// see [`crate::migrate`]. The next update runs them first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -316,6 +321,15 @@ pub fn stamp(
         .collect();
     write(dir, &lock)?;
     Ok(stale)
+}
+
+/// Writes down that the checkout of `service` was cloned by Konstruktor.
+pub fn record_checkout(dir: &Path, service: &str) -> std::io::Result<()> {
+    let mut lock = read(dir);
+    if lock.checkouts.insert(service.to_string()) {
+        write(dir, &lock)?;
+    }
+    Ok(())
 }
 
 /// Names the backup of the data that belongs to what the hub is running now.

@@ -233,7 +233,9 @@ guard exists to make it a decision. `rollback` puts the previous version back.
 The three ways to remove a deployment are separate commands because they are three
 different amounts of destruction: **`forget`** stops listing it and touches no files,
 **`purge`** deletes its data and keeps the hub, and **`destroy`** removes the containers,
-the folder and the registry entry. Each prints what it is about to take — including source
+what Konstruktor wrote into the folder and the registry entry. Nothing else in the folder
+is touched: a hub made in a home directory is deleted without the home, and any other
+folder goes with it only if the hub was all it held. Each prints what it is about to take — including source
 checkouts that may hold commits pushed nowhere — before it asks.
 
 An authorized hub is also listed on its coordination server, and **`destroy` removes it

@@ -1453,7 +1453,23 @@ fn show_plan(
 
     ui::say("");
     if server.is_some() {
-        ui::warn(&format!("This deletes {} and everything in it.", plan.path));
+        ui::warn(&format!(
+            "This deletes the deployment in {}: what Konstruktor wrote there, and \
+             nothing else.",
+            plan.path
+        ));
+        for path in &plan.removes {
+            ui::step(&ui::dim(&format!("removes {path}")));
+        }
+        if plan.folder_protected {
+            ui::step(&ui::dim(
+                "The folder itself stays: it is a home or root directory.",
+            ));
+        } else {
+            ui::step(&ui::dim(
+                "The folder itself goes too, if nothing else is in it.",
+            ));
+        }
     } else {
         ui::warn(&format!("This deletes the data in {}.", plan.path));
     }
@@ -1466,8 +1482,11 @@ fn show_plan(
             "The database and object storage are in docker volumes.",
         ));
     }
-    for dir in &plan.data_dirs {
-        ui::step(&ui::dim(&format!("removes {dir}")));
+    // A delete has already named them, among everything else it removes.
+    if server.is_none() {
+        for dir in &plan.data_dirs {
+            ui::step(&ui::dim(&format!("removes {dir}")));
+        }
     }
     // Unpushed work is the one loss nothing can undo, so it is said loudest.
     if !plan.checkouts.is_empty() {
@@ -1535,7 +1554,8 @@ fn confirm_destruction(name: &str, yes: bool, by_name: bool, what: &str) -> Resu
         .unwrap_or(false))
 }
 
-/// `konstruktor destroy`: the stack, the folder and the registry entry.
+/// `konstruktor destroy`: the stack, what Konstruktor wrote into the folder, and the
+/// registry entry.
 pub async fn destroy(args: DestroyArgs) -> Result<()> {
     use konstruktor_core::deregister::ServerOutcome;
     use konstruktor_core::destroy::{self, ServerSide};
@@ -1575,7 +1595,7 @@ pub async fn destroy(args: DestroyArgs) -> Result<()> {
     // Per step, because "what is still on my machine" is the question after a failure.
     for (label, ok) in [
         ("containers, networks and volumes", done.stack_removed),
-        ("the folder", done.folder_removed),
+        ("what Konstruktor wrote into the folder", done.files_removed),
         ("the registry entry", done.forgotten),
     ] {
         if ok {
@@ -1583,6 +1603,21 @@ pub async fn destroy(args: DestroyArgs) -> Result<()> {
         } else {
             ui::fail(&format!("could not remove {label}"));
         }
+    }
+    // Not a failure either way: what is left was never Konstruktor's to remove.
+    if done.folder_removed {
+        ui::ok("removed the folder, which held nothing else");
+    } else if done.folder_protected {
+        ui::step(&ui::dim(&format!(
+            "{} is a home or root directory and stays, with everything else in it.",
+            done.path
+        )));
+    } else {
+        ui::step(&ui::dim(&format!(
+            "{} stays: it also holds {}, which Konstruktor does not recognise as its own.",
+            done.path,
+            done.left_behind.join(", ")
+        )));
     }
     ui::say("");
     Ok(())

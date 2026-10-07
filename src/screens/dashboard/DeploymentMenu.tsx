@@ -473,12 +473,18 @@ export const DeploymentMenu = ({
           description={
             <>
               <span>
-                This removes the containers and the networks, and then the folder itself,
-                at <span className="font-mono break-all">{deployment.path}</span> —
+                This removes the containers and the networks, and then everything
+                Konstruktor wrote into the folder at{" "}
+                <span className="font-mono break-all">{deployment.path}</span> —
                 {plan?.storage === "docker-volumes"
                   ? " along with the Docker volumes holding the database and object storage."
                   : " including the database and object storage kept inside it."}{" "}
-                Nothing is left behind and none of it can be undone.
+                None of it can be undone.
+              </span>
+              <span>
+                {plan?.folder_protected
+                  ? "The folder itself is a home or root directory and stays, with everything else in it."
+                  : "Anything else in the folder is left alone; the folder itself goes only if nothing else is in it."}
               </span>
               {plan?.skipped.map((skip) => (
                 <span key={skip.mount}>

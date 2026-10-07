@@ -25,6 +25,7 @@ pub mod hubhealth;
 pub mod lock;
 pub mod migrate;
 pub mod overrides;
+pub mod owned;
 pub mod paths;
 pub mod pins;
 pub mod process;

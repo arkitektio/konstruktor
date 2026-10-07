@@ -492,8 +492,9 @@ pub fn plan_deletion(id: String) -> Result<DeletionPlan, String> {
 /// Deletes a deployment and everything it put on this machine.
 ///
 /// By id, never by path: the folder is resolved from the registry inside the core, so no
-/// caller can name an arbitrary directory to be removed recursively. The sequence and its
-/// guards live in `konstruktor_core::destroy`; this only hands the result back and stops
+/// caller can name an arbitrary directory to be removed recursively — and nothing in that
+/// folder goes that Konstruktor did not write. The sequence and its guards live in
+/// `konstruktor_core::destroy`; this only hands the result back and stops
 /// the exit hook from trying to take down a folder that is no longer there.
 ///
 /// An authorized hub is taken off its coordination server first, and the delete stops
@@ -501,8 +502,8 @@ pub fn plan_deletion(id: String) -> Result<DeletionPlan, String> {
 /// "delete locally anyway" after exactly that.
 ///
 /// Off the main thread, which the core sees to itself. A delete is a round trip to the
-/// server, `docker compose down --volumes --remove-orphans` and a recursive removal of
-/// the folder — seconds at best, and a great deal longer for a dev hub with checkouts in
+/// server, `docker compose down --volumes --remove-orphans` and the removal of what
+/// Konstruktor wrote into the folder — seconds at best, and a great deal longer for a dev hub with checkouts in
 /// it. On the thread that draws the window the whole app, including the dialog's own
 /// "Deleting…", froze for the duration and looked like a hang.
 #[command]

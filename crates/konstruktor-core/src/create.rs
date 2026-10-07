@@ -783,6 +783,11 @@ pub(crate) fn check_sources_out(
         });
 
         let cloned = git::clone_service(&service.host, repo, branch.as_deref(), &into)?;
+        if cloned {
+            // Ours from here on, and written down as such: a checkout that was already
+            // there is not, and deleting the hub goes by which is which.
+            crate::lock::record_checkout(dir, &service.host)?;
+        }
         if let (true, None, Some(revision)) = (cloned, &branch, revision) {
             git::checkout_revision(repo, &into, revision)?;
             on(CreateEvent::Log {

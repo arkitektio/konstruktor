@@ -553,6 +553,10 @@ export type ComposeAction = "up" | "stop" | "down" | "pull" | "ps" | "logs";
  */
 export type DeletionPlan = {
   path: string;
+  /** What a delete removes from the folder: what Konstruktor wrote there, and nothing else. */
+  removes: string[];
+  /** The folder is a home or root directory, and stays whatever a delete leaves in it. */
+  folder_protected: boolean;
   name: string;
   checkouts: string[];
   was_authorized: boolean;
@@ -579,7 +583,13 @@ export type Deletion = {
   /** What became of the hub's entry on its coordination server. */
   server: "removed" | "already_gone" | "not_registered" | "left_registered";
   stack_removed: boolean;
+  /** Everything Konstruktor wrote into the folder is gone. */
+  files_removed: boolean;
+  /** The folder itself is gone: it held nothing else, and was not a home or a root. */
   folder_removed: boolean;
+  folder_protected: boolean;
+  /** What the folder still holds when it stayed because it was not empty. */
+  left_behind: string[];
   forgotten: boolean;
 };
 
