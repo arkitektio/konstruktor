@@ -3,8 +3,8 @@
     windows_subsystem = "windows"
 )]
 mod cmd;
-mod report;
 mod fix_env;
+mod report;
 mod tray;
 use tauri::{Manager, RunEvent};
 

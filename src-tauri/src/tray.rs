@@ -177,14 +177,23 @@ fn item_text(status: &DeploymentStatus) -> String {
     let detail = match (&status.error, status.run.state) {
         (Some(_), _) => "Unavailable".to_string(),
         (None, RunState::Running | RunState::Partial) => {
-            format!("{} {}/{}", status.run.state.label(), status.run.running, status.run.total)
+            format!(
+                "{} {}/{}",
+                status.run.state.label(),
+                status.run.running,
+                status.run.total
+            )
         }
         (None, state) => state.label().to_string(),
     };
     format!("{} {}  —  {}", dot(status), status.record.name, detail)
 }
 
-fn render(app: &AppHandle, statuses: &[DeploymentStatus], loading: bool) -> tauri::Result<Menu<tauri::Wry>> {
+fn render(
+    app: &AppHandle,
+    statuses: &[DeploymentStatus],
+    loading: bool,
+) -> tauri::Result<Menu<tauri::Wry>> {
     let mut menu = MenuBuilder::new(app);
 
     let running = statuses
@@ -199,12 +208,19 @@ fn render(app: &AppHandle, statuses: &[DeploymentStatus], loading: bool) -> taur
         format!("Konstruktor — {running} of {} running", statuses.len())
     };
     menu = menu
-        .item(&MenuItemBuilder::with_id("header", header).enabled(false).build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("header", header)
+                .enabled(false)
+                .build(app)?,
+        )
         .item(&PredefinedMenuItem::separator(app)?);
 
     let sections: [(&str, Vec<&DeploymentStatus>); 2] = [
         ("Hubs", statuses.iter().filter(|s| !s.is_engine()).collect()),
-        ("Engines", statuses.iter().filter(|s| s.is_engine()).collect()),
+        (
+            "Engines",
+            statuses.iter().filter(|s| s.is_engine()).collect(),
+        ),
     ];
     let mut any = false;
     for (title, items) in sections {
@@ -212,7 +228,11 @@ fn render(app: &AppHandle, statuses: &[DeploymentStatus], loading: bool) -> taur
             continue;
         }
         any = true;
-        menu = menu.item(&MenuItemBuilder::with_id(format!("section:{title}"), title).enabled(false).build(app)?);
+        menu = menu.item(
+            &MenuItemBuilder::with_id(format!("section:{title}"), title)
+                .enabled(false)
+                .build(app)?,
+        );
         for status in items {
             menu = menu.item(
                 &MenuItemBuilder::with_id(format!("open:{}", status.record.id), item_text(status))

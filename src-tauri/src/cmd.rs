@@ -5,8 +5,8 @@
 //! core instead, or the two front ends will drift — which is the whole reason the core
 //! exists.
 
-use std::collections::HashSet;
 use konstruktor_core::paths::canonical as canonicalize;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use konstruktor_core::connect::reachability;
@@ -1040,7 +1040,6 @@ pub struct ServicesOutcome {
     mesh_requested: bool,
     mesh_granted: bool,
 }
-
 
 // --- the compose file, by hand ---------------------------------------------
 
