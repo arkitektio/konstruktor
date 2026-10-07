@@ -1841,10 +1841,12 @@ mod source_tests {
         assert!(narrated.contains("used where it is"), "{narrated}");
 
         // A folder that is not there is refused before anything is created.
+        // Absolute on this platform, whichever it is: `/no/such` names no folder on Windows.
+        let nowhere = std::env::temp_dir().join("konstruktor-no-such-folder-anywhere");
         let missing = BTreeMap::from([(
             example(),
             ServiceOptions {
-                source: Some("/no/such/folder/anywhere".into()),
+                source: Some(nowhere.to_string_lossy().into_owned()),
                 ..from_source()
             },
         )]);
