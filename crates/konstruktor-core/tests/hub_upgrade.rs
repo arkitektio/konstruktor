@@ -1,44 +1,48 @@
-//! Starts the hub an earlier release generated, on the images of its time, and updates it.
+//! Moves a running hub's service from one build to another, and checks what that takes.
 //!
-//! `hub_health` proves a hub created today works. This proves the hubs that already exist
-//! get there: `fixtures/releases/0.13.0` is what Konstruktor 0.13.0 wrote, and the services
-//! it then pulled as `latest` are pinned here to what `latest` was. One `updates::apply`
-//! has to carry that to a hub on today's images that passes what `hub_health` asks — and
-//! an update that fails before it replaces anything has to leave the hub as it found it.
+//! `hub_health` proves a hub created today works. This proves it can be moved on: a hub
+//! is created on one build of a service — the whole way `hub create` goes, its own
+//! coordination server included, so nobody has to accept anything — and one
+//! `updates::apply` carries that service to another build. What an update owes a service:
+//!
+//! - the new release is asked what it would do to the database, and can say (its `plan`
+//!   job), before and after;
+//! - its database is prepared for the new build exactly once, before its container is
+//!   replaced (its `migrate` job), and written down as prepared for that build;
+//! - the service answers afterwards, on the new build;
+//! - stopping the hub and starting it again prepares nothing: a start only prepares for a
+//!   build the database has not been prepared for.
 //!
 //! Opt-in twice over, like `hub_health`: `#[ignore]`, and `KONSTRUKTOR_E2E=1`.
 //!
 //! ```sh
-//! KONSTRUKTOR_E2E=1 cargo test -p konstruktor-core --test hub_upgrade -- --ignored --nocapture
+//! KONSTRUKTOR_E2E=1 \
+//! KONSTRUKTOR_E2E_IMAGES=lok=lok:named-db,example=example:named-db \
+//! KONSTRUKTOR_E2E_UPGRADE_TO=example=example:named-db-b \
+//!   cargo test -p konstruktor-core --test hub_upgrade -- --ignored --nocapture
 //! ```
 //!
-//! `KONSTRUKTOR_E2E_IMAGES` (`service=image` pairs, as in `hub_health`) updates onto those
-//! images instead of the seeded ones — a release that is not published yet. One built on
-//! this machine is run as it is; nothing is fetched for it.
+//! `KONSTRUKTOR_E2E_IMAGES` (`service=image` pairs, as in `hub_health`) names the builds
+//! the hub is created on. `KONSTRUKTOR_E2E_UPGRADE_TO` names, the same way, the one
+//! service that is moved and the build it is moved to; the hub runs that service — beside
+//! Rekuest, when the first list names one — and nothing else. Both builds have to be on
+//! this machine or fetchable: neither is fetched by the update itself, so one built here
+//! is run as it is.
 //!
-//! `KONSTRUKTOR_E2E_FAILING_UPGRADE` names, the same way, a build of Rekuest whose
-//! `manage.py upgrade` fails (and the takt to run beside it). With it, a second test
-//! checks that such an update leaves the hub exactly as it found it.
-//!
-//! The fixture names its ports (18480, 18443), so two runs at once collide.
+//! `KONSTRUKTOR_E2E_READY_SECS` (default 600) is how long the hub gets to answer.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
-use konstruktor_core::health::{self, ServiceHealth};
-use konstruktor_core::migrate;
-use konstruktor_core::profile::{self, read_profile};
-use konstruktor_core::updates::{self, UpdateEvent, UpdateRequest};
-
-/// What the services' `latest` was when 0.13.0 was current.
-const IMAGES_OF_ITS_TIME: [(&str, &str); 6] = [
-    ("jhnnsrs/rekuest:latest", "jhnnsrs/rekuest:5.2.0"),
-    ("jhnnsrs/rekuest-takt:latest", "jhnnsrs/rekuest-takt:5.2.0"),
-    ("jhnnsrs/mikro:latest", "jhnnsrs/mikro:4.0.0"),
-    ("jhnnsrs/fluss:latest", "jhnnsrs/fluss:2.3.0"),
-    ("jhnnsrs/kabinet:latest", "jhnnsrs/kabinet:3.4.0"),
-    ("jhnnsrs/kraph:latest", "jhnnsrs/kraph:1.1.0"),
-];
+use konstruktor_core::catalog::ServiceId;
+use konstruktor_core::config::hub::HubConfig;
+use konstruktor_core::create::{create_hub, HubAnswers};
+use konstruktor_core::profile::read_profile;
+use konstruktor_core::updates::{self, Advance, UpdateEvent, UpdateRequest};
+use konstruktor_core::{contract, lock, ready};
+use tokio_util::sync::CancellationToken;
 
 fn compose(dir: &Path, args: &[&str]) -> std::process::Output {
     konstruktor_core::docker::command()
@@ -49,25 +53,35 @@ fn compose(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("docker runs")
 }
 
-fn secs(var: &str, default: u64) -> Duration {
-    Duration::from_secs(
-        std::env::var(var)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(default),
-    )
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("a free port")
 }
 
-fn copy(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap().flatten() {
-        let target = to.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
+fn ready_timeout() -> Duration {
+    std::env::var("KONSTRUKTOR_E2E_READY_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(600))
+}
+
+/// `service=image` pairs, separated by commas.
+fn pairs(var: &str) -> BTreeMap<String, String> {
+    std::env::var(var)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (service, image) = pair
+                .split_once('=')
+                .unwrap_or_else(|| panic!("{var} is service=image pairs, and `{pair}` is not one"));
+            (service.trim().to_string(), image.trim().to_string())
+        })
+        .collect()
 }
 
 /// Takes the hub down — volumes included — however the test ends, a failed assertion too.
@@ -80,637 +94,238 @@ impl Drop for Teardown {
     }
 }
 
-fn logs(dir: &Path, service: &str) {
-    let out = compose(dir, &["logs", "--no-color", "--tail", "120", service]);
-    eprintln!(
+fn logs(dir: &Path, service: &str) -> String {
+    let out = compose(dir, &["logs", "--no-color", "--tail", "80", service]);
+    format!(
         "----- logs: {service} -----\n{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
-    );
+    )
 }
 
-/// `health::check`, failing with the unhealthy services' logs.
-async fn healthy(dir: &Path) -> Vec<ServiceHealth> {
-    let config = read_profile(dir).expect("the profile").config;
-    let results = health::check(dir, &config, &|event| eprintln!("{event:?}"))
+/// Waits until every endpoint of the hub answers, failing with the service's log.
+async fn ready(dir: &Path, config: &HubConfig, service: &str, when: &str) {
+    let endpoints = ready::wait(config, ready_timeout(), &|_| {})
         .await
-        .expect("the engine answers");
-    let unhealthy: Vec<&ServiceHealth> = results.iter().filter(|s| !s.healthy).collect();
-    if !unhealthy.is_empty() {
-        for s in &unhealthy {
-            logs(dir, &s.service);
-        }
-        panic!(
-            "unhealthy: {:?}",
-            unhealthy
-                .iter()
-                .map(|s| format!("{}: {}", s.service, s.detail))
-                .collect::<Vec<_>>()
-        );
-    }
-    results
-}
-
-/// The image each of the hub's containers runs, by compose service.
-fn running_images(dir: &Path) -> std::collections::BTreeMap<String, String> {
-    let out = compose(dir, &["ps", "--format", "{{.Service}}|{{.Image}}"]);
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (service, image) = line.split_once('|')?;
-            Some((service.trim().to_string(), image.trim().to_string()))
-        })
-        .collect()
-}
-
-fn psql(dir: &Path, sql: &str) -> String {
-    let config = read_profile(dir).expect("the profile").config;
-    let out = compose(
-        dir,
-        &[
-            "exec",
-            "-T",
-            "db",
-            "psql",
-            "-U",
-            &config.db.postgres_user,
-            "-d",
-            config
-                .service(konstruktor_core::catalog::ServiceId::Rekuest)
-                .database()
-                .expect("rekuest has a database"),
-            "-tAF",
-            "|",
-            "-c",
-            sql,
-        ],
+        .expect("the hub publishes a port");
+    let unready: Vec<String> = endpoints
+        .iter()
+        .filter(|e| !e.ready)
+        .map(|e| format!("{} ({}) → {:?} {:?}", e.name, e.url, e.status, e.detail))
+        .collect();
+    assert!(
+        unready.is_empty(),
+        "{when}, not everything answered:\n{}\n\n{}",
+        unready.join("\n"),
+        logs(dir, service)
     );
+}
+
+/// The image the running container of `service` was made from, as the engine names it.
+fn running_image(dir: &Path, service: &str) -> String {
+    let out = compose(dir, &["ps", "--format", "{{.Image}}", service]);
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// The names in one of the lists rekuest is configured with.
-fn configured(dir: &Path, list: &str) -> Vec<String> {
-    let text = std::fs::read_to_string(dir.join("configs/rekuest.yaml")).expect("rekuest.yaml");
-    let doc: serde_norway::Value = serde_norway::from_str(&text).expect("rekuest.yaml parses");
-    doc["rekuest"][list]
-        .as_sequence()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|e| e["name"].as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+/// The id `image` resolves to on this machine.
+async fn id_of(image: &str) -> String {
+    konstruktor_core::docker::image_states(&[(String::new(), image.to_string())])
+        .await
+        .expect("the engine answers")
+        .into_iter()
+        .next()
+        .and_then(|state| state.image_id)
+        .unwrap_or_else(|| panic!("`{image}` is not on this machine"))
 }
 
-/// An organization, made by Rekuest itself so that it reacts to it. See `hub_health`.
-fn create_organization(dir: &Path, slug: &str) {
-    let code = format!(
-        "import threading\n\
-         from authentikate.models import Organization\n\
-         Organization.objects.create(slug='{slug}')\n\
-         [t.join() for t in threading.enumerate() if t.name == 'provision-{slug}']"
-    );
-    let out = compose(
-        dir,
-        &[
-            "exec",
-            "-T",
-            "rekuest",
-            "python",
-            "manage.py",
-            "shell",
-            "-c",
-            &code,
-        ],
-    );
+/// What the release `service` is on would do to its database, by its own `plan` job.
+async fn planned(dir: &Path, service: &str) -> updates::ServicePreview {
+    let previews = updates::preview(dir, &[service.to_string()], &|_| {})
+        .await
+        .expect("the update can be previewed");
+    let preview = previews
+        .into_iter()
+        .find(|preview| preview.service == service)
+        .expect("the service is previewed");
     assert!(
-        out.status.success(),
-        "the organization was not created:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        preview.refused.is_none(),
+        "the release would be refused: {preview:?}"
     );
-}
-
-async fn update(dir: &Path, pull: bool) -> Result<updates::UpdateReport, updates::UpdateError> {
-    updates::apply(
-        dir,
-        &UpdateRequest {
-            services: Vec::new(),
-            advances: Vec::new(),
-            pull,
-            backup_into: None,
-            health_check: true,
-        },
-        &|event| match event {
-            UpdateEvent::Line { line, .. } => eprintln!("  {line}"),
-            other => eprintln!("{other:?}"),
-        },
-    )
-    .await
-}
-
-/// The hub 0.13.0 generated, started on the images of its time and healthy.
-async fn a_running_hub_of_0_13() -> (PathBuf, Teardown) {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hub-upgrade-e2e");
-    if dir.exists() {
-        compose(&dir, &["down", "--volumes", "--remove-orphans"]);
-        std::fs::remove_dir_all(&dir).expect("old hub dir is removed");
-    }
-    copy(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/releases/0.13.0"),
-        &dir,
-    );
-    // The profile keeps following `latest`, as that hub's does; only what is run says
-    // what `latest` was.
-    let compose_file = dir.join("docker-compose.yaml");
-    let mut text = std::fs::read_to_string(&compose_file).unwrap();
-    for (latest, then) in IMAGES_OF_ITS_TIME {
-        text = text.replace(&format!("image: {latest}\n"), &format!("image: {then}\n"));
-    }
-    std::fs::write(&compose_file, &text).unwrap();
-    let config = read_profile(&dir).expect("0.13.0's profile is read").config;
-    assert_eq!(migrate::layout(&dir, &config), 2);
-
-    let teardown = Teardown(dir.clone());
-    let up = compose(&dir, &["up", "-d"]);
+    // A plan that did not run says so in the notes; one that ran lists what is pending.
     assert!(
-        up.status.success(),
-        "docker compose up failed:\n{}",
-        String::from_utf8_lossy(&up.stderr)
+        !preview
+            .notes
+            .iter()
+            .any(|note| note.contains("migrations") || note.contains("could not")),
+        "the release's plan did not run: {:?}",
+        preview.notes
     );
-    let settle = secs("KONSTRUKTOR_E2E_SETTLE_SECS", 60);
-    eprintln!(
-        "the 0.13 hub is up; letting it settle for {}s…",
-        settle.as_secs()
-    );
-    tokio::time::sleep(settle).await;
-    healthy(&dir).await;
-    assert_eq!(running_images(&dir)["rekuest"], "jhnnsrs/rekuest:5.2.0");
-    (dir, teardown)
-}
-
-fn chosen_before(service: &str, named: &[(String, String)]) -> bool {
-    named.iter().any(|(name, _)| name == service)
-}
-
-/// `service=image` pairs from an environment variable.
-fn images_named(var: &str) -> Vec<(String, String)> {
-    std::env::var(var)
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|pair| pair.trim().split_once('='))
-        .map(|(service, image)| (service.to_string(), image.to_string()))
-        .collect()
+    preview
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "spawns a whole hub in Docker; run with KONSTRUKTOR_E2E=1 and --ignored"]
-async fn a_hub_of_0_13_is_updated_onto_todays_releases() {
+async fn a_service_is_moved_to_another_build_and_prepared_for_it_once() {
     if std::env::var("KONSTRUKTOR_E2E").as_deref() != Ok("1") {
         eprintln!("skipping: set KONSTRUKTOR_E2E=1 to spawn a hub");
         return;
     }
-
-    let (dir, _teardown) = a_running_hub_of_0_13().await;
-    let compose_file = dir.join("docker-compose.yaml");
-    let text = std::fs::read_to_string(&compose_file).unwrap();
-    let config = read_profile(&dir).unwrap().config;
-    let before = running_images(&dir);
-
-    // --- an update that cannot fetch an image changes nothing --------------------------
-    let profile_text = std::fs::read_to_string(profile::profile_path(&dir)).unwrap();
-    let mut broken = read_profile(&dir).unwrap();
-    broken
-        .config
-        .set_service_image("kraph", "jhnnsrs/kraph:no-such-release");
-    profile::write_profile(&dir, &broken).unwrap();
-    let refused = update(&dir, true).await;
-    assert!(refused.is_err(), "an image that does not exist was fetched");
-    assert_eq!(
-        std::fs::read_to_string(&compose_file).unwrap(),
-        text,
-        "the compose file was not put back"
-    );
-    assert!(
-        !std::fs::read_to_string(dir.join("configs/rekuest.yaml"))
-            .unwrap()
-            .contains("takt_socket"),
-        "rekuest's config was not put back"
-    );
-    assert_eq!(migrate::layout(&dir, &config), 2);
-    assert_eq!(running_images(&dir), before, "a container was replaced");
-    std::fs::write(profile::profile_path(&dir), profile_text).unwrap();
-
-    // What an operator set for this hub has to be in the config the new release runs on.
-    konstruktor_core::overrides::set(&dir, "mikro", "django.log_level", "WARNING")
-        .expect("the override is kept");
-
-    // --- the update ---------------------------------------------------------------------
-    let named = images_named("KONSTRUKTOR_E2E_IMAGES");
-    if !named.is_empty() {
-        let mut chosen = read_profile(&dir).unwrap();
-        for (service, image) in &named {
-            eprintln!("{service} is updated onto {image}");
-            chosen.config.set_service_image(service, image);
-        }
-        profile::write_profile(&dir, &chosen).unwrap();
-    }
-    // --- what the update would do, asked first -----------------------------------------
-    // The releases are fetched and asked; nothing of the hub is written or replaced.
-    let hub_before = (
-        std::fs::read_to_string(&compose_file).unwrap(),
-        std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
-        running_images(&dir),
-    );
-    let asked: Vec<String> = ["rekuest", "mikro", "fluss", "kabinet", "kraph"]
-        .map(String::from)
-        .to_vec();
-    let previews = updates::preview(&dir, &asked, &|event| eprintln!("{event:?}"))
-        .await
-        .expect("the preview runs");
-    eprintln!("{previews:#?}");
-    assert_eq!(
-        (
-            std::fs::read_to_string(&compose_file).unwrap(),
-            std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
-            running_images(&dir),
-        ),
-        hub_before,
-        "asking what an update would do changed the hub"
-    );
-    assert!(!dir.join(".konstruktor/preview").exists());
-    let of = |service: &str| {
-        previews
-            .iter()
-            .find(|said| said.service == service)
-            .unwrap()
-    };
-    assert_eq!(of("rekuest").from.as_deref(), Some("5.2.0"));
-    assert!(of("mikro").to.is_some(), "{:?}", of("mikro"));
-    if chosen_before("rekuest", &named) {
-        // A release that describes itself says what of its config changes — the two lists
-        // Rekuest 6 reads — and which migrations it brings.
-        let rekuest = of("rekuest");
-        assert_eq!(rekuest.refused, None);
-        assert!(
-            rekuest
-                .config_changes
-                .iter()
-                .any(|key| key.starts_with("rekuest.services")),
-            "{:?}",
-            rekuest.config_changes
-        );
-        assert!(!rekuest.migrations.is_empty(), "{:?}", rekuest.notes);
-    }
-
-    let report = update(&dir, true).await.expect("the update runs");
-    assert_eq!(
-        report.migrated.len() as u32,
-        migrate::CURRENT_LAYOUT - 2,
-        "{:?}",
-        report.migrated
-    );
-    assert!(report.refused.is_empty(), "{:?}", report.refused);
-    for service in ["rekuest", "mikro", "fluss", "kabinet", "kraph"] {
-        assert!(
-            report.updated.iter().any(|s| s == service),
-            "{service} was not updated: {:?}",
-            report.updated
-        );
-    }
-    assert_eq!(migrate::layout(&dir, &config), migrate::CURRENT_LAYOUT);
-    let mikro: serde_norway::Value =
-        serde_norway::from_str(&std::fs::read_to_string(dir.join("configs/mikro.yaml")).unwrap())
-            .unwrap();
-    assert_eq!(
-        mikro["django"]["log_level"].as_str(),
-        Some("WARNING"),
-        "what the operator set did not survive the update"
-    );
-    let after = running_images(&dir);
-    // On the major the files were written for, not on wherever `latest` goes next —
-    // unless this run named an image, which somebody choosing one is left on.
-    let seeded = konstruktor_core::config::hub::build_hub_config(&Default::default());
-    let chosen = |service: &str| named.iter().any(|(name, _)| *name == service);
-    // The profile names the channel; what runs is an exact build of it.
-    let on_channel = |service: &str, channel: Option<String>| {
-        let channel = channel.expect("a seeded image");
-        assert!(
-            after[service].starts_with(&format!("{channel}@sha256:")),
-            "{service} runs {}, not a build of {channel}",
-            after[service]
-        );
-    };
-    on_channel(
-        "mikro",
-        seeded
-            .service(konstruktor_core::catalog::ServiceId::Mikro)
-            .image
-            .clone(),
-    );
-    if !chosen("rekuest") {
-        on_channel("rekuest", seeded.rekuest().image.clone());
-        assert_eq!(
-            read_profile(&dir)
-                .unwrap()
-                .config
-                .service(konstruktor_core::catalog::ServiceId::Rekuest)
-                .image,
-            seeded.rekuest().image
-        );
-    }
-    if !chosen("rekuest") && !chosen("rekuest-takt") {
-        on_channel("rekuest-takt", seeded.takt_image());
-    }
-
-    let results = healthy(&dir).await;
-    let takt = results
-        .iter()
-        .find(|s| s.service == "rekuest-takt")
-        .expect("the health check looked at rekuest-takt");
-    assert!(takt.healthy, "rekuest-takt: {}", takt.detail);
-
-    // --- and it does what a hub created today does --------------------------------------
-    let services = configured(&dir, "services");
-    let agents = configured(&dir, "hook_agents");
-    assert!(!services.is_empty() && !agents.is_empty());
-    create_organization(&dir, "e2e");
-    let deadline = std::time::Instant::now() + secs("KONSTRUKTOR_E2E_PROVISION_SECS", 180);
-    loop {
-        let catalogued = psql(&dir, "select name from facade_service");
-        let provisioned = psql(
-            &dir,
-            "select a.name from facade_agent a join facade_implementation i on i.agent_id = a.id \
-             where a.kind = 'WEBHOOK' group by a.name",
-        );
-        let has = |found: &str, name: &String| found.lines().any(|line| line.trim() == name);
-        let missing: Vec<String> = services
-            .iter()
-            .filter(|name| !has(&catalogued, name))
-            .map(|name| format!("service {name}"))
-            .chain(
-                agents
-                    .iter()
-                    .filter(|name| !has(&provisioned, name))
-                    .map(|name| format!("hook agent {name}")),
-            )
-            .collect();
-        if missing.is_empty() {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            logs(&dir, "rekuest-takt");
-            logs(&dir, "rekuest");
-            panic!("after the update rekuest still lacks {missing:?}");
-        }
-        eprintln!("waiting for rekuest to provision {missing:?}…");
-        tokio::time::sleep(Duration::from_secs(10)).await;
-    }
-
-    // --- it runs exact builds, and nothing but an update moves them -----------------------
-    // The compose file names a digest for every image that has one, and Docker agrees it
-    // describes what runs: `up` again makes no container anew.
-    // Of the services that stay up: the bucket init container runs once and exits, and
-    // every `up` runs it again.
-    let run_once = seeded.minio.init_container_host.clone();
-    let containers = |dir: &Path| {
-        String::from_utf8_lossy(&compose(dir, &["ps", "--format", "{{.Service}}|{{.ID}}"]).stdout)
-            .lines()
-            .filter_map(|line| line.split_once('|'))
-            .filter(|(service, _)| *service != run_once)
-            .map(|(_, id)| id.to_string())
-            .collect::<std::collections::BTreeSet<String>>()
-    };
-    let pinned = std::fs::read_to_string(&compose_file).unwrap();
-    for service in ["rekuest", "mikro", "fluss", "kabinet", "kraph", "db"] {
-        if chosen(service) {
-            continue;
-        }
-        let image = konstruktor_core::lock::read(&dir)
-            .pins
-            .get(service)
-            .and_then(|pin| pin.reference())
-            .unwrap_or_else(|| panic!("{service} has no build written down"));
-        assert!(image.contains("@sha256:"), "{image}");
-        assert!(
-            pinned.contains(&format!("image: {image}\n")),
-            "the compose file does not name {image}"
-        );
-    }
-    let before_up = containers(&dir);
-    let up = compose(&dir, &["up", "-d"]);
-    assert!(up.status.success());
-    assert_eq!(containers(&dir), before_up, "`up` replaced a container");
-
-    // A channel that moves on this machine moves nothing in the hub: the tag kraph
-    // follows is pointed at another image, and `up` still runs the build written down.
-    let seeded_kraph = seeded
-        .service(konstruktor_core::catalog::ServiceId::Kraph)
-        .image
-        .clone()
-        .unwrap();
-    let kept = format!("{seeded_kraph}-kept-by-hub-upgrade");
-    let docker = |args: &[&str]| {
-        konstruktor_core::docker::command()
-            .args(args)
-            .output()
-            .expect("docker runs")
-    };
-    assert!(docker(&["tag", &seeded_kraph, &kept]).status.success());
-    assert!(docker(&["tag", "jhnnsrs/kraph:1.1.0", &seeded_kraph])
-        .status
-        .success());
-    let up = compose(&dir, &["up", "-d"]);
-    docker(&["tag", &kept, &seeded_kraph]);
-    docker(&["rmi", &kept]);
-    assert!(up.status.success());
-    assert_eq!(
-        containers(&dir),
-        before_up,
-        "a tag that moved on this machine replaced a container"
-    );
-
-    // --- frozen, an update leaves it alone -------------------------------------------------
-    let files_before = (
-        pinned.clone(),
-        std::fs::read_to_string(profile::profile_path(&dir)).unwrap(),
-    );
-    let held = konstruktor_core::freeze::hold(&dir, &[]).expect("the hub is frozen");
-    assert!(held.iter().any(|service| service == "mikro"), "{held:?}");
-    assert_eq!(
-        (
-            std::fs::read_to_string(&compose_file).unwrap(),
-            std::fs::read_to_string(profile::profile_path(&dir)).unwrap()
-        ),
-        files_before,
-        "freezing changed a file"
-    );
-    let mut request = UpdateRequest {
-        services: vec!["mikro".into(), "rekuest".into()],
-        advances: Vec::new(),
-        pull: true,
-        backup_into: None,
-        health_check: false,
-    };
-    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
-        .await
-        .expect("an update of a frozen hub runs");
-    assert!(report.updated.is_empty(), "{:?}", report.updated);
-    assert_eq!(report.refused.len(), 2, "{:?}", report.refused);
-    assert_eq!(
-        containers(&dir),
-        before_up,
-        "a frozen container was replaced"
-    );
-
-    // --- released, an update moves it again -----------------------------------------------
-    konstruktor_core::freeze::release(&dir, &[]).expect("the freeze is lifted");
-    request.services = vec!["kraph".into()];
-    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
-        .await
-        .expect("the update runs");
-    assert_eq!(report.updated, ["kraph"]);
-    assert!(report.refused.is_empty(), "{:?}", report.refused);
-
-    // --- back to an earlier build, and forward again -----------------------------------------
-    // Kraph is put on a build before the one its channel points at, as a hub that has not
-    // been updated for a while is; an update moves it, a rollback puts it back and holds
-    // it there, and released it moves on. The earlier build has to be a release that
-    // answers the hub contract as well — it writes its own config when it is put back —
-    // so it is named for the run (`KONSTRUKTOR_E2E_EARLIER_KRAPH=jhnnsrs/kraph:1.2.0`),
-    // and without one this part is left out.
-    let Ok(earlier_kraph) = std::env::var("KONSTRUKTOR_E2E_EARLIER_KRAPH") else {
-        eprintln!("skipping the rollback round trip: set KONSTRUKTOR_E2E_EARLIER_KRAPH");
+    let images = pairs("KONSTRUKTOR_E2E_IMAGES");
+    let moves = pairs("KONSTRUKTOR_E2E_UPGRADE_TO");
+    let Some((service, to)) = moves.iter().next() else {
+        eprintln!("skipping: KONSTRUKTOR_E2E_UPGRADE_TO names no build to move a service to");
         return;
     };
-    let channel = seeded
-        .service(konstruktor_core::catalog::ServiceId::Kraph)
-        .image
-        .clone()
-        .unwrap();
-    let fetched = konstruktor_core::docker::command()
-        .args(["pull", "--quiet", &earlier_kraph])
-        .output()
-        .expect("docker runs");
-    assert!(
-        fetched.status.success(),
-        "{earlier_kraph} could not be fetched"
-    );
-    let earlier = konstruktor_core::pins::resolve(&[("kraph".into(), earlier_kraph.clone())])
-        .await
-        .remove("kraph")
-        .and_then(|pin| pin.digest)
-        .expect("the earlier kraph has a registry digest");
-    let newest = konstruktor_core::lock::read(&dir).pins["kraph"]
-        .digest
-        .clone()
-        .unwrap();
+    let from = images.get(service).unwrap_or_else(|| {
+        panic!("KONSTRUKTOR_E2E_IMAGES has to name the build `{service}` starts on")
+    });
+    assert_ne!(from, to, "the two builds are named alike");
+    let (before, after) = (id_of(from).await, id_of(to).await);
     assert_ne!(
-        earlier, newest,
-        "kraph's channel is no further than the earlier build"
+        before, after,
+        "`{from}` and `{to}` are one build: there is nothing to move between"
     );
-    konstruktor_core::pins::record(
+
+    // --- a hub, created the way `hub create` creates one --------------------------------
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hub-upgrade-e2e");
+    let dir = root.join("kx-upgrade-e2e");
+    // A run that crashed hard (no drop) may have left its stack behind.
+    if dir.exists() {
+        compose(&dir, &["down", "--volumes", "--remove-orphans"]);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a scratch folder");
+    // The registry of this run is its own: nothing here is listed among the real hubs.
+    std::env::set_var(konstruktor_core::registry::DATA_DIR_ENV, root.join("data"));
+
+    let id = ServiceId::parse(service).expect("a service's name");
+    let mut services = vec![id];
+    let rekuest = images.contains_key("rekuest") && id != ServiceId::Rekuest;
+    if rekuest {
+        services.insert(0, ServiceId::Rekuest);
+    }
+    let answers: HubAnswers = serde_json::from_value(serde_json::json!({
+        "dir": dir.to_string_lossy(),
+        "name": "kx-upgrade-e2e",
+        "coord_server": "local",
+        "identifier": "kx-upgrade-e2e",
+        "rekuest_server": if rekuest || id == ServiceId::Rekuest { "local" } else { "none" },
+        "services": services,
+        "http_port": free_port(),
+        "hosts": [{"host": "localhost", "kind": "loopback"}],
+        "mesh_mode": "none",
+        "images": {service: from},
+        "default_images": images,
+    }))
+    .expect("the answers");
+
+    let _teardown = Teardown(dir.clone());
+    create_hub(&answers, &CancellationToken::new(), &|event| {
+        eprintln!("{event:?}")
+    })
+    .await
+    .expect("the hub is created and started");
+    let config = read_profile(&dir).expect("the profile").config;
+    ready(&dir, &config, service, "After it was created").await;
+
+    assert_eq!(running_image(&dir, service), *from);
+    assert_eq!(
+        lock::read(&dir).prepared.get(service),
+        Some(&before),
+        "its database was prepared for the build it was created on"
+    );
+    // Its release can say what it would do to the database: nothing more, on the build
+    // the database was just prepared for.
+    let nothing_pending = planned(&dir, service).await;
+    assert!(nothing_pending.migrations.is_empty(), "{nothing_pending:?}");
+
+    // --- one update, to the other build --------------------------------------------------
+    let narrated: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let report = updates::apply(
         &dir,
-        [(
-            "kraph".to_string(),
-            konstruktor_core::lock::Pin {
-                image: channel.clone(),
-                digest: Some(earlier.clone()),
-            },
-        )]
-        .into(),
+        &UpdateRequest {
+            services: Vec::new(),
+            advances: vec![Advance {
+                service: service.clone(),
+                from: from.clone(),
+                to: to.clone(),
+            }],
+            // Both builds are on this machine already, and one may exist nowhere else.
+            pull: false,
+            backup_into: None,
+            health_check: true,
+        },
+        &|event| {
+            eprintln!("{event:?}");
+            if let UpdateEvent::Step { title } = event {
+                narrated.lock().unwrap().push(title);
+            }
+        },
     )
-    .unwrap();
-    profile::rewrite(&dir, read_profile(&dir).unwrap().config, &[]).unwrap();
-    assert!(compose(&dir, &["up", "-d", "--no-deps", "kraph"])
-        .status
-        .success());
-    let runs = |dir: &Path| running_images(dir)["kraph"].clone();
-    assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
+    .await
+    .unwrap_or_else(|error| panic!("the update failed: {error}\n\n{}", logs(&dir, service)));
 
-    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
-        .await
-        .expect("the update runs");
-    assert_eq!(report.updated, ["kraph"]);
-    assert_eq!(runs(&dir), format!("{channel}@{newest}"));
-
-    let back = konstruktor_core::rollback::plan(&dir).expect("there is a state to go back to");
-    assert_eq!(
-        back.changes
-            .iter()
-            .map(|change| (change.service.as_str(), change.to.clone()))
-            .collect::<Vec<_>>(),
-        [("kraph", format!("{channel}@{earlier}"))]
-    );
-    konstruktor_core::rollback::run(&dir, &back, &|line| eprintln!("  {}", line.line))
-        .await
-        .expect("the rollback runs");
-    assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
-    assert_eq!(
-        read_profile(&dir)
-            .unwrap()
-            .config
-            .service(konstruktor_core::catalog::ServiceId::Kraph)
-            .image,
-        Some(channel.clone()),
-        "the profile still follows its channel"
-    );
-    // Held there: an update does not undo the rollback.
-    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
-        .await
-        .expect("an update of a rolled-back hub runs");
-    assert!(report.updated.is_empty(), "{:?}", report.updated);
-    assert_eq!(runs(&dir), format!("{channel}@{earlier}"));
-    // Released, it moves on.
-    konstruktor_core::freeze::release(&dir, &["kraph".to_string()]).unwrap();
-    let report = updates::apply(&dir, &request, &|event| eprintln!("{event:?}"))
-        .await
-        .expect("the update runs");
-    assert_eq!(report.updated, ["kraph"]);
-    assert_eq!(runs(&dir), format!("{channel}@{newest}"));
-    healthy(&dir).await;
-}
-
-/// A release whose own upgrade fails stops the update before anything is replaced: the
-/// hub is on the builds it ran, on the files it had, and answers.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "spawns a whole hub in Docker; run with KONSTRUKTOR_E2E=1 and --ignored"]
-async fn an_upgrade_that_fails_leaves_the_hub_as_it_was() {
-    let failing = images_named("KONSTRUKTOR_E2E_FAILING_UPGRADE");
-    if std::env::var("KONSTRUKTOR_E2E").as_deref() != Ok("1") || failing.is_empty() {
-        eprintln!("skipping: set KONSTRUKTOR_E2E=1 and KONSTRUKTOR_E2E_FAILING_UPGRADE");
-        return;
-    }
-
-    let (dir, _teardown) = a_running_hub_of_0_13().await;
-    let config = read_profile(&dir).unwrap().config;
-    let mut chosen = read_profile(&dir).unwrap();
-    for (service, image) in &failing {
-        chosen.config.set_service_image(service, image);
-    }
-    profile::write_profile(&dir, &chosen).unwrap();
-    let files = |dir: &Path| {
-        (
-            std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
-            std::fs::read_to_string(dir.join("configs/rekuest.yaml")).unwrap(),
-        )
-    };
-    let files_before = files(&dir);
-    let builds_before = running_images(&dir);
-
-    let stopped = update(&dir, true).await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert_eq!(report.updated, std::slice::from_ref(service));
+    let unhealthy: Vec<String> = report
+        .health
+        .expect("a health check was asked for")
+        .into_iter()
+        .filter(|health| !health.healthy)
+        .map(|health| format!("{}: {}", health.service, health.detail))
+        .collect();
     assert!(
-        matches!(&stopped, Err(updates::UpdateError::Migration(why)) if why.contains("could not upgrade itself")),
-        "{:?}",
-        stopped.map(|report| report.updated)
+        unhealthy.is_empty(),
+        "{unhealthy:?}\n\n{}",
+        logs(&dir, service)
     );
-    assert_eq!(files(&dir), files_before, "the files were not put back");
-    assert_eq!(migrate::layout(&dir, &config), 2);
-    assert!(konstruktor_core::lock::read(&dir).pins.is_empty());
+
+    // Its database was prepared for the new build — once, as a step of the update.
+    let migrating = format!("Migrating {service}'s database");
+    let steps = narrated.lock().unwrap().clone();
     assert_eq!(
-        running_images(&dir),
-        builds_before,
-        "a container was replaced, or one that was stopped did not come back"
+        steps.iter().filter(|step| **step == migrating).count(),
+        1,
+        "{steps:?}"
     );
-    healthy(&dir).await;
+    assert_eq!(
+        lock::read(&dir).prepared.get(service),
+        Some(&after),
+        "it is written down as prepared for the build it runs now"
+    );
+
+    // --- afterwards: on the new build, answering, with nothing left to do ----------------
+    let config = read_profile(&dir).expect("the profile").config;
+    assert_eq!(
+        config.service(id).image.as_deref(),
+        Some(to.as_str()),
+        "the profile names the build it was moved to"
+    );
+    assert_eq!(running_image(&dir, service), *to);
+    ready(&dir, &config, service, "After the update").await;
+    let settled = planned(&dir, service).await;
+    assert!(settled.migrations.is_empty(), "{settled:?}");
+    assert!(
+        contract::unprepared(&dir, &config).await.is_empty(),
+        "every database is prepared for the build its service runs"
+    );
+
+    // --- a plain restart prepares nothing ---------------------------------------------------
+    let stopped = compose(&dir, &["stop"]);
+    assert!(stopped.status.success(), "the hub could not be stopped");
+    let said: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    konstruktor_core::start::start(&dir, &|line| {
+        eprintln!("  {}", line.line);
+        said.lock().unwrap().push(line.line);
+    })
+    .await
+    .expect("the hub starts again");
+    let said = said.lock().unwrap().clone();
+    assert!(
+        !said.iter().any(|line| line.starts_with("Preparing ")),
+        "a restart prepared a database again: {said:?}"
+    );
+    assert_eq!(lock::read(&dir).prepared.get(service), Some(&after));
+    ready(&dir, &config, service, "After a restart").await;
+    assert_eq!(running_image(&dir, service), *to);
 }

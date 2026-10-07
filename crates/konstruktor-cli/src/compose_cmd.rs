@@ -106,10 +106,11 @@ pub async fn run(command: ComposeCommand) -> Result<()> {
 
 /// `hub regenerate`: every generated file again, from the profile as it stands.
 ///
-/// The profile is not touched, so the hub keeps its keys, secrets and images. It undoes
-/// hand edits and picks up what the generator writes differently for the layout the hub
-/// already has; a hub whose files are of an older layout is refused and sent to `update`,
-/// which moves its services with its files.
+/// The hub keeps its keys, secrets and images. It undoes hand edits and picks up what the
+/// generator writes differently for the layout the hub already has — and what the hub's
+/// images have said they need that it does not hold yet, a database, a bucket or a secret,
+/// which is created here. A hub whose files are of an older layout is refused and sent to
+/// `update`, which moves its services with its files.
 pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
     let dir = args.target.resolve()?;
     let config = konstruktor_core::profile::read_profile(&dir)?.config;
@@ -123,7 +124,24 @@ pub async fn regenerate_hub(args: ConfirmArgs) -> Result<()> {
          version.",
     )?;
 
-    konstruktor_core::profile::regenerate(&dir)?;
+    let provided = konstruktor_core::profile::regenerate(&dir)?;
+    // As it was just written: it may hold what a service was newly provided.
+    let config = konstruktor_core::profile::read_profile(&dir)?.config;
+    if !provided.is_empty() {
+        for (what, names) in [
+            ("database", &provided.databases),
+            ("bucket", &provided.buckets),
+            ("secret", &provided.secrets),
+        ] {
+            if !names.is_empty() {
+                ui::step(&format!("new {what}: {}", names.join(", ")));
+            }
+        }
+        let print = |line: konstruktor_core::compose::ComposeLine| {
+            eprintln!("  {}", ui::dim(&line.line));
+        };
+        konstruktor_core::services::provision(&dir, &config, &provided, &print).await?;
+    }
     // The services' configs are their own images' to write.
     let identity = konstruktor_core::credentials::read_credentials(&dir)
         .map(|credentials| credentials.issued_identity())

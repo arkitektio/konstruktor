@@ -643,7 +643,8 @@ export type BackupManifest = {
     image: string;
     image_id: string | null;
     repo_digests: string[];
-    db: string;
+    /** The service's databases in the dump, as the hub called them. */
+    databases: string[];
   }[];
   infrastructure: { service: string; image: string; image_id: string | null }[];
   postgres: { user: string; server_version: string | null };

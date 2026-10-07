@@ -252,7 +252,7 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
             &config.db.postgres_user,
             config
                 .service(konstruktor_core::catalog::ServiceId::Rekuest)
-                .database()
+                .database("main")
                 .expect("rekuest has a database"),
         );
         if services.iter().all(|name| found.contains(name)) || std::time::Instant::now() > deadline
@@ -287,7 +287,7 @@ async fn every_service_of_a_fresh_hub_is_healthy() {
             &config.db.postgres_user,
             config
                 .service(konstruktor_core::catalog::ServiceId::Rekuest)
-                .database()
+                .database("main")
                 .expect("rekuest has a database"),
         );
         let missing: Vec<&String> = expected

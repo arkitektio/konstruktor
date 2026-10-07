@@ -178,7 +178,7 @@ pub(crate) fn infrastructure(
 fn dependencies(config: &HubConfig, service: &ServiceBlock) -> Value {
     map(infrastructure(
         config,
-        service.db_config.is_some(),
+        !service.databases.is_empty(),
         service.redis_config.is_some(),
         service.uses_datalayer(),
     ))
@@ -413,9 +413,12 @@ pub fn build_compose(
     // --- infrastructure -------------------------------------------------------
     let provisioned = provisioned(config, enabled);
     let lok = config.running_lok();
+    // Every database of every service, as the hub calls it. Each is a plain identifier
+    // (`config::hub::database_name`), which the image's init script relies on: it writes
+    // these into SQL as they stand.
     let databases: Vec<String> = provisioned
         .iter()
-        .filter_map(|id| config.service(*id).database().map(str::to_string))
+        .flat_map(|id| config.service(*id).database_names())
         .chain(lok.map(|lok| lok.db.clone()))
         .collect();
 

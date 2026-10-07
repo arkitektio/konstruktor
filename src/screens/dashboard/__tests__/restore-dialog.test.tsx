@@ -12,8 +12,8 @@ const MANIFEST: BackupManifest = {
   storage: "docker-volumes",
   hub: { identifier: "lab-hub", coord_server: "go.arkitekt.live", project: "myhub", path: "/x" },
   services: [
-    { id: "rekuest", host: "rekuest", image: "jhnnsrs/rekuest:next", image_id: "a", repo_digests: [], db: "rekuest" },
-    { id: "mikro", host: "mikro", image: "jhnnsrs/mikro:next", image_id: "b", repo_digests: [], db: "mikro" },
+    { id: "rekuest", host: "rekuest", image: "jhnnsrs/rekuest:next", image_id: "a", repo_digests: [], databases: ["rekuest_main"] },
+    { id: "mikro", host: "mikro", image: "jhnnsrs/mikro:next", image_id: "b", repo_digests: [], databases: ["mikro_main"] },
   ],
   infrastructure: [{ service: "db", image: "jhnnsrs/daten:dev", image_id: null }],
   postgres: { user: "u", server_version: null },

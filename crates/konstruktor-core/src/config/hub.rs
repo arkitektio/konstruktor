@@ -37,10 +37,89 @@ impl LocalBucket {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalDb {
-    pub kind: String,
-    pub db: String,
+/// The database every service has unless its image says otherwise, by the name it asks
+/// for it under.
+pub const MAIN_DATABASE: &str = "main";
+
+/// How long a Postgres name may be: `NAMEDATALEN` - 1, in bytes. A longer one is cut off
+/// silently, which would let two names become one.
+pub const POSTGRES_NAME_LENGTH: usize = 63;
+
+/// Whether `name` is one Postgres takes as it is written: a lower-case letter, then
+/// lower-case letters, digits and underscores. Nothing that would have to be quoted.
+pub fn plain_identifier(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Why a database a service asked for cannot be provided.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidDatabase {
+    #[error(
+        "`{service}` asks for a database called `{name}`, which is not a name Postgres takes \
+         unquoted: a lower-case letter, then lower-case letters, digits and underscores"
+    )]
+    Name { service: String, name: String },
+    #[error("`{service}` asks for the database `{name}` twice")]
+    Twice { service: String, name: String },
+    #[error(
+        "`{service}`'s database `{name}` would be called `{database}` here, which is longer \
+         than the {POSTGRES_NAME_LENGTH} bytes Postgres keeps of a name"
+    )]
+    TooLong {
+        service: String,
+        name: String,
+        database: String,
+    },
+    #[error(
+        "`{service}`'s database `{name}` would be called `{database}` here, and that is \
+         already a database of `{other}`"
+    )]
+    Taken {
+        service: String,
+        name: String,
+        database: String,
+        other: String,
+    },
+}
+
+/// What the hub calls the database a service asked for under `name`: `<service>_<name>`
+/// (`mikro` + `main` → `mikro_main`). A service's name is itself a plain identifier
+/// ([`crate::catalog::ServiceId::parse`]), so the two are joined as they are.
+///
+/// **This is the one place a database name is made, and it only ever makes a plain
+/// identifier of at most [`POSTGRES_NAME_LENGTH`] bytes.** That is what makes it safe to
+/// write the name unquoted wherever a database is created: `ensure_database`'s `CREATE
+/// DATABASE` and `CREATE ROLE` ([`crate::services`]), and the database image's own init
+/// script, which splices each entry of `POSTGRES_MULTIPLE_DATABASES` into SQL as it
+/// stands. A name is checked again here even though a service built on
+/// `arkitekt-service` cannot print a bad one: any image can describe itself.
+pub fn database_name(service: &str, name: &str) -> Result<String, InvalidDatabase> {
+    if !plain_identifier(name) {
+        return Err(InvalidDatabase::Name {
+            service: service.to_string(),
+            name: name.to_string(),
+        });
+    }
+    let database = format!("{service}_{name}");
+    // A service that got its name past `ServiceId::parse` cannot fail this; one read out
+    // of a profile somebody edited can.
+    if !plain_identifier(&database) {
+        return Err(InvalidDatabase::Name {
+            service: service.to_string(),
+            name: name.to_string(),
+        });
+    }
+    if database.len() > POSTGRES_NAME_LENGTH {
+        return Err(InvalidDatabase::TooLong {
+            service: service.to_string(),
+            name: name.to_string(),
+            database,
+        });
+    }
+    Ok(database)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,8 +220,8 @@ impl<'de> Deserialize<'de> for Buckets {
 /// it with.
 ///
 /// The second half of the fields is what the service's image asked for when it was asked
-/// what it is ([`HubConfig::provide`]): buckets, a key, secrets, and whether it is wired to
-/// the database, the Redis and the operator account at all. They are written down here,
+/// what it is ([`HubConfig::provide`]): databases, buckets, a key, secrets, and whether it
+/// is wired to the Redis and the operator account at all. They are written down here,
 /// rather than read off the description each time, because they are *minted* — a bucket
 /// holds a service's objects and a key is vouched for by the coordination server — and
 /// because a hub's files are regenerated in places where no image can be asked.
@@ -154,9 +233,11 @@ pub struct ServiceBlock {
     pub admin_config: Option<Kinded>,
     pub allowed_hosts: Vec<String>,
     pub auth_config: Kinded,
-    /// The service's own database in the hub's Postgres. Absent for one that needs none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub db_config: Option<LocalDb>,
+    /// The service's own databases in the hub's Postgres: the name it asked for each
+    /// under (`main`) to what the hub calls it (`mikro_main`, see [`database_name`]).
+    /// Empty for a service that keeps nothing in Postgres, and until its image is asked.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub databases: BTreeMap<String, String>,
     pub debug: bool,
     pub enabled: bool,
     /// Where the service's source lives, for a service of the catalogue. One outside it
@@ -240,9 +321,15 @@ impl ServiceBlock {
         self.health.as_deref().unwrap_or(crate::health::HEALTH_PATH)
     }
 
-    /// The database the hub provides the service, if it asked for one.
-    pub fn database(&self) -> Option<&str> {
-        self.db_config.as_ref().map(|db| db.db.as_str())
+    /// What the hub calls the database the service asked for under `name`, if it did.
+    pub fn database(&self, name: &str) -> Option<&str> {
+        self.databases.get(name).map(String::as_str)
+    }
+
+    /// What the hub calls each of the service's databases, in the order of the names the
+    /// service knows them by.
+    pub fn database_names(&self) -> Vec<String> {
+        self.databases.values().cloned().collect()
     }
 
     /// Whether the service is handed the object store: exactly when it declared storage.
@@ -253,11 +340,15 @@ impl ServiceBlock {
     /// Takes in what the service's image says it needs, minting what is missing and
     /// keeping everything there is; true when the block changed.
     ///
-    /// Idempotent, and never narrowing what holds data or trust: a bucket, a key and a
-    /// secret, once there, stay — a release that stops declaring one does not make the
-    /// hub forget where the objects are or which key the coordination server vouches
-    /// for. What is merely wiring (the database, the Redis, the operator account)
-    /// follows the description both ways.
+    /// Idempotent, and never narrowing what holds data or trust: a database, a bucket, a
+    /// key and a secret, once there, stay — a release that stops declaring one does not
+    /// make the hub forget where the rows and the objects are or which key the
+    /// coordination server vouches for. What is merely wiring (the Redis, the operator
+    /// account) follows the description both ways.
+    ///
+    /// A database the description names badly is not provided: whoever takes a
+    /// description in refuses it first, saying why
+    /// ([`HubConfig::databases_can_be_provided`]).
     pub fn provide(&mut self, said: &crate::contract::Description) -> bool {
         let before = self.clone();
         let needs = &said.needs;
@@ -266,15 +357,10 @@ impl ServiceBlock {
         self.health = Some(said.health_path())
             .filter(|path| *path != crate::health::HEALTH_PATH)
             .map(str::to_string);
-        if needs.database {
-            // Called after the service, unless the profile already names another.
-            let db = database_named_after(&self.host);
-            self.db_config.get_or_insert(LocalDb {
-                kind: "local".into(),
-                db,
-            });
-        } else {
-            self.db_config = None;
+        for name in &needs.databases {
+            if let Ok(database) = database_name(&self.host, name) {
+                self.databases.entry(name.clone()).or_insert(database);
+            }
         }
         self.redis_config = needs.redis.then(Kinded::local);
         self.admin_config = needs.admin.then(Kinded::global);
@@ -664,7 +750,9 @@ fn build_lok_block(options: &LokOptions) -> LokBlock {
         host: "lok".into(),
         image: LOK_IMAGE.into(),
         internal_port: 80,
-        db: "lok".into(),
+        // Lok is a service with a contract like any other: its database is called by the
+        // same rule.
+        db: database_name("lok", MAIN_DATABASE).expect("a plain name"),
         media_bucket: LocalBucket::new("lokmedia"),
         secret_key: generate_django_secret_key(),
         key_pair: options
@@ -890,6 +978,75 @@ impl HubConfig {
             changed = true;
         }
         changed
+    }
+
+    /// Whether every database `said` asks for can be provided here, and why not otherwise:
+    /// a name Postgres would not take as written, one asked for twice, one too long once
+    /// it carries its service's name, or one that would be another service's database
+    /// (`a` asking for `b_main` and `a_b` asking for `main` both come out as `a_b_main`).
+    /// Asked before [`Self::provide`], which refuses nothing.
+    ///
+    /// Against everything the hub's Postgres holds or is about to: every service's
+    /// databases, running or kept, and the coordination server's.
+    pub fn databases_can_be_provided(
+        &self,
+        said: &crate::contract::Said,
+    ) -> Result<(), InvalidDatabase> {
+        // What each database is, by what the hub calls it.
+        let mut held: BTreeMap<String, String> = BTreeMap::new();
+        if let Some(lok) = &self.lok {
+            held.insert(lok.db.clone(), lok.host.clone());
+        }
+        for id in self.service_ids() {
+            let block = self.service(id);
+            for database in block.databases.values() {
+                held.insert(database.clone(), block.host.clone());
+            }
+        }
+        for id in self.enabled_services() {
+            let block = self.service(id);
+            let Some(description) = said.get(&block.host) else {
+                continue;
+            };
+            let asked = &description.needs.databases;
+            for (at, name) in asked.iter().enumerate() {
+                if asked[..at].contains(name) {
+                    return Err(InvalidDatabase::Twice {
+                        service: block.host.clone(),
+                        name: name.clone(),
+                    });
+                }
+                let database = database_name(&block.host, name)?;
+                // One it holds already keeps the name it has, whatever that is.
+                if block.databases.contains_key(name) {
+                    continue;
+                }
+                match held.get(&database) {
+                    Some(other) if *other != block.host => {
+                        return Err(InvalidDatabase::Taken {
+                            service: block.host.clone(),
+                            name: name.clone(),
+                            database,
+                            other: other.clone(),
+                        });
+                    }
+                    _ => {
+                        held.insert(database, block.host.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Every database the stack provisions, as the hub calls it: of the services that run
+    /// or keep their data, in generation order, then the coordination server's.
+    pub fn provisioned_databases(&self) -> Vec<String> {
+        self.provisioned_services()
+            .into_iter()
+            .flat_map(|id| self.service(id).database_names())
+            .chain(self.running_lok().map(|lok| lok.db.clone()))
+            .collect()
     }
 
     /// Whether `id` is one of this hub's services and part of its stack.
@@ -1173,20 +1330,13 @@ pub fn is_supported_image(id: ServiceId, image: &str) -> bool {
         .is_some_and(|(found, tag)| found == repository && tag.split('.').next() == Some(major))
 }
 
-/// The database a service gets: called after it, with the one character a service's name
-/// may hold and a plain Postgres identifier may not (`omero-ark` → `omero_ark`).
-fn database_named_after(service: &str) -> String {
-    service.replace('-', "_")
-}
-
 /// The block a service starts with, before its image has been asked anything.
 ///
 /// For a catalogue service that is the catalogue's image and repository, switched on when
 /// the catalogue pre-ticks it. For any other there is only the name: no image, no
 /// repository, switched off until somebody adds it. Either way the conventions every
-/// service is held to — it listens on port 80, is served under its own name, and gets a
-/// database called after it — and nothing its image has to say first: no buckets, no key,
-/// no secrets. Those are [`ServiceBlock::provide`]'s, once the image has answered.
+/// service is held to — it listens on port 80 and is served under its own name — and
+/// nothing its image has to say first: no databases, no buckets, no key, no secrets. Those are [`ServiceBlock::provide`]'s, once the image has answered.
 fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
     let known = id.known();
     let name = id.as_str();
@@ -1195,10 +1345,7 @@ fn build_service_block(id: ServiceId, mount_github: bool) -> ServiceBlock {
         admin_config: Some(Kinded::global()),
         allowed_hosts: vec!["*".to_string()],
         auth_config: Kinded::local(),
-        db_config: Some(LocalDb {
-            kind: "local".into(),
-            db: database_named_after(name),
-        }),
+        databases: BTreeMap::new(),
         debug: false,
         enabled: known.is_some_and(|known| known.default),
         github_repo: known.map(|known| known.github_repo.to_string()),

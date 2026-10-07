@@ -420,7 +420,7 @@ pub async fn create_hub(
             silent.join(", ")
         )));
     }
-    crate::contract::names_agree(&config, &said).map_err(CreateError::Answers)?;
+    crate::contract::acceptable(&config, &said).map_err(CreateError::Answers)?;
     // Now the hub can provide each with what it asked for: buckets, a key, its secrets.
     config.provide(&said);
     // LiveKit announces one of the addresses the hub is about to advertise.
@@ -1293,6 +1293,18 @@ pub async fn reauthorize(
     }
     // A service change is refused here, before anybody is sent to a browser, and applied
     // to this copy only: the profile on disk changes once the grant is accepted.
+    // A release an update could not move to, because it asks for a key its service does
+    // not hold: the key is minted here, where it is also sent to be vouched for. Into
+    // this copy only, like everything else — it is the service's once this is accepted.
+    let awaited = crate::lock::read(&answers.dir).awaiting_key;
+    for host in &awaited {
+        if let Some(id) = config.service_at(host) {
+            let block = config.service_mut(id);
+            if block.instance_key_pair.is_none() {
+                block.instance_key_pair = Some(crate::secrets::generate_ed25519_key_pair());
+            }
+        }
+    }
     let mut said = crate::contract::known(&answers.dir);
     let services = match &answers.services {
         Some(change) => {
@@ -1338,7 +1350,7 @@ pub async fn reauthorize(
             silent.join(", ")
         )));
     }
-    crate::contract::names_agree(&config, &said).map_err(CreateError::Answers)?;
+    crate::contract::acceptable(&config, &said).map_err(CreateError::Answers)?;
     // With every description in hand, the one refusal a plan could not make on its own:
     // a service added in this very change may be one Rekuest cannot be taken out beside.
     if let Some(plan) = &services {
@@ -1476,6 +1488,11 @@ pub async fn reauthorize(
     crate::migrate::write_hub(&answers.dir, &config, &files)?;
     // So the next start does not ask a service that was just added again.
     crate::contract::remember(&answers.dir, &config, &said)?;
+    if !awaited.is_empty() {
+        let mut held = crate::lock::read(&answers.dir);
+        held.awaiting_key.clear();
+        crate::lock::write(&answers.dir, &held)?;
+    }
 
     // The registry record now describes the wrong hub: the identifier is editable on the
     // authorize screen, the coordination server can differ, and `last_generated_at` has to

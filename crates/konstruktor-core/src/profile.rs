@@ -73,6 +73,10 @@ pub enum ProfileError {
          be created again: `konstruktor hub create`."
     )]
     Earlier { folder: String, found: String },
+    /// What the hub's images now say cannot be taken in as it is. See
+    /// [`crate::services::provide_declared`].
+    #[error("{0} Nothing was written.")]
+    Provide(#[from] crate::services::ProvideError),
     /// The files on disk are of a layout this build must not rewrite in passing. See
     /// [`crate::migrate::behind`].
     #[error("{0}")]
@@ -162,15 +166,21 @@ pub fn rewrite(
 /// Write every generated file of the hub in `dir` again, from its profile as it stands.
 ///
 /// What undoes hand edits, and picks up what the generator has learnt within the layout
-/// the hub already has. Nothing in the profile changes, so every secret, key and image
-/// stays what it was. The compose file is the one generated file people edit by hand, so
-/// the one on disk is kept as its backup first. A hub of an older layout is refused: its
-/// images have to move with its files, which is `update`'s.
-pub fn regenerate(dir: &Path) -> Result<(), ProfileError> {
-    let config = read_profile(dir)?.config;
+/// the hub already has. Every secret, key and image stays what it was. The one thing the
+/// profile can gain is what the hub's images have said they need and it does not hold yet
+/// — a database, a bucket, a secret ([`crate::services::provide_declared`]): the answer
+/// names those, for the caller to create ([`crate::services::provision`]). A service that
+/// asks for a key it does not hold is refused, with nothing written.
+///
+/// The compose file is the one generated file people edit by hand, so the one on disk is
+/// kept as its backup first. A hub of an older layout is refused: its images have to move
+/// with its files, which is `update`'s.
+pub fn regenerate(dir: &Path) -> Result<crate::services::Provided, ProfileError> {
+    let mut config = read_profile(dir)?.config;
     if let Some(reason) = crate::migrate::behind(dir, &config) {
         return Err(ProfileError::Layout(reason));
     }
+    let provided = crate::services::provide_declared(&mut config, &crate::contract::known(dir))?;
     let compose = dir.join(crate::compose_file::COMPOSE_FILENAME);
     if compose.exists() {
         std::fs::copy(
@@ -178,7 +188,8 @@ pub fn regenerate(dir: &Path) -> Result<(), ProfileError> {
             dir.join(crate::compose_file::COMPOSE_BACKUP_FILENAME),
         )?;
     }
-    rewrite(dir, config, &[])
+    rewrite(dir, config, &[])?;
+    Ok(provided)
 }
 
 /// Whether a directory already holds a hub deployment.

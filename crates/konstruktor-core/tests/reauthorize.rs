@@ -659,7 +659,7 @@ async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
     );
     let caddyfile = std::fs::read_to_string(dir.join("configs/Caddyfile")).unwrap();
     assert!(caddyfile.contains("/bank"), "bank is not routed");
-    assert!(init_databases(&dir).contains(&"bank".to_string()));
+    assert!(init_databases(&dir).contains(&"bank_main".to_string()));
     assert!(bucket_manifest(&dir).contains("bankbigfile"));
 
     // The manifest carried the new instance, with its key, to the coordination server.
@@ -696,7 +696,7 @@ async fn removing_a_service_drops_its_container_but_keeps_its_data() {
     let services = compose_services(&dir);
     assert!(!services.contains(&"kraph".to_string()), "{services:?}");
     assert!(services.contains(&"mikro".to_string()));
-    assert!(init_databases(&dir).contains(&"kraph".to_string()));
+    assert!(init_databases(&dir).contains(&"kraph_main".to_string()));
     assert!(bucket_manifest(&dir).contains("kraphzarr"));
     let caddyfile = std::fs::read_to_string(dir.join("configs/Caddyfile")).unwrap();
     assert!(!caddyfile.contains("/kraph"), "kraph is still routed");
@@ -804,6 +804,62 @@ async fn re_adding_kuvert_keeps_its_fernet_key() {
         "a new key was minted"
     );
     assert_eq!(back.instance_key_pair, first.instance_key_pair);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A release an update refused because it asks for a key its service does not hold is
+/// written down as waiting. The next authorization mints that key — where it is also sent
+/// to be vouched for — and the wait is over; a declined one leaves it waiting.
+#[tokio::test]
+async fn an_awaited_key_is_minted_when_the_hub_is_authorized() {
+    use konstruktor_core::lock;
+
+    let dir = a_hub();
+    // Kraph holds no key, as a service whose release never asked for one.
+    let mut config = profile::read_profile(&dir).unwrap().config;
+    config.service_mut(ServiceId::Kraph).instance_key_pair = None;
+    write_profile(&dir, &hub_profile(config.clone())).unwrap();
+    let mut said = support::said();
+    said.get_mut("kraph").unwrap().needs.instance_key = false;
+    konstruktor_core::contract::remember(&dir, &config, &said).unwrap();
+    let mut held = lock::read(&dir);
+    held.awaiting_key = vec!["kraph".into()];
+    lock::write(&dir, &held).unwrap();
+
+    let declined_by = coordination_server(declined()).await;
+    reauthorize(
+        &answers(&dir, &declined_by),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect_err("declined");
+    let kraph = |dir: &Path| {
+        profile::read_profile(dir)
+            .unwrap()
+            .config
+            .service(ServiceId::Kraph)
+            .instance_key_pair
+            .clone()
+    };
+    assert!(kraph(&dir).is_none(), "a key nobody vouches for");
+    assert_eq!(lock::read(&dir).awaiting_key, ["kraph"]);
+
+    let server = coordination_server(accepted(json!({}))).await;
+    reauthorize(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+        .await
+        .expect("accepted");
+    let key = kraph(&dir).expect("minted with the authorization");
+    assert!(lock::read(&dir).awaiting_key.is_empty());
+    // It was part of what was sent to be accepted.
+    let sent = server.received_requests().await.unwrap();
+    let public = konstruktor_core::secrets::raw_public_key_b64(&key).unwrap();
+    assert!(
+        sent.iter()
+            .any(|request| String::from_utf8_lossy(&request.body).contains(&public)),
+        "the key was not in the manifest"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

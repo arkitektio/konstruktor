@@ -310,7 +310,7 @@ fn the_stack_runs_lok_with_a_database_and_a_bucket_of_its_own() {
     let databases = services["db"]["environment"]["POSTGRES_MULTIPLE_DATABASES"]
         .as_str()
         .unwrap();
-    assert_eq!(databases, "rekuest,mikro,lok");
+    assert_eq!(databases, "rekuest_main,mikro_main,lok_main");
 
     let buckets: Vec<String> = yaml(&files, "configs/rustfs_init.yaml")["buckets"]
         .as_sequence()

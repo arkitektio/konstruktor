@@ -161,7 +161,10 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
         konstruktor_core::contract::facts(&config, id, &IssuedIdentity::default(), &support::said())
     };
     let dokuments = told(ServiceId::Dokuments);
-    assert_eq!(dokuments["database"]["name"].as_str(), Some("dokuments"));
+    assert_eq!(
+        dokuments["databases"]["main"]["name"].as_str(),
+        Some("dokuments_main")
+    );
     assert_eq!(dokuments["me"]["path"].as_str(), Some("dokuments"));
     assert!(
         dokuments["storage"]["buckets"]["media"].is_string(),
@@ -169,7 +172,10 @@ fn dokuments_and_lokate_are_generated_like_any_service() {
     );
 
     let lokate = told(ServiceId::Lokate);
-    assert_eq!(lokate["database"]["name"].as_str(), Some("lokate"));
+    assert_eq!(
+        lokate["databases"]["main"]["name"].as_str(),
+        Some("lokate_main")
+    );
     // A service that declares storage is handed the object store with its bucket: what
     // decides is what the image says, and Lokate's says `media`.
     assert_eq!(

@@ -70,11 +70,11 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
     let mut rows: Vec<(String, String)> = vec![
         ("registered as".into(), said.identifier.clone()),
         ("contract".into(), said.contract.to_string()),
+        ("databases".into(), listed(&said.needs.databases)),
         (
             "wired to".into(),
             listed(
                 &[
-                    (said.needs.database, "a database"),
                     (said.needs.redis, "the redis"),
                     (said.needs.admin, "the operator account"),
                 ]

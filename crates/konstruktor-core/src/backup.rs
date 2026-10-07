@@ -142,8 +142,10 @@ pub struct ManifestService {
     pub image_id: Option<String>,
     #[serde(default)]
     pub repo_digests: Vec<String>,
-    /// The database this service owns inside the dump.
-    pub db: String,
+    /// The databases this service owns inside the dump, as the hub called them. Empty in
+    /// a backup taken before a service's databases were recorded by name.
+    #[serde(default)]
+    pub databases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -576,12 +578,7 @@ async fn build_manifest(
                 repo_digests: state_of(host)
                     .map(|s| s.repo_digests.clone())
                     .unwrap_or_default(),
-                // Empty for a service that asked for no database.
-                db: config
-                    .service(*id)
-                    .database()
-                    .unwrap_or_default()
-                    .to_string(),
+                databases: config.service(*id).database_names(),
             })
             .collect(),
         infrastructure: infra

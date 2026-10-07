@@ -62,9 +62,8 @@ config:
         media:
           bucket_name: alpakamedia
           kind: local
-      db_config:
-        db: alpaka
-        kind: local
+      databases:
+        main: alpaka_main
       debug: false
       enabled: false
       github_repo: https://github.com/arkitektio/alpaka-server
@@ -100,9 +99,8 @@ config:
         bigfile:
           bucket_name: elektrobigfile
           kind: local
-      db_config:
-        db: elektro
-        kind: local
+      databases:
+        main: elektro_main
       debug: false
       enabled: false
       github_repo: https://github.com/arkitektio/elektro-server
@@ -127,9 +125,8 @@ config:
         media:
           bucket_name: flussmedia
           kind: local
-      db_config:
-        db: fluss
-        kind: local
+      databases:
+        main: fluss_main
       debug: false
       enabled: true
       github_repo: https://github.com/arkitektio/fluss-server-next
@@ -154,9 +151,8 @@ config:
         media:
           bucket_name: kabinetmedia
           kind: local
-      db_config:
-        db: kabinet
-        kind: local
+      databases:
+        main: kabinet_main
       debug: false
       enabled: true
       ensured_repositories:
@@ -190,9 +186,8 @@ config:
         bigfile:
           bucket_name: kraphbigfile
           kind: local
-      db_config:
-        db: kraph
-        kind: local
+      databases:
+        main: kraph_main
       debug: false
       enabled: true
       github_repo: https://github.com/arkitektio/kraph-server
@@ -217,9 +212,8 @@ config:
         media:
           bucket_name: lovekitmedia
           kind: local
-      db_config:
-        db: lovekit
-        kind: local
+      databases:
+        main: lovekit_main
       debug: false
       enabled: true
       github_repo: https://github.com/arkitektio/lovekit-server
@@ -258,9 +252,8 @@ config:
         konnektion:
           bucket_name: mikrokonnektion
           kind: local
-      db_config:
-        db: mikro
-        kind: local
+      databases:
+        main: mikro_main
       debug: false
       enabled: true
       github_repo: https://github.com/arkitektio/mikro-server-next
@@ -285,9 +278,8 @@ config:
         media:
           bucket_name: rekuestmedia
           kind: local
-      db_config:
-        db: rekuest
-        kind: local
+      databases:
+        main: rekuest_main
       debug: false
       enabled: true
       github_repo: https://github.com/arkitektio/rekuest-server-next

@@ -89,7 +89,7 @@ fn it_gets_a_block_of_its_own() {
     assert_eq!(block.host, "example");
     assert_eq!(block.internal_port, 80);
     assert_eq!(block.github_repo, None);
-    assert_eq!(block.database(), Some("example"));
+    assert_eq!(block.database("main"), Some("example_main"));
     // What its image asked for, and only that.
     assert_eq!(block.identifier.as_deref(), Some("org.example.service"));
     assert_eq!(
@@ -166,7 +166,7 @@ fn it_gets_a_database_a_bucket_and_a_gateway_route() {
     let databases = compose["services"]["db"]["environment"]["POSTGRES_MULTIPLE_DATABASES"]
         .as_str()
         .expect("the init list");
-    assert_eq!(databases, "rekuest,mikro,example");
+    assert_eq!(databases, "rekuest_main,mikro_main,example_main");
 
     let buckets: Vec<String> = yaml(&files, "configs/rustfs_init.yaml")["buckets"]
         .as_sequence()
@@ -240,7 +240,10 @@ fn it_is_told_of_the_hub_what_it_asked_for() {
         facts["me"]["identifier"].as_str(),
         Some("org.example.service")
     );
-    assert_eq!(facts["database"]["name"].as_str(), Some("example"));
+    assert_eq!(
+        facts["databases"]["main"]["name"].as_str(),
+        Some("example_main")
+    );
     assert_eq!(
         facts["storage"]["buckets"]["archive"].as_str(),
         Some("examplearchive")
@@ -272,7 +275,7 @@ fn it_is_told_of_the_hub_what_it_asked_for() {
 #[test]
 fn it_is_wired_only_to_what_it_declares() {
     let mut lean = support::example();
-    lean.needs.database = false;
+    lean.needs.databases.clear();
     lean.needs.redis = false;
     lean.needs.admin = false;
     lean.needs.storage.clear();
@@ -290,7 +293,7 @@ fn it_is_wired_only_to_what_it_declares() {
     let compose = yaml(&files, "docker-compose.yaml");
     assert_eq!(
         compose["services"]["db"]["environment"]["POSTGRES_MULTIPLE_DATABASES"].as_str(),
-        Some("rekuest,mikro")
+        Some("rekuest_main,mikro_main")
     );
     let waits_on = |service: &str| -> Vec<(String, String)> {
         compose["services"][service]["depends_on"]
@@ -329,9 +332,12 @@ fn it_is_wired_only_to_what_it_declares() {
 
     let facts =
         konstruktor_core::contract::facts(&config, example(), &IssuedIdentity::default(), &said);
-    for absent in ["database", "redis", "storage"] {
+    for absent in ["redis", "storage"] {
         assert!(facts.get(absent).is_none(), "{absent}");
     }
+    assert!(facts["databases"]
+        .as_mapping()
+        .is_some_and(|databases| databases.is_empty()));
     assert!(facts["me"].get("admin").is_none());
     assert!(facts["me"]["secret_key"].is_string());
 }

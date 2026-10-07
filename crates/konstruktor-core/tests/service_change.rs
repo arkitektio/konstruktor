@@ -213,7 +213,7 @@ fn provisioned_agents(dir: &Path, config: &HubConfig) -> std::collections::BTree
             "-d",
             config
                 .service(konstruktor_core::catalog::ServiceId::Rekuest)
-                .database()
+                .database("main")
                 .expect("rekuest has a database"),
             "-tAF",
             "|",

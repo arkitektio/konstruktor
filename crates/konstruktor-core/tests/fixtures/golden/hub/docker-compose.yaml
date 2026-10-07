@@ -2,7 +2,7 @@ services:
   db:
     image: jhnnsrs/daten:latest
     environment:
-      POSTGRES_MULTIPLE_DATABASES: rekuest,kabinet,mikro,fluss,kraph
+      POSTGRES_MULTIPLE_DATABASES: rekuest_main,kabinet_main,mikro_main,fluss_main,kraph_main
       POSTGRES_PASSWORD: fixture-postgres-password-not-a-real-secret
       POSTGRES_USER: fixture-postgres-user-not-a-real-secret
     healthcheck:

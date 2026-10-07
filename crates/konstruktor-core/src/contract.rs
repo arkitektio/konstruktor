@@ -41,11 +41,21 @@ pub struct Scope {
 }
 
 /// What a service needs a hub to provide.
+///
+/// A closed block, as it is on the service's side: a key this build does not know is not
+/// skipped over. An image from before databases had names says `database`, and reading
+/// that as "nothing said, so `main`" would provide it something it never asked for by
+/// that name — it is an image this build does not run, like any that speaks another
+/// contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Needs {
-    /// A database of its own in the hub's Postgres. Left unsaid, it needs one.
-    #[serde(default = "yes")]
-    pub database: bool,
+    /// A database for each of these names, in the hub's Postgres. The hub calls each
+    /// `<service>_<name>` ([`crate::config::hub::database_name`]); the service is handed
+    /// them by the name it gave. Left unsaid, one called `main`; empty for a service
+    /// that keeps nothing in Postgres.
+    #[serde(default = "main_database")]
+    pub databases: Vec<String>,
     /// The hub's Redis. Left unsaid, it needs it.
     #[serde(default = "yes")]
     pub redis: bool,
@@ -79,12 +89,16 @@ fn yes() -> bool {
     true
 }
 
+fn main_database() -> Vec<String> {
+    vec![crate::config::hub::MAIN_DATABASE.to_string()]
+}
+
 impl Default for Needs {
     /// What an image that says nothing of its needs is taken to need: the same a field
     /// left out of a description reads as.
     fn default() -> Self {
         Self {
-            database: true,
+            databases: main_database(),
             redis: true,
             storage: Vec::new(),
             scopes: Vec::new(),
@@ -546,6 +560,17 @@ pub fn names_agree(config: &HubConfig, said: &Said) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuses a hub whose images ask for something it cannot give them, before anything of
+/// what they said is taken in: an image under another service's name
+/// ([`names_agree`]), or a database that cannot be provided
+/// ([`HubConfig::databases_can_be_provided`]).
+pub fn acceptable(config: &HubConfig, said: &Said) -> Result<(), String> {
+    names_agree(config, said)?;
+    config
+        .databases_can_be_provided(said)
+        .map_err(|error| format!("{error}."))
+}
+
 /// What the images of the hub at `dir` said of themselves when they were last asked: read
 /// back from what was written down, without asking anything. What its files are regenerated
 /// from.
@@ -943,20 +968,25 @@ pub fn facts(
         ),
     ];
 
-    // Only what the service declared it uses is there to be told of.
-    let postgres = block("postgres");
-    if postgres.is_some() {
-        out.push((
-            "database",
-            map(vec![
-                ("host", field(&postgres, "host")),
-                ("port", field(&postgres, "port")),
-                ("name", field(&postgres, "db_name")),
-                ("username", field(&postgres, "username")),
-                ("password", field(&postgres, "password")),
-            ]),
-        ));
+    // Its databases, by the name it asked for each under: none for a service that keeps
+    // nothing in Postgres. Only what the service declared it uses is there to be told of.
+    let mut databases = serde_norway::Mapping::new();
+    if let Some(Value::Mapping(held)) = block("databases") {
+        for (name, postgres) in held {
+            let postgres = Some(postgres);
+            databases.insert(
+                name,
+                map(vec![
+                    ("host", field(&postgres, "host")),
+                    ("port", field(&postgres, "port")),
+                    ("name", field(&postgres, "db_name")),
+                    ("username", field(&postgres, "username")),
+                    ("password", field(&postgres, "password")),
+                ]),
+            );
+        }
     }
+    out.push(("databases", Value::Mapping(databases)));
     if let Some(redis) = block("redis") {
         out.push(("redis", redis));
     }
@@ -1190,7 +1220,10 @@ mod tests {
             rekuest["me"]["url"].as_str(),
             Some("http://rekuest:80/rekuest")
         );
-        assert_eq!(rekuest["database"]["name"].as_str(), Some("rekuest"));
+        assert_eq!(
+            rekuest["databases"]["main"]["name"].as_str(),
+            Some("rekuest_main")
+        );
         assert_eq!(
             rekuest["storage"]["buckets"]["media"].as_str(),
             Some("rekuestmedia")

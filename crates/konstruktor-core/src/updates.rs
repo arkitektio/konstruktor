@@ -1430,6 +1430,9 @@ async fn apply_on(
         }
     }
     let mut allowed: Vec<(String, Vec<String>)> = Vec::new();
+    // What the releases that move say of themselves, by compose service: what each is
+    // provided from, below.
+    let mut newly_said = crate::contract::Said::new();
     for (service, companions) in moving {
         let said = match channels.get(&service) {
             Some(image) => crate::contract::describe(image).await,
@@ -1451,7 +1454,32 @@ async fn apply_on(
             crate::contract::unmet(said, &reached)
                 .map(|why| format!("`{service}` was not updated: {why}."))
         });
-        match stop.or(beside) {
+        // A release that asks for more than its service holds gets it — a database, a
+        // bucket, a secret are this hub's own to give. All but a key of its own, which
+        // somebody else has to vouch for: that release waits for an authorization, and
+        // is written down as waiting so that the next one mints the key.
+        let unprovidable = said.as_ref().and_then(|said| {
+            let alone: crate::contract::Said = [(service.clone(), said.clone())].into();
+            if !crate::services::awaiting_key(&config, &alone).is_empty() {
+                let mut held = lock::read(dir);
+                if !held.awaiting_key.contains(&service) {
+                    held.awaiting_key.push(service.clone());
+                    let _ = lock::write(dir, &held);
+                }
+                return Some(format!(
+                    "{} It was left on the release it runs.",
+                    crate::services::ProvideError::NeedsAuthorization {
+                        service: service.clone()
+                    }
+                ));
+            }
+            // Among the services of this hub only, whichever others move with it.
+            config
+                .databases_can_be_provided(&alone)
+                .err()
+                .map(|error| format!("`{service}` was not updated: {error}."))
+        });
+        match stop.or(beside).or(unprovidable) {
             Some(reason) => {
                 on_event(UpdateEvent::Refused {
                     service: service.clone(),
@@ -1459,10 +1487,39 @@ async fn apply_on(
                 });
                 report.refused.push((service, reason));
             }
-            None => allowed.push((service, companions)),
+            None => {
+                if let Some(said) = said {
+                    newly_said.insert(service.clone(), said);
+                }
+                allowed.push((service, companions));
+            }
         }
     }
     let moving = allowed;
+
+    // --- what the new releases are provided ---------------------------------------------
+    // Into the profile that is about to be written; created further down, once it is.
+    let provided = match crate::services::provide_declared(&mut config, &newly_said) {
+        Ok(provided) => provided,
+        Err(error) => {
+            put_back("What the new releases ask for cannot be provided");
+            return Err(UpdateError::Migration(format!(
+                "{error} Nothing was changed."
+            )));
+        }
+    };
+    for (what, names) in [
+        ("database", &provided.databases),
+        ("bucket", &provided.buckets),
+        ("secret", &provided.secrets),
+    ] {
+        if !names.is_empty() {
+            step(format!(
+                "A new release asks for a {what} it did not have: {}",
+                names.join(", ")
+            ));
+        }
+    }
 
     // --- the builds --------------------------------------------------------------------
     // What moves is pinned to what its channel resolves to now. Whatever else has no build
@@ -1541,6 +1598,17 @@ async fn apply_on(
                     action.title, moved.title
                 )));
             }
+        }
+    }
+
+    // --- what the new releases were provided, made to exist -------------------------------
+    // Before a migration runs against a database, and before a service is started on a
+    // bucket. The hub still runs as it did, so a failure here leaves it so: a database or
+    // a bucket nothing uses yet is not in anybody's way.
+    if !provided.is_empty() {
+        if let Err(error) = crate::services::provision(dir, &config, &provided, &line).await {
+            put_back("What a new release asks for could not be created");
+            return Err(UpdateError::Compose(error.to_string()));
         }
     }
 

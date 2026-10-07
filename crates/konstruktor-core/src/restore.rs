@@ -347,15 +347,22 @@ pub fn judge(
         .iter()
         .filter(|backed| {
             target.enabled_services().iter().any(|id| {
-                *id == backed.id && target.service(*id).database().unwrap_or_default() != backed.db
+                *id == backed.id && target.service(*id).database_names() != backed.databases
             })
         })
         .map(|backed| {
+            let listed = |names: &[String]| {
+                if names.is_empty() {
+                    "none recorded".to_string()
+                } else {
+                    names.join(", ")
+                }
+            };
             format!(
                 "{} ({} in the backup, {} here)",
                 backed.host,
-                backed.db,
-                target.service(backed.id).database().unwrap_or_default()
+                listed(&backed.databases),
+                listed(&target.service(backed.id).database_names())
             )
         })
         .collect();
@@ -1051,11 +1058,7 @@ mod tests {
                     image: image.clone(),
                     image_id: ids(host),
                     repo_digests: vec![],
-                    db: config
-                        .service(*id)
-                        .database()
-                        .unwrap_or_default()
-                        .to_string(),
+                    databases: config.service(*id).database_names(),
                 })
                 .collect(),
             infrastructure: infra

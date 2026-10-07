@@ -399,6 +399,199 @@ pub async fn change_services(
     })
 }
 
+/// What a hub provides its services that it did not before: the difference a newer
+/// description made to a profile, as what has to exist before the service runs on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provided {
+    /// Databases to create, as the hub calls them.
+    pub databases: Vec<String>,
+    /// Buckets to create.
+    pub buckets: Vec<String>,
+    /// Secret files to write, as paths in the hub's folder.
+    pub secrets: Vec<String>,
+}
+
+impl Provided {
+    pub fn is_empty(&self) -> bool {
+        self.databases.is_empty() && self.buckets.is_empty() && self.secrets.is_empty()
+    }
+}
+
+/// Why a hub cannot take in what its images now say.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProvideError {
+    /// The release asks for a key of its own, and the service holds none.
+    #[error(
+        "`{service}`'s release asks for a key of its own, and the coordination server has \
+         to vouch for a key before any other service accepts what is signed with it. That \
+         takes a re-authorization: run `konstruktor authorize`, which mints the key and \
+         sends it to be accepted, then `konstruktor update` again."
+    )]
+    NeedsAuthorization { service: String },
+    #[error("{0}")]
+    Unacceptable(String),
+}
+
+/// The services of `said` that ask for a key of their own and hold none, on a hub whose
+/// keys somebody else vouches for.
+///
+/// Everything else a release can newly declare is the hub's own to give — a database is
+/// in its Postgres, a bucket in its object store, a secret a file in its folder. A key is
+/// not: its public half is what the coordination server publishes in the hub's trust
+/// bundle, and until it does, every request the service signs is refused by the others.
+/// So a key is only ever minted where it is also sent — when the hub is authorized.
+///
+/// A hub that runs its own coordination server has nobody to ask: its trust bundle is
+/// written inline from the profile, so a key minted there is trusted the moment the
+/// files are written.
+pub fn awaiting_key(config: &HubConfig, said: &Said) -> Vec<String> {
+    if config.running_lok().is_some() {
+        return Vec::new();
+    }
+    config
+        .enabled_services()
+        .into_iter()
+        .map(|id| config.service(id))
+        .filter(|block| {
+            block.instance_key_pair.is_none()
+                && said
+                    .get(&block.host)
+                    .is_some_and(|description| description.needs.instance_key)
+        })
+        .map(|block| block.host.clone())
+        .collect()
+}
+
+/// Takes what the images say (`said`, by compose service) into a profile that already
+/// exists, and answers with what that newly provides — for [`provision`] to create.
+///
+/// What an update and a regeneration do with a description that declares more than the
+/// block holds: a release that gained a bucket, a database or a secret gets them, without
+/// anybody being asked. Refused, with `config` untouched, when a service asks for a key it
+/// does not hold ([`awaiting_key`]) or for something the hub cannot give
+/// ([`crate::contract::acceptable`]).
+pub fn provide_declared(config: &mut HubConfig, said: &Said) -> Result<Provided, ProvideError> {
+    if let Some(service) = awaiting_key(config, said).into_iter().next() {
+        return Err(ProvideError::NeedsAuthorization { service });
+    }
+    crate::contract::acceptable(config, said).map_err(ProvideError::Unacceptable)?;
+
+    let before = config.clone();
+    config.provide(said);
+
+    let mut provided = Provided::default();
+    for id in config.enabled_services() {
+        let now = config.service(id);
+        let was = before.get(id);
+        for (name, database) in &now.databases {
+            if was.is_none_or(|was| !was.databases.contains_key(name)) {
+                provided.databases.push(database.clone());
+            }
+        }
+        for (purpose, bucket) in now.buckets.iter() {
+            if was.is_none_or(|was| was.buckets.get(purpose).is_none()) {
+                provided.buckets.push(bucket.to_string());
+            }
+        }
+        for name in now.secrets.keys() {
+            if was.is_none_or(|was| !was.secrets.contains_key(name)) {
+                provided
+                    .secrets
+                    .push(crate::generate::service::secret_file(now, name));
+            }
+        }
+    }
+    Ok(provided)
+}
+
+/// Whether the compose service `name` of the hub in `dir` has a running container.
+async fn is_up(dir: &Path, name: &str) -> bool {
+    crate::engine_probe::engine()
+        .async_command()
+        .args(["compose", "ps", "--status", "running", "-q", name])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// Creates what a profile newly provides ([`provide_declared`]), once its files are
+/// written: the databases in the hub's Postgres, and the buckets in its object store.
+/// The secrets are files, and written with the rest.
+///
+/// A database is created in the running cluster — the init list only takes effect on an
+/// empty data directory — so the database is started for it if the hub is stopped, and
+/// stopped again afterwards. The buckets are created by replaying the bucket job against
+/// a store that is running; one that is not gets them when the hub is next started, which
+/// runs the job before any service.
+pub async fn provision(
+    dir: &Path,
+    config: &HubConfig,
+    provided: &Provided,
+    on_line: &(dyn Fn(ComposeLine) + Send + Sync),
+) -> Result<(), StartError> {
+    let say = |line: &str| {
+        on_line(ComposeLine {
+            line: line.to_string(),
+            stderr: true,
+        })
+    };
+    let compose = |args: &[&str]| -> Vec<String> {
+        std::iter::once("compose")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect()
+    };
+
+    if !provided.databases.is_empty() {
+        let was_up = is_up(dir, DB_COMPOSE_SERVICE).await;
+        if !was_up {
+            crate::compose::run_streamed(
+                dir,
+                compose(&["up", "-d", "--no-deps", DB_COMPOSE_SERVICE]),
+                on_line,
+            )
+            .await
+            .map_err(StartError::Compose)?;
+        }
+        crate::backup::wait_for_database(dir, config, "database", &|_| {})
+            .await
+            .map_err(|e| StartError::Compose(e.to_string()))?;
+        for database in &provided.databases {
+            ensure_database(dir, config, database, &say).await?;
+        }
+        if !was_up {
+            let _ =
+                crate::compose::run_streamed(dir, compose(&["stop", DB_COMPOSE_SERVICE]), on_line)
+                    .await;
+        }
+    }
+
+    if !provided.buckets.is_empty() && is_up(dir, &config.minio.host).await {
+        say(&format!(
+            "Creating the bucket{} {}…",
+            if provided.buckets.len() == 1 { "" } else { "s" },
+            provided.buckets.join(", ")
+        ));
+        let job = config.minio.init_container_host.as_str();
+        crate::compose::run_streamed(
+            dir,
+            compose(&["up", "-d", "--no-deps", "--force-recreate", job]),
+            on_line,
+        )
+        .await
+        .map_err(StartError::Compose)?;
+        // It is a job: done when it has exited, and only then are the buckets there.
+        crate::compose::run_streamed(dir, compose(&["wait", job]), on_line)
+            .await
+            .map_err(|said| {
+                StartError::Compose(format!("the buckets could not be created: {said}"))
+            })?;
+    }
+    Ok(())
+}
+
 /// Every generated file under `configs/`, by name. What the running containers have
 /// bind-mounted — compose does not look into them, so a change to one recreates nothing.
 pub fn snapshot_configs(dir: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -510,7 +703,7 @@ pub async fn apply_services(
     let databases: Vec<String> = config
         .enabled_services()
         .into_iter()
-        .filter_map(|id| config.service(id).database().map(str::to_string))
+        .flat_map(|id| config.service(id).database_names())
         .collect();
     if !databases.is_empty() {
         // The same guard `start` runs, before anything pulls or recreates the database.
@@ -586,13 +779,13 @@ pub async fn apply_services(
 }
 
 /// A database name the init script would have created: nothing to quote, nothing to
-/// inject. The names come from the profile, which a person can edit.
+/// inject, and no longer than Postgres keeps. Every name the hub makes is one
+/// ([`crate::config::hub::database_name`]) — but they are read back from the profile, which
+/// a person can edit, so it is asked again here, where the name is about to be written
+/// into SQL unquoted.
 fn plain_identifier(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        && !name.starts_with(|c: char| c.is_ascii_digit())
+    crate::config::hub::plain_identifier(name)
+        && name.len() <= crate::config::hub::POSTGRES_NAME_LENGTH
 }
 
 async fn psql(dir: &Path, config: &HubConfig, database: &str, sql: &str) -> Result<String, String> {
@@ -627,7 +820,7 @@ async fn psql(dir: &Path, config: &HubConfig, database: &str, sql: &str) -> Resu
 
 /// What the image's init script does for each database on a new cluster, for one database
 /// on an existing one: the role, the database, the grant, then the extensions.
-async fn ensure_database(
+pub(crate) async fn ensure_database(
     dir: &Path,
     config: &HubConfig,
     database: &str,

@@ -284,20 +284,30 @@ pub(crate) fn hub_blocks(config: &HubConfig, id: ServiceId, issued: &IssuedIdent
     ]);
 
     let mut pairs = vec![("django", map(django))];
-    // The database and the Redis, for a service that declared it uses them.
-    if let Some(database) = service.database() {
-        pairs.push((
-            "postgres",
-            map(vec![
-                ("db_name", s(database)),
-                ("engine", s("django.db.backends.postgresql")),
-                ("host", s("db")),
-                ("password", s(&config.db.postgres_password)),
-                ("port", Value::from(5432)),
-                ("username", s(&config.db.postgres_user)),
-            ]),
-        ));
-    }
+    // Its databases, each under the name the service asked for it by, and the Redis for a
+    // service that declared it uses it.
+    pairs.push((
+        "databases",
+        Value::Mapping(
+            service
+                .databases
+                .iter()
+                .map(|(name, database)| {
+                    (
+                        name.as_str().into(),
+                        map(vec![
+                            ("db_name", s(database)),
+                            ("engine", s("django.db.backends.postgresql")),
+                            ("host", s("db")),
+                            ("password", s(&config.db.postgres_password)),
+                            ("port", Value::from(5432)),
+                            ("username", s(&config.db.postgres_user)),
+                        ]),
+                    )
+                })
+                .collect(),
+        ),
+    ));
     if service.redis_config.is_some() {
         pairs.push((
             "redis",

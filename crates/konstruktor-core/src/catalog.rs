@@ -36,7 +36,8 @@ impl ServiceId {
 
 /// The compose services a hub runs that are not its services: the infrastructure, and what
 /// runs beside one service in particular. A service cannot take one of these names, or the
-/// two would be one entry in the compose file. `<service>-takt` is refused by its shape.
+/// two would be one entry in the compose file. What runs beside a service under a name
+/// made from its own (`rekuest-takt`) needs no entry: a service's name holds no hyphen.
 const RESERVED_NAMES: [&str; 12] = [
     "db",
     "daten",
@@ -56,8 +57,8 @@ const RESERVED_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidServiceName {
     #[error(
-        "`{0}` cannot be a service's name: a name is lower-case letters, digits, `-` and `_`, \
-         and starts with a letter"
+        "`{0}` cannot be a service's name: a name is lower-case letters, digits and `_`, and \
+         starts with a letter"
     )]
     Shape(String),
     #[error(
@@ -94,20 +95,18 @@ impl ServiceId {
 
     /// The id of the service called `name`, if a hub can have a service of that name.
     ///
-    /// The name becomes a compose service, a path on the gateway, a database and the stem
-    /// of every bucket and file of the service, so it is held to what all of those take:
-    /// lower-case letters, digits, `-` and `_`, starting with a letter. And it must not be
-    /// what the hub calls something else it runs.
+    /// The name becomes a compose service, a path on the gateway, the stem of every bucket
+    /// and file of the service, and the first half of each of its databases' names
+    /// ([`crate::config::hub::database_name`]) — so it is held to the strictest of those,
+    /// a name Postgres takes unquoted: a lower-case letter, then lower-case letters,
+    /// digits and `_`. No hyphen. And it must not be what the hub calls something else it
+    /// runs.
     pub fn parse(name: &str) -> Result<ServiceId, InvalidServiceName> {
         let name = name.trim();
-        let starts_well = name.starts_with(|c: char| c.is_ascii_lowercase());
-        let only_allowed = name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'));
-        if !starts_well || !only_allowed {
+        if !crate::config::hub::plain_identifier(name) {
             return Err(InvalidServiceName::Shape(name.to_string()));
         }
-        if RESERVED_NAMES.contains(&name) || name.ends_with("-takt") {
+        if RESERVED_NAMES.contains(&name) {
             return Err(InvalidServiceName::Reserved(name.to_string()));
         }
         Ok(ServiceId::named(name))
@@ -529,10 +528,24 @@ mod tests {
     /// database can all be called, and never takes what the hub runs beside its services.
     #[test]
     fn an_invalid_or_reserved_name_is_refused() {
-        for ok in ["example", "omero-ark", "my_service2", "mikro"] {
+        for ok in ["example", "omero_ark", "my_service2", "mikro"] {
             assert_eq!(ServiceId::parse(ok).map(ServiceId::as_str), Ok(ok), "{ok}");
         }
-        for bad in ["", "Example", "2fast", "-dash", "has space", "a/b", "é"] {
+        for bad in [
+            "",
+            "Example",
+            "2fast",
+            "-dash",
+            "_under",
+            "has space",
+            "a/b",
+            "é",
+            // A hyphen is not a character a database name takes, and a service's name is
+            // the first half of one.
+            "omero-ark",
+            "rekuest-takt",
+            "example-takt",
+        ] {
             assert!(
                 matches!(ServiceId::parse(bad), Err(InvalidServiceName::Shape(_))),
                 "{bad}"
@@ -549,8 +562,6 @@ mod tests {
             "reporter",
             "ollama",
             "livekit",
-            "rekuest-takt",
-            "example-takt",
         ] {
             let refused = ServiceId::parse(taken).unwrap_err();
             assert!(
