@@ -624,7 +624,7 @@ pub enum UpdateError {
     #[error("{0}")]
     Frozen(String),
     /// A command a move needs run failed: a layout step's ([`crate::migrate`]), or a
-    /// service's own upgrade.
+    /// service's migration.
     #[error("{0}")]
     Migration(String),
     /// A service's image would not write its config for this hub ([`crate::contract`]).
@@ -692,77 +692,8 @@ async fn running_version(dir: &std::path::Path, service: &str) -> Option<String>
     crate::docker::image_label(&image, VERSION_LABEL).await
 }
 
-/// What a service's new release did with its `upgrade` job.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Upgraded {
-    /// It ran, or had nothing to do.
-    Done,
-    /// The release ships no such command: nothing of its own to do between versions.
-    None,
-    /// It failed, with what it printed.
-    Failed(String),
-}
-
-/// Reads the answer off the release's `upgrade` job: 0 is done. 2 is the command line not
-/// knowing the job, 126 and 127 a container that cannot run it: there is no upgrade to run.
-/// Anything else is the upgrade failing.
-pub fn upgraded_from(code: Option<i32>, output: &str) -> Upgraded {
-    match code {
-        Some(0) => Upgraded::Done,
-        Some(2 | 126 | 127) => Upgraded::None,
-        _ => Upgraded::Failed(last_lines(output)),
-    }
-}
-
-/// The upgrade the release `service` is about to run ships, if it ships one: the job its image
-/// offers under that name. Asked while the old container still serves: only a release that
-/// has one costs the service a stop.
-async fn its_upgrade(
-    dir: &std::path::Path,
-    config: &crate::config::hub::HubConfig,
-    service: &str,
-) -> Option<crate::contract::Job> {
-    crate::contract::description_of(dir, config, service)
-        .await?
-        .jobs
-        .remove(UPGRADE_JOB)
-}
-
-/// The job a release offers for what it has to do to its data between two versions.
-const UPGRADE_JOB: &str = "upgrade";
 /// The job that lists the migrations a release would apply, and applies none.
 const PLAN_JOB: &str = "plan";
-
-/// Runs the new release's own upgrade — what it has to do to its data between the two
-/// versions, which only it knows — in a container of the new image. The service's own
-/// container is stopped by the caller: the old code must not be writing meanwhile.
-async fn upgrade(
-    dir: &std::path::Path,
-    service: &str,
-    job: &crate::contract::Job,
-    from: &str,
-    to: &str,
-) -> Upgraded {
-    let between = ["--from", from, "--to", to].map(String::from);
-    let output = crate::engine_probe::engine()
-        .async_command()
-        .args(crate::contract::job_command(service, job, &between))
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await;
-    match output {
-        Ok(out) => upgraded_from(
-            out.status.code(),
-            &format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ),
-        ),
-        Err(error) => Upgraded::Failed(error.to_string()),
-    }
-}
 
 /// What an update would do to one service, worked out without changing the hub.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1615,14 +1546,13 @@ async fn apply_on(
     // Asked before anything is stopped or recreated: afterwards the answer is always yes.
     let was_running = running(dir).await;
 
-    // --- migrations, and what each release has to do to its own data ---------------------
+    // --- migrations ----------------------------------------------------------------------
     // A service whose build changes has its database brought to the new release *before*
     // its container is replaced, as a step with an answer — not inside the new container's
-    // start, where a migration that fails is a crash loop somebody notices later. After the
-    // schema, whatever the release itself has to do to its data between the two versions,
-    // which only it knows (its `upgrade` job).
+    // start, where a migration that fails is a crash loop somebody notices later. Whatever
+    // the release has to do to its data is in that one job: its migrations and its setup.
     //
-    // Neither may run while the old code still writes, so everything that writes that
+    // It may not run while the old code still writes, so everything that writes that
     // service's data is stopped first — the service and what moves with it — and all of it
     // happens before a single container is replaced: a failure then still has a hub to go
     // back to, old builds on old files, started again as it was.
@@ -1633,7 +1563,7 @@ async fn apply_on(
             .into_iter()
             .any(|id| config.service(id).host == name)
     };
-    let mut preparing: Vec<(String, Option<(String, String, crate::contract::Job)>)> = Vec::new();
+    let mut preparing: Vec<String> = Vec::new();
     for (service, _) in &moving {
         // The same build as before has nothing to migrate, and is not stopped for it.
         let same_build = builds_before
@@ -1643,18 +1573,7 @@ async fn apply_on(
         if !is_service(service) || same_build {
             continue;
         }
-        let reached = match channels.get(service) {
-            Some(image) => crate::docker::image_label(image, VERSION_LABEL).await,
-            None => None,
-        };
-        let versions = match (running_version(dir, service).await, reached) {
-            // Asked while the old container still serves.
-            (Some(from), Some(to)) if from != to => its_upgrade(dir, &config, service)
-                .await
-                .map(|job| (from, to, job)),
-            _ => None,
-        };
-        preparing.push((service.clone(), versions));
+        preparing.push(service.clone());
     }
     if !preparing.is_empty() {
         let is_up = |name: String| async move {
@@ -1668,7 +1587,7 @@ async fn apply_on(
                 .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
         };
         let mut stopped: Vec<String> = Vec::new();
-        for (service, _) in &preparing {
+        for service in &preparing {
             let writers = moving
                 .iter()
                 .find(|(name, _)| name == service)
@@ -1732,7 +1651,7 @@ async fn apply_on(
                       the database before the failure is not undone — a migration is applied \
                       whole or not at all, the ones before it stay — and the data as it was \
                       is in the backup.";
-        for (service, versions) in &preparing {
+        for service in &preparing {
             step(format!("Migrating {service}'s database"));
             // The job the build about to run declares; one with nothing to prepare has none.
             let migrated = match crate::contract::migrate_job(dir, &config, service).await {
@@ -1759,21 +1678,6 @@ async fn apply_on(
             }
             // Prepared for this build: the start that follows does not do it again.
             crate::contract::prepared_for_its_build(dir, &config, service).await;
-            let Some((from, to, job)) = versions else {
-                continue;
-            };
-            step(format!("{service} upgrades itself from {from} to {to}"));
-            if let Upgraded::Failed(said) = upgrade(dir, service, job, from, to).await {
-                undo(
-                    format!("`{service}` could not upgrade itself from {from} to {to}"),
-                    stopped,
-                )
-                .await;
-                return Err(UpdateError::Migration(format!(
-                    "the update was stopped before anything was replaced: `{service}` \
-                     could not upgrade itself from {from} to {to}. It said:\n{said}\n{undone}"
-                )));
-            }
         }
         if !database_was_up {
             let database = [DB_COMPOSE_SERVICE.to_string()];
@@ -2124,28 +2028,6 @@ mod tests {
         assert_eq!(digest_of("jhnnsrs/rekuest@sha256:abc"), "sha256:abc");
     }
 
-    /// A release with no `upgrade` command has nothing of its own to do; one whose
-    /// upgrade exits anything but 0 has failed.
-    #[test]
-    fn an_upgrade_that_is_not_there_is_not_a_failure() {
-        assert_eq!(upgraded_from(Some(0), "nothing to do"), Upgraded::Done);
-        assert_eq!(
-            upgraded_from(Some(2), "Unknown command: 'upgrade'"),
-            Upgraded::None
-        );
-        assert_eq!(upgraded_from(Some(127), ""), Upgraded::None);
-        assert_eq!(
-            upgraded_from(Some(1), "Traceback\nValueError: bad row"),
-            Upgraded::Failed("Traceback\nValueError: bad row".into())
-        );
-        assert_eq!(
-            upgraded_from(None, "killed"),
-            Upgraded::Failed("killed".into())
-        );
-    }
-
-    /// The tag may be current on this machine while the hub still runs an older build of
-    /// it: what counts is the build written down.
     #[test]
     fn a_hub_pinned_to_an_older_build_than_the_registry_serves_has_an_update() {
         let pins = std::collections::BTreeMap::from([(

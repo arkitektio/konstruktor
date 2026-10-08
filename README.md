@@ -220,10 +220,10 @@ before it is started.
 Some moves need more than new files. A change to the hub itself — a volume, a one-off
 container — is a command written beside the layout it belongs to, run by the update that
 crosses it: before anything is replaced where it can be, so that a failure leaves the hub
-running as it was. A change to a service's own data is that service's: when its version
-changes, `update` stops it, runs the new release's `migrate` job and then its `upgrade` job
-(`--from … --to …`) if it declares one, and starts it. What a service's migrations, jobs and
-upgrades are held to so that this works is written with the contract:
+running as it was. A change to a service's own data is that service's: when its build
+changes, `update` stops it, runs the new release's `migrate` job — its migrations, then its
+setup — and starts it. Nothing is keyed to a version: there is no separate upgrade step. What
+a service's migrations and jobs are held to so that this works is written with the contract:
 [arkitekt-service/docs/migrations-and-jobs.md](https://github.com/arkitektio/arkitekt-service/blob/main/docs/migrations-and-jobs.md).
 
 A pin never moves on its own; that is the point of it. So **`update --infra` also advances

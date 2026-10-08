@@ -28,7 +28,7 @@
 //!   files until they have run.
 //!
 //! What a *service* has to do to its own data when its version changes is not here: that
-//! is the service's, shipped in its image (its `upgrade` job, see `updates`).
+//! is the service's, shipped in its image: its `migrate` job, run by `updates`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
