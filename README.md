@@ -151,9 +151,9 @@ whether the tag has moved and recreates only those services. `--check` reports w
 touching anything.
 
 Updating is the operation that can lose data, so `update` does four things before it
-touches a container. It **backs the hub up first** (`--no-backup` opts out), because every
-service migrates its own database forward when it starts and no image can be moved back
-far enough to undo that. It **holds the infrastructure back** — the database, the cache,
+touches a container. It **backs the hub up first** (`--no-backup` opts out), because an
+update migrates each service's database forward before it starts the new build, and no image
+can be moved back far enough to undo that. It **holds the infrastructure back** — the database, the cache,
 the gateway, the object store — unless asked with `--infra`, since those are where a moved
 image means a store the new binary will not open. It **refuses to move Postgres across a
 major**, comparing what the pulled image declares against what wrote the data on disk, so
@@ -221,8 +221,10 @@ Some moves need more than new files. A change to the hub itself — a volume, a 
 container — is a command written beside the layout it belongs to, run by the update that
 crosses it: before anything is replaced where it can be, so that a failure leaves the hub
 running as it was. A change to a service's own data is that service's: when its version
-changes, `update` stops it, runs the new release's `manage.py upgrade --from … --to …` if
-it ships one, and starts it.
+changes, `update` stops it, runs the new release's `migrate` job and then its `upgrade` job
+(`--from … --to …`) if it declares one, and starts it. What a service's migrations, jobs and
+upgrades are held to so that this works is written with the contract:
+[arkitekt-service/docs/migrations-and-jobs.md](https://github.com/arkitektio/arkitekt-service/blob/main/docs/migrations-and-jobs.md).
 
 A pin never moves on its own; that is the point of it. So **`update --infra` also advances
 pins**: it asks each infrastructure image's registry what versions it publishes, offers the
