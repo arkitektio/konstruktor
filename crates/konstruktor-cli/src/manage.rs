@@ -1816,6 +1816,11 @@ pub struct UpdateArgs {
     /// version, this also offers the newer versions its registry publishes.
     #[arg(long)]
     pub infra: bool,
+    /// Also move services to the newest major their repository publishes. Left out, a
+    /// service stays on the major it runs and a newer one is only told: a major is where
+    /// a service stops reading what it read. `--service` narrows it to one.
+    #[arg(long)]
+    pub major: bool,
     /// Do not back the hub up first. Migrations run on start and are one-way, so this
     /// gives up the only way back.
     #[arg(long)]
@@ -1894,6 +1899,19 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         false => Vec::new(),
     };
 
+    // A newer major of a service is another image, which the profile has to name: taken
+    // with `--major`, and otherwise only told.
+    let majors: Vec<updates::Advance> = wanted
+        .iter()
+        .filter_map(|check| {
+            Some(updates::Advance {
+                service: check.service.clone(),
+                from: check.image.clone(),
+                to: check.major.clone()?,
+            })
+        })
+        .collect();
+
     // Held on the build they run: shown as that, and not among what would be updated.
     let frozen = konstruktor_core::freeze::frozen(&dir);
     let rows: Vec<(String, String)> = wanted
@@ -1923,9 +1941,17 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         .filter(|c| matches!(c.state, UpstreamState::Newer | UpstreamState::Missing))
         .filter(|c| !frozen.contains_key(&c.service))
         .collect();
+    let (majors, advances) = match args.major {
+        true => (Vec::new(), [advances, majors].concat()),
+        false => (majors, advances),
+    };
     let advances: Vec<updates::Advance> = advances
         .into_iter()
         .filter(|advance| !frozen.contains_key(&advance.service))
+        .collect();
+    let majors: Vec<updates::Advance> = majors
+        .into_iter()
+        .filter(|major| !frozen.contains_key(&major.service))
         .collect();
     if !frozen.is_empty() {
         ui::step(&ui::dim(&format!(
@@ -1950,6 +1976,26 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         );
         ui::step(&ui::dim(
             "Applying these rewrites the profile — the pin is what the hub follows.",
+        ));
+        ui::say("");
+    }
+    if !majors.is_empty() {
+        ui::step("A newer major is published for:");
+        ui::table(
+            &majors
+                .iter()
+                .map(|major| {
+                    (
+                        major.service.clone(),
+                        ui::dim(&format!("{} → {}", major.from, major.to)),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        ui::step(&ui::dim(
+            "Left where they are: a major can change what a service reads and offers. \
+             `konstruktor update --major` moves them, `--check --major` says what that \
+             would do.",
         ));
         ui::say("");
     }
@@ -2012,7 +2058,10 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
     }
 
     if stale.is_empty() && advances.is_empty() && pending.is_empty() && owed.is_empty() {
-        ui::ok("Everything is up to date.");
+        ui::ok(match majors.is_empty() {
+            true => "Everything is up to date.",
+            false => "Everything is up to date on the major it runs.",
+        });
         ui::say("");
         return Ok(());
     }
@@ -2040,7 +2089,7 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         // on running the builds written down for it.
         ui::step("Fetching the new releases to ask them (the hub keeps running what it runs)…");
         let services: Vec<String> = names.iter().map(|name| name.to_string()).collect();
-        let previews = updates::preview(&dir, &services, &|event| match event {
+        let previews = updates::preview(&dir, &services, &advances, &|event| match event {
             updates::UpdateEvent::Step { title } => ui::step(&ui::dim(&format!("  {title}…"))),
             updates::UpdateEvent::Warning { message } => ui::warn(&message),
             _ => {}

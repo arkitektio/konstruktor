@@ -308,6 +308,13 @@ pub async fn create_hub(
 ) -> Result<String, String> {
     let cancel = authorizing.begin();
 
+    // A new hub starts on the newest major each service's repository publishes; where a
+    // registry does not answer, on the one this build names.
+    let mut answers = answers;
+    let (mut seeds, _) = konstruktor_core::updates::newest_seeds().await;
+    seeds.append(&mut answers.default_images);
+    answers.default_images = seeds;
+
     let created = create::create_hub(&answers, &cancel, &move |event| {
         // A closed channel means the window went away; the creation still finishes.
         let _ = on_event.send(event);

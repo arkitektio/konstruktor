@@ -1371,13 +1371,14 @@ impl HubConfig {
 /// Where a service image this build seeded would have to be for the files generated now to
 /// be the ones it reads, if it is not there already.
 ///
-/// A service is seeded on a **major** (`jhnnsrs/rekuest:6`), not on `latest`: within a
-/// major a service reads the config it always read, so a hub follows the tag freely, and a
-/// release that reads something else is a new major, which only arrives with a Konstruktor
-/// that generates for it. That is the whole contract between the two, and the catalogue
-/// ([`crate::catalog::Known::image`]) is where it is written down — raising a major there
-/// goes with a new layout
-/// ([`crate::migrate::CURRENT_LAYOUT`]), since older hubs then have to move.
+/// A service runs on a **major** (`jhnnsrs/rekuest:6`), not on `latest`: within a major a
+/// service reads what it always read, so a hub follows the tag freely. The catalogue
+/// ([`crate::catalog::Known::image`]) names the oldest major the files generated now work
+/// with — the floor. A major past it needs nothing from this build: its repository is
+/// asked for it ([`crate::updates::majors`]), a new hub starts on the newest, and a hub
+/// that exists moves there when told to. Only raising the floor, because the files changed
+/// under the services, goes with a new layout ([`crate::migrate::CURRENT_LAYOUT`]): older
+/// hubs then have to move.
 ///
 /// Behind is the seeded repository at `latest` (what earlier Konstruktors seeded) or at an
 /// older major, with or without a digest pinned beside it. Anything else was chosen by
@@ -1398,16 +1399,18 @@ pub fn caught_up_image(id: ServiceId, image: &str) -> Option<String> {
     behind.then(|| supported.to_string())
 }
 
-/// Whether `image` is the one this build generates for: the seeded repository on the
-/// seeded major, or an exact version of that major.
+/// Whether `image` is one this build generates for: the seeded repository on the seeded
+/// major or a later one, or an exact version of either.
 pub fn is_supported_image(id: ServiceId, image: &str) -> bool {
-    let Some((repository, major)) = id.default_image().and_then(|s| s.rsplit_once(':')) else {
+    let Some((repository, floor)) = id.default_image().and_then(|s| s.rsplit_once(':')) else {
         return true;
     };
     let named = image.split('@').next().unwrap_or(image);
-    named
-        .rsplit_once(':')
-        .is_some_and(|(found, tag)| found == repository && tag.split('.').next() == Some(major))
+    named.rsplit_once(':').is_some_and(|(found, tag)| {
+        let major = tag.split('.').next().and_then(|m| m.parse::<u32>().ok());
+        found == repository
+            && major.is_some_and(|major| floor.parse().is_ok_and(|f: u32| major >= f))
+    })
 }
 
 /// The block a service starts with, before its image has been asked anything.

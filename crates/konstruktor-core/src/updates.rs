@@ -45,6 +45,10 @@ pub struct UpstreamCheck {
     pub state: UpstreamState,
     pub remote_digest: Option<String>,
     pub error: Option<String>,
+    /// The image of a newer major its repository publishes, for a service on a major
+    /// ([`majors`]). Told, and never taken unless asked for: `update --major`.
+    #[serde(default)]
+    pub major: Option<String>,
 }
 
 /// One image reference, taken apart the way the engine does it.
@@ -236,6 +240,13 @@ pub async fn for_deployment(dir: &std::path::Path) -> Result<Vec<UpstreamCheck>,
     for found in &mut checks {
         behind_its_pin(found, &pins);
     }
+    if let Ok(profile) = crate::profile::read_profile(dir) {
+        for major in majors(&profile.config).await {
+            if let Some(found) = checks.iter_mut().find(|c| c.service == major.service) {
+                found.major = Some(major.to);
+            }
+        }
+    }
     Ok(checks)
 }
 
@@ -405,6 +416,118 @@ pub async fn advances(config: &HubConfig) -> Vec<Advance> {
         }
     }
     found
+}
+
+// --- a service's next major --------------------------------------------------------------
+//
+// A service runs on a major (`jhnnsrs/bank:4`), and within it an update follows the tag.
+// The major after it is another tag, which no update of the first ever reaches — so the
+// repository is asked which majors it publishes. Nothing here has to know a release to
+// offer it: the image says of itself what it needs and what it runs beside, and an update
+// asks it before anything is recreated.
+//
+// A hub that exists crosses a major only when told to (`update --major`): it is where a
+// service stops reading what it read. A hub being created starts on the newest.
+
+/// The newest major a repository publishes past the one `current` names, as its tag.
+///
+/// Only for a tag that is a major and nothing else (`4`): an exact version (`4.1.0`) or a
+/// name (`latest`, `next`) was chosen by somebody, and is not moved from.
+pub(crate) fn newer_major_tag<'a>(current: &str, available: &'a [String]) -> Option<&'a str> {
+    let now: u64 = current.parse().ok()?;
+    available
+        .iter()
+        .filter_map(|tag| Some((tag, tag.parse::<u64>().ok()?)))
+        .filter(|(_, major)| *major > now)
+        .max_by_key(|(_, major)| *major)
+        .map(|(tag, _)| tag.as_str())
+}
+
+/// The image of the newest major past `image`'s, asked of its registry: `None` when it is
+/// on the newest, or on no major at all. An error is the registry not answering.
+pub async fn newer_major(image: &str) -> Result<Option<String>, String> {
+    let bare = image.split('@').next().unwrap_or(image);
+    let Some((repository, tag)) = bare.rsplit_once(':') else {
+        return Ok(None);
+    };
+    if tag.parse::<u64>().is_err() {
+        return Ok(None);
+    }
+    let available = tags(bare).await?;
+    Ok(newer_major_tag(tag, &available).map(|newer| format!("{repository}:{newer}")))
+}
+
+/// [`newer_major`] of several images at once, by the name each is asked under.
+async fn newer_majors(
+    images: Vec<(String, String)>,
+) -> Vec<(String, String, Result<Option<String>, String>)> {
+    let mut set = JoinSet::new();
+    for (index, (name, image)) in images.into_iter().enumerate() {
+        set.spawn(async move {
+            let found = newer_major(&image).await;
+            (index, (name, image, found))
+        });
+    }
+    let mut results = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(item) = joined {
+            results.push(item);
+        }
+    }
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, found)| found).collect()
+}
+
+/// Every service of this hub with a newer major of itself published.
+///
+/// Of the catalogue's services on the catalogue's repository only: another repository or
+/// a build made here has no majors this could read off a registry.
+pub async fn majors(config: &HubConfig) -> Vec<Advance> {
+    let asked = config
+        .enabled_services()
+        .into_iter()
+        .filter_map(|id| {
+            let block = config.service(id);
+            let image = block.image.clone()?;
+            let (seeded, _) = id.default_image()?.rsplit_once(':')?;
+            let (repository, _) = image.split('@').next()?.rsplit_once(':')?;
+            (repository == seeded).then(|| (block.host.clone(), image))
+        })
+        .collect();
+    newer_majors(asked)
+        .await
+        .into_iter()
+        .filter_map(|(service, from, found)| {
+            Some(Advance {
+                service,
+                from,
+                to: found.ok()??,
+            })
+        })
+        .collect()
+}
+
+/// The images a hub created now is seeded with, where they are not the catalogue's: every
+/// catalogue service whose repository publishes a newer major than the one this build
+/// names. As `(by service, the services whose registry did not answer)` — those start on
+/// the catalogue's major.
+pub async fn newest_seeds() -> (std::collections::BTreeMap<String, String>, Vec<String>) {
+    let asked = crate::catalog::SERVICE_IDS
+        .iter()
+        .filter_map(|id| Some((id.as_str().to_string(), id.default_image()?.to_string())))
+        .collect();
+    let mut newest = std::collections::BTreeMap::new();
+    let mut unanswered = Vec::new();
+    for (service, _, found) in newer_majors(asked).await {
+        match found {
+            Ok(Some(image)) => {
+                newest.insert(service, image);
+            }
+            Ok(None) => {}
+            Err(_) => unanswered.push(service),
+        }
+    }
+    (newest, unanswered)
 }
 
 /// Whether a compose service is infrastructure rather than one of the hub's own services.
@@ -773,17 +896,22 @@ pub fn planned_migrations(output: &str) -> Vec<String> {
 /// would ask it — whether it can be moved to from what runs, beside what else would run —
 /// and has its config written for it into a scratch file and its migrations listed against
 /// the running database, neither of which touches the hub's own files or data.
+///
+/// `advances` are the pins the update would move first, as in [`UpdateRequest::advances`]:
+/// those services are asked as the release they would move to.
 pub async fn preview(
     dir: &std::path::Path,
     services: &[String],
+    advances: &[Advance],
     on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
 ) -> Result<Vec<ServicePreview>, UpdateError> {
-    Box::pin(preview_on(dir, services, on_event)).await
+    Box::pin(preview_on(dir, services, advances, on_event)).await
 }
 
 async fn preview_on(
     dir: &std::path::Path,
     services: &[String],
+    advances: &[Advance],
     on_event: &(dyn Fn(UpdateEvent) + Send + Sync),
 ) -> Result<Vec<ServicePreview>, UpdateError> {
     let step = |title: String| on_event(UpdateEvent::Step { title });
@@ -799,6 +927,9 @@ async fn preview_on(
         for (service, image) in crate::migrate::caught_up_images(&config) {
             config.set_service_image(&service, &image);
         }
+    }
+    for advance in advances {
+        config.set_service_image(&advance.service, &advance.to);
     }
     let channels: std::collections::BTreeMap<String, String> =
         config.stack_images().into_iter().collect();
@@ -1783,6 +1914,7 @@ async fn check_one(local: ImageState) -> UpstreamCheck {
         state,
         remote_digest,
         error,
+        major: None,
     };
 
     if !local.present {
@@ -1948,6 +2080,23 @@ mod tests {
         );
     }
 
+    /// A service on a major is told of the newest one past it; one that somebody put on
+    /// an exact version or a named channel is told nothing.
+    #[test]
+    fn the_next_major_is_the_newest_one_a_repository_publishes() {
+        let available: Vec<String> = ["3", "4", "4.1", "4.1.0", "5", "5.0.0", "10", "latest"]
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+
+        // By number, not by spelling: 10 is past 5.
+        assert_eq!(newer_major_tag("4", &available), Some("10"));
+        assert_eq!(newer_major_tag("10", &available), None);
+        assert_eq!(newer_major_tag("4.1.0", &available), None);
+        assert_eq!(newer_major_tag("latest", &available), None);
+        assert_eq!(newer_major_tag("4", &[]), None);
+    }
+
     #[test]
     fn a_version_is_the_numbers_a_tag_starts_with() {
         assert_eq!(
@@ -2043,6 +2192,7 @@ mod tests {
             state: UpstreamState::Current,
             remote_digest: Some(remote.into()),
             error: None,
+            major: None,
         };
         let mut behind = check("mikro", "sha256:newer");
         behind_its_pin(&mut behind, &pins);

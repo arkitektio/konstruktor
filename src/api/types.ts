@@ -422,6 +422,8 @@ export type UpstreamCheck = {
   state: "current" | "newer" | "missing" | "unknown";
   remote_digest: string | null;
   error: string | null;
+  /** The image of a newer major its repository publishes: told, and only taken when asked. */
+  major: string | null;
 };
 
 /** What the dashboard reads out of a deployment folder. */

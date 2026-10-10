@@ -164,8 +164,10 @@ pub struct Known {
     /// Pre-ticked when nothing else is said.
     pub default: bool,
     pub experimental: bool,
-    /// The image a new hub is seeded with: the repository on a **major**, not on `latest`.
-    /// See [`crate::config::hub::caught_up_image`] for the contract that tag stands for.
+    /// The repository on a **major**, not on `latest`: the oldest major the files this
+    /// build generates work with. A new hub is seeded with it unless its repository
+    /// publishes a later one ([`crate::updates::newest_seeds`]). See
+    /// [`crate::config::hub::caught_up_image`] for the contract that tag stands for.
     pub image: &'static str,
 }
 

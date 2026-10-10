@@ -378,6 +378,7 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         bail!("running services from source checks them out with git, which is not installed");
     }
 
+    let default_images = seeds(json).await?;
     let answers = HubAnswers {
         dir: dir.to_string_lossy().to_string(),
         name,
@@ -409,7 +410,7 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         // `--from-source` for the ones named.
         service_options,
         images: parse_images(&args.images)?,
-        default_images: images_of_the_environment()?,
+        default_images,
         described,
         seed: SeedAnswers {
             organization: args.org.clone(),
@@ -691,6 +692,24 @@ async fn services_of_images(
     args.services = Some(names);
     args.services_of_images = Some(ids);
     Ok(described)
+}
+
+/// The images a hub created now starts on, where they are not the catalogue's: the newest
+/// major each service's repository publishes, and over those what `KONSTRUKTOR_IMAGES`
+/// names.
+async fn seeds(json: bool) -> Result<std::collections::BTreeMap<String, String>> {
+    let named = images_of_the_environment()?;
+    let (mut seeds, unanswered) = konstruktor_core::updates::newest_seeds().await;
+    if !unanswered.is_empty() && !json {
+        ui::warn(&format!(
+            "Could not ask the registry for the newest release of {} — the hub starts on \
+             the one this Konstruktor was built with. `konstruktor update --major` moves \
+             it later.",
+            unanswered.join(", ")
+        ));
+    }
+    seeds.extend(named);
+    Ok(seeds)
 }
 
 /// `KONSTRUKTOR_IMAGES`: the images every hub created while it is set runs, by service.

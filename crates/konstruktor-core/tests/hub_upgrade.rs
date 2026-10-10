@@ -140,7 +140,7 @@ async fn id_of(image: &str) -> String {
 
 /// What the release `service` is on would do to its database, by its own `plan` job.
 async fn planned(dir: &Path, service: &str) -> updates::ServicePreview {
-    let previews = updates::preview(dir, &[service.to_string()], &|_| {})
+    let previews = updates::preview(dir, &[service.to_string()], &[], &|_| {})
         .await
         .expect("the update can be previewed");
     let preview = previews

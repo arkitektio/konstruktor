@@ -54,6 +54,9 @@ use crate::lock;
 ///    Dokuments 2.
 /// 7. Bank 5 and Kuvert 5: their providers and logins are set up in the client, not in
 ///    the config.
+///
+/// A service's next major is no layout: its repository is asked for it
+/// ([`crate::updates::majors`]). A layout is for what changes in the files themselves.
 pub const CURRENT_LAYOUT: u32 = 7;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
@@ -448,6 +451,12 @@ mod tests {
             ServiceId::Rekuest,
             &format!("{seeded}.0.1")
         ));
+        // A major past the one this build names is the repository's to publish, and a hub's
+        // to move to: nothing about it is unknown here.
+        for later in ["jhnnsrs/rekuest:99", "jhnnsrs/rekuest:99.1.0@sha256:abc"] {
+            assert_eq!(caught_up_image(ServiceId::Rekuest, later), None);
+            assert!(is_supported_image(ServiceId::Rekuest, later), "{later}");
+        }
 
         let mut config = config();
         config.service_mut(crate::catalog::ServiceId::Rekuest).image =
