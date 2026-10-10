@@ -260,7 +260,8 @@ enum Command {
     Destroy(manage::DestroyArgs),
 
     // --- konstruktor itself ------------------------------------------------------
-    /// Manage konstruktor itself: `self install` puts it on your PATH.
+    /// Manage konstruktor itself: `self update` installs the newest release of it,
+    /// `self install` puts it on your PATH.
     #[command(name = "self", subcommand)]
     SelfCmd(self_cmd::SelfCommand),
 
@@ -455,7 +456,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Config(command) => config_cmd::run(command).await,
         Command::Job(command) => job_cmd::run(command, json).await,
         Command::Inspect(args) => inspect_cmd::run(args, json).await,
-        Command::SelfCmd(command) => self_cmd::run(command),
+        Command::SelfCmd(command) => self_cmd::run(command).await,
     }
 }
 

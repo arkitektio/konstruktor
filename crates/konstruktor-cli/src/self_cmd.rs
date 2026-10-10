@@ -1,4 +1,8 @@
-//! `konstruktor self install`: put the folder this binary is in on `PATH`, for good.
+//! `konstruktor self`: what Konstruktor does about itself.
+//!
+//! `self update` replaces this binary with a newer release of itself
+//! ([`konstruktor_core::selfupdate`]). `self install` puts the folder this binary is in on
+//! `PATH`, for good:
 //!
 //! The installer drops the binary in `~/.local/bin`, which plenty of machines do not have
 //! on `PATH` — and "add this line to your shell's startup file" is the step people skip,
@@ -7,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
 
 use crate::ui;
@@ -16,6 +20,21 @@ use crate::ui;
 pub enum SelfCommand {
     /// Put konstruktor on your PATH, in every shell this machine is set up for.
     Install(InstallArgs),
+    /// Replace this konstruktor with the newest published release of itself.
+    Update(UpdateArgs),
+}
+
+#[derive(Args)]
+pub struct UpdateArgs {
+    /// Say whether there is a newer release, and change nothing.
+    #[arg(long)]
+    pub check: bool,
+    /// A specific release instead of the newest, e.g. `0.19.0` — also an earlier one.
+    #[arg(long, value_name = "VERSION")]
+    pub version: Option<String>,
+    /// Answer yes to the confirmation. Required when this is not a terminal.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args)]
@@ -25,10 +44,101 @@ pub struct InstallArgs {
     pub dir: Option<PathBuf>,
 }
 
-pub fn run(command: SelfCommand) -> Result<()> {
+pub async fn run(command: SelfCommand) -> Result<()> {
     match command {
         SelfCommand::Install(args) => install(args),
+        SelfCommand::Update(args) => update(args).await,
     }
+}
+
+async fn update(args: UpdateArgs) -> Result<()> {
+    use konstruktor_core::selfupdate::{self, Owner};
+
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .context("finding this binary")?;
+    selfupdate::tidy(&exe);
+
+    ui::say("");
+    let tag = match &args.version {
+        Some(version) => selfupdate::tag_of(version),
+        None => {
+            ui::progress("Asking for the newest release…");
+            let latest = selfupdate::latest().await;
+            ui::end_progress();
+            latest.map_err(|e| anyhow!("could not ask for the newest release: {e}"))?
+        }
+    };
+    let version = selfupdate::version_of(&tag);
+    let current = selfupdate::current();
+
+    if version == current || (args.version.is_none() && !selfupdate::is_newer(version)) {
+        ui::ok(&format!("konstruktor {current} is the newest release."));
+        ui::say("");
+        return Ok(());
+    }
+    ui::step(&format!("konstruktor {} → {}", current, ui::bold(version)));
+
+    // A binary out of a wheel is the environment's: replaced here, the environment would
+    // go on listing the version it installed.
+    if selfupdate::owner(&exe) == Owner::Python {
+        ui::step(&ui::dim(&format!(
+            "This one was installed into a Python environment ({}). Upgrade it there: \
+             `uv tool upgrade konstruktor`, `pipx upgrade konstruktor` or \
+             `pip install --upgrade konstruktor`.",
+            exe.display()
+        )));
+        ui::say("");
+        return Ok(());
+    }
+    if args.check {
+        ui::step(&ui::dim(&match &args.version {
+            Some(asked) => {
+                format!("Run `konstruktor self update --version {asked}` to install it.")
+            }
+            None => "Run `konstruktor self update` to install it.".to_string(),
+        }));
+        ui::say("");
+        return Ok(());
+    }
+
+    if !args.yes {
+        if !ui::is_interactive() {
+            bail!("this replaces {}. Pass --yes to confirm.", exe.display());
+        }
+        let confirmed = inquire::Confirm::new(&format!("Replace {}?", exe.display()))
+            .with_default(true)
+            .prompt()
+            .unwrap_or(false);
+        if !confirmed {
+            ui::say("");
+            ui::step("Left alone.");
+            ui::say("");
+            return Ok(());
+        }
+    }
+
+    ui::progress("Downloading…");
+    let binary = selfupdate::download(&tag).await;
+    ui::end_progress();
+    let binary = binary.map_err(|e| anyhow!("{e}"))?;
+    ui::step("Checksum verified.");
+    selfupdate::replace(&exe, &binary).with_context(|| {
+        format!(
+            "replacing {} — it is as it was. If the folder is not yours to write to, run \
+             this with the rights of whoever installed it",
+            exe.display()
+        )
+    })?;
+    ui::ok(&format!(
+        "konstruktor {version} is installed at {}.",
+        exe.display()
+    ));
+    ui::step(&ui::dim(
+        "Hubs are untouched: `konstruktor update` moves one to what this release brings.",
+    ));
+    ui::say("");
+    Ok(())
 }
 
 /// What fences the block, so a second run finds the first one's instead of adding another.

@@ -68,6 +68,14 @@ whether to create a hub now in `~\MyHubs\<identifier>`. Piped, it reads its opti
 Both installers take the newest *published* release. A release stays a draft until every
 binary and `SHA256SUMS` are attached, so a release whose build failed is never installed.
 
+A machine that has Konstruktor gets the next one with **`konstruktor self update`**: the
+same release the installers would take, checked against the same `SHA256SUMS`, put where
+the running binary is. `--check` only says whether there is one, `--version 0.19.0` takes
+that release instead — an earlier one too. `konstruktor update` says when a newer
+Konstruktor is published, since a service's release may need it. A Konstruktor that came
+from PyPI is upgraded with the tool that installed it (`uv tool upgrade konstruktor`), and
+is told so.
+
 `~/MyHubs` is only a default. A hub folder holds the database and the object store, so it
 can live wherever you want it — `hub create` takes a directory, the way `git init` does,
 and defaults to the one you are standing in. Wherever hubs land, konstruktor keeps its own
@@ -130,6 +138,7 @@ konstruktor forget|purge|destroy [target]
 
 # konstruktor itself
 konstruktor self install        # put it on your PATH
+konstruktor self update         # replace it with the newest release of itself
 ```
 
 `[target]` is a path or a name from `konstruktor list`; left out, it is the deployment you

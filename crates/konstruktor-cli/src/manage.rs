@@ -1849,9 +1849,13 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         ui::say("");
         ui::progress("Asking the registries what has moved…");
     }
-    let checks = updates::for_deployment(&dir)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    // Konstruktor's own release is asked for beside them: a release of a service that
+    // only a newer Konstruktor runs is not among what the registries answer here.
+    let (checks, konstruktor) = tokio::join!(
+        updates::for_deployment(&dir),
+        konstruktor_core::selfupdate::latest()
+    );
+    let checks = checks.map_err(|e| anyhow!("{e}"))?;
     if !json {
         ui::end_progress();
     }
@@ -1934,6 +1938,17 @@ pub async fn update(args: UpdateArgs, json: bool) -> Result<()> {
         .collect();
     ui::table(&rows);
     ui::say("");
+    if let Some(tag) = konstruktor.ok().filter(|tag| {
+        konstruktor_core::selfupdate::is_newer(konstruktor_core::selfupdate::version_of(tag))
+    }) {
+        ui::step(&format!(
+            "A newer Konstruktor is published: {} (this is {}). `konstruktor self update` \
+             installs it.",
+            ui::bold(konstruktor_core::selfupdate::version_of(&tag)),
+            konstruktor_core::selfupdate::current()
+        ));
+        ui::say("");
+    }
 
     // Missing counts: nothing has pulled it yet, so there is something to fetch either way.
     let mut stale: Vec<&updates::UpstreamCheck> = wanted

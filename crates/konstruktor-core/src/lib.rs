@@ -39,6 +39,7 @@ pub mod report;
 pub mod restore;
 pub mod rollback;
 pub mod secrets;
+pub mod selfupdate;
 pub mod services;
 pub mod shutdown;
 pub mod start;
