@@ -282,7 +282,7 @@ const KNOWN: [Known; 12] = [
                   config. Experimental, meant for personal use.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/bank:4",
+        image: "jhnnsrs/bank:5",
     },
     Known {
         id: ServiceId::Kuvert,
@@ -293,7 +293,7 @@ const KNOWN: [Known; 12] = [
                   Experimental.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/kuvert:4",
+        image: "jhnnsrs/kuvert:5",
     },
     Known {
         id: ServiceId::Dokuments,

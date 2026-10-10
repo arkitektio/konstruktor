@@ -52,7 +52,9 @@ use crate::lock;
 ///    ([`crate::contract`]), on the majors that do: Rekuest 7, Mikro 7, Kabinet 6,
 ///    Elektro 5, Alpaka 5, Fluss 4, Bank 4, Kuvert 4, Lovekit 3, Lokate 3, Kraph 2,
 ///    Dokuments 2.
-pub const CURRENT_LAYOUT: u32 = 6;
+/// 7. Bank 5 and Kuvert 5: their providers and logins are set up in the client, not in
+///    the config.
+pub const CURRENT_LAYOUT: u32 = 7;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
 /// taken for unless its files say otherwise.
@@ -126,6 +128,10 @@ pub fn steps() -> Vec<Step> {
         Step::new(
             6,
             "every service writes its own config and prepares its own database, on the releases that do",
+        ),
+        Step::new(
+            7,
+            "Bank and Kuvert follow their 5 releases: providers and logins are set up in the client",
         ),
     ]
 }
@@ -364,7 +370,7 @@ mod tests {
 
         write("services:\n  rekuest: {}\n  rekuest-reaper: {}\n");
         assert_eq!(layout(&dir, &config), 1);
-        assert_eq!(pending(&dir, &config).len(), 5);
+        assert_eq!(pending(&dir, &config).len(), 6);
         assert!(behind(&dir, &config)
             .unwrap()
             .contains("konstruktor update"));
@@ -376,7 +382,7 @@ mod tests {
             "services:\n  rekuest: {}\n  rekuest-takt:\n    environment:\n      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock\n",
         );
         assert_eq!(layout(&dir, &config), 3);
-        assert_eq!(pending(&dir, &config).len(), 3);
+        assert_eq!(pending(&dir, &config).len(), 4);
         std::fs::remove_dir_all(&dir).ok();
     }
 
