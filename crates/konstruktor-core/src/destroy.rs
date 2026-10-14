@@ -240,6 +240,9 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
 /// Blocking, and its output is kept: it is the only thing that explains a failure, and a
 /// failure here stops the delete.
 fn compose_down(dir: &Path) -> Result<(), DeleteError> {
+    // The apps the plugin engine started first: they are no part of the compose project,
+    // and the hub's network cannot go while they are on it.
+    crate::docker::remove_plugin_containers(dir).map_err(DeleteError::ComposeFailed)?;
     let output = crate::docker::command()
         .args(compose::down_everything())
         .current_dir(dir)

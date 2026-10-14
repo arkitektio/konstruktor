@@ -150,11 +150,33 @@ pub struct HubEnvelope {
     pub instances: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub clients: BTreeMap<String, serde_json::Value>,
+    /// The clients the hub asked to be approved with ([`crate::connect::manifest::ClientRequest`]),
+    /// by the request's identifier, with the redeem token each was given. A server from
+    /// before client requests sends none — and approved none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub client_requests: BTreeMap<String, HubClientRequestClaim>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// A client the hub asked for, as the coordination server approved it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubClientRequestClaim {
+    pub redeem_token: String,
+    /// Set once the client has redeemed its token.
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
 impl HubEnvelope {
+    /// Whether the server approved the client the hub asked for as `identifier`, with the
+    /// redeem token it proposed.
+    pub fn approves_client(&self, identifier: &str, redeem_token: &str) -> bool {
+        self.client_requests
+            .get(identifier)
+            .is_some_and(|claim| claim.redeem_token == redeem_token)
+    }
+
     /// The JWKS URL, wherever the server put it: under `self` now, under `auth` on
     /// servers from before the two token responses were given one shape.
     pub fn jwks_url(&self) -> Option<&str> {

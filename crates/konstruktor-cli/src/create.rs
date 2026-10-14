@@ -171,6 +171,12 @@ pub struct CreateArgs {
     /// Write the files, but do not start the containers.
     #[arg(long)]
     pub no_start: bool,
+    /// Leave the plugin engine out: the app that runs, on this machine, the apps the
+    /// organization installs through Kabinet. Without it nothing can be installed here.
+    /// It is only added beside Kabinet and Rekuest, and it is handed this machine's
+    /// container engine socket.
+    #[arg(long)]
+    pub no_plugin_engine: bool,
     /// Do not open a browser for the authorization.
     #[arg(long)]
     pub no_open: bool,
@@ -403,6 +409,7 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         mesh_coord_url: args.mesh_coord_url.clone(),
         mesh_only: args.mesh_only,
         start: !args.no_start,
+        plugin_engine: !args.no_plugin_engine,
         dev_hub: args.dev,
         dev_branch: args.dev_branch.clone(),
         storage: args.storage,

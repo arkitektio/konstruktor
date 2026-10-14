@@ -83,6 +83,9 @@ pub struct AppManifest {
     pub logo: Option<String>,
     /// What the app is asking to be allowed to do.
     pub scopes: Vec<String>,
+    /// The services it needs: the coordination server hands the client their instances.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<crate::connect::manifest::ClientRequirement>,
     /// Which installation this is. A second engine on another machine is a different
     /// instance of the same app.
     pub instance_id: String,
@@ -341,6 +344,7 @@ mod tests {
             description: None,
             logo: None,
             scopes: vec!["read".into()],
+            requirements: vec![],
             instance_id: "my-engine".into(),
             node_id: Some("device".into()),
         }

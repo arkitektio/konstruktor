@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use konstruktor_core::create::identifier_from_folder;
-use konstruktor_core::engine::{create_engine, EngineAnswers, DEPLOYER_IMAGE};
+use konstruktor_core::engine::{create_engine, EngineAnswers, ENGINE_IMAGE};
 
 use tokio_util::sync::CancellationToken;
 
@@ -97,7 +97,7 @@ pub async fn run(args: EngineCreateArgs) -> Result<()> {
         ("folder".into(), answers.dir.clone()),
         ("coordination".into(), answers.coord_server.clone()),
         ("identifier".into(), answers.identifier.clone()),
-        ("runs".into(), DEPLOYER_IMAGE.to_string()),
+        ("runs".into(), ENGINE_IMAGE.to_string()),
     ];
     if let Some(hub) = &answers.hub {
         rows.push(("attached to".into(), hub.clone()));

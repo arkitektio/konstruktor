@@ -418,6 +418,7 @@ def testing_hub(
     user: str = "demo",
     user_password: str | None = None,
     redeem_tokens: int = 1,
+    plugin_engine: bool = False,
     images: Mapping[str, str] | None = None,
     debug: Sequence[str] = (),
     mounts: Mapping[str, str | os.PathLike[str]] | None = None,
@@ -450,6 +451,9 @@ def testing_hub(
         user: The account in it that apps act as.
         user_password: Its password. Generated when left out.
         redeem_tokens: How many apps can connect -- see :meth:`Hub.redeem_token`.
+        plugin_engine: Run the plugin engine beside Kabinet: it is handed this
+            machine's Docker socket and starts the apps the organization installs.
+            Off for a test, which should start nothing it did not ask for.
         images: Images to run instead of the ones a new hub gets, by service.
         debug: Services to run with their development server.
         mounts: Source trees to run instead of what an image holds, by service.
@@ -469,6 +473,7 @@ def testing_hub(
             user=user,
             user_password=user_password,
             redeem_tokens=redeem_tokens,
+            plugin_engine=plugin_engine,
             images=images,
             debug=debug,
             mounts=mounts,
@@ -495,6 +500,7 @@ def local_hub(
     user: str = "demo",
     user_password: str | None = None,
     redeem_tokens: int = 1,
+    plugin_engine: bool = True,
     images: Mapping[str, str] | None = None,
     debug: Sequence[str] = (),
     mounts: Mapping[str, str | os.PathLike[str]] | None = None,
@@ -520,6 +526,8 @@ def local_hub(
             folder's name.
         data_dir: The registry to record the hub in. Defaults to the user's own,
             where the desktop app also sees it.
+        plugin_engine: Run the plugin engine beside Kabinet, as every hub made by
+            hand does.
 
     The other arguments are :func:`testing_hub`'s.
     """
@@ -534,6 +542,7 @@ def local_hub(
             user=user,
             user_password=user_password,
             redeem_tokens=redeem_tokens,
+            plugin_engine=plugin_engine,
             images=images,
             debug=debug,
             mounts=mounts,

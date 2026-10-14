@@ -2,8 +2,8 @@ use serde_norway::{Mapping, Value};
 
 use crate::catalog::ServiceId;
 use crate::config::hub::{
-    HubConfig, LivekitBlock, RunsFrom, ServiceBlock, DB_COMPOSE_SERVICE, LIVEKIT_INTERNAL_PORT,
-    TAKT_SOCKET_DIR, TAKT_SOCKET_PATH, TAKT_SOCKET_VOLUME,
+    HubConfig, LivekitBlock, PluginEngineBlock, RunsFrom, ServiceBlock, DB_COMPOSE_SERVICE,
+    LIVEKIT_INTERNAL_PORT, TAKT_SOCKET_DIR, TAKT_SOCKET_PATH, TAKT_SOCKET_VOLUME,
 };
 use crate::config::mesh::{
     MESH_ENV_FILE, MESH_SOCKET as TAILSCALE_SOCKET, MESH_SOCKET_DIR as TAILSCALE_SOCKET_DIR,
@@ -792,6 +792,18 @@ pub fn build_compose(
         );
     }
 
+    // --- the plugin engine ------------------------------------------------------
+    // Runs the apps the organization installs, beside the hub: it is handed the engine's
+    // socket and starts each app on the hub's network, where the app reaches the hub as
+    // the gateway, as the engine itself does.
+    if let Some(engine) = config.running_plugin_engine() {
+        insert(
+            &mut services,
+            &engine.host,
+            plugin_engine_service(config, engine),
+        );
+    }
+
     // --- volumes and networks -------------------------------------------------
     // Only the mounts that are *not* bind mounts need a named volume declared.
     let mut volumes = Value::Mapping(Mapping::new());
@@ -811,6 +823,9 @@ pub fn build_compose(
     }
     if let Some(reporter) = reporter {
         insert(&mut volumes, &reporter.volume_name, empty_map());
+    }
+    if let Some(engine) = config.running_plugin_engine() {
+        insert(&mut volumes, &engine.volume_name, empty_map());
     }
     if share_socket {
         insert(&mut volumes, TAILSCALE_SOCKET_VOLUME, empty_map());
@@ -832,6 +847,88 @@ pub fn build_compose(
             )]),
         ),
         ("volumes", volumes),
+    ])
+}
+
+/// `secrets/plugin_engine.env`: the engine's redeem token, kept out of the compose file.
+pub const PLUGIN_ENGINE_ENV_FILE: &str = "secrets/plugin_engine.env";
+
+/// Where the engine's session lives inside its container: arkitekt keeps it under the
+/// user's state directory, which `XDG_STATE_HOME` moves onto the volume.
+const PLUGIN_ENGINE_STATE_DIR: &str = "/state";
+
+/// Where the engine logs in, and where it tells the apps it starts to: its own
+/// coordination server on a self-contained hub, reached through the gateway on the hub's
+/// network, and the coordination server the hub was accepted by everywhere else.
+pub fn plugin_engine_fakts_url(config: &HubConfig) -> String {
+    if config.running_lok().is_some() {
+        let scheme = if config.gateway.ssl { "https" } else { "http" };
+        format!("{scheme}://{}", config.gateway.host)
+    } else {
+        config.coord_server.trim().trim_end_matches('/').to_string()
+    }
+}
+
+/// The plugin engine's compose service. See [`PluginEngineBlock`].
+fn plugin_engine_service(config: &HubConfig, engine: &PluginEngineBlock) -> Value {
+    let fakts_url = plugin_engine_fakts_url(config);
+    let mut environment = vec![
+        ("FAKTS_URL", s(&fakts_url)),
+        // What the apps it starts are pointed at: where it logged in itself.
+        ("ARKITEKT_GATEWAY", s(&fakts_url)),
+        ("ARKITEKT_NETWORK", s(&config.internal_network)),
+        ("KABINET_DEPLOYER_ID", s(&engine.deployer_id)),
+        ("ARKITEKT_HEADLESS", s("1")),
+        (
+            "DOCKER_HOST",
+            s(&format!("unix://{}", engine.container_socket)),
+        ),
+        ("XDG_STATE_HOME", s(PLUGIN_ENGINE_STATE_DIR)),
+    ];
+    // The device its token is pinned to: the hub's.
+    if let Some(device_id) = &config.device_id {
+        environment.push(("ARKITEKT_DEVICE_ID", s(device_id)));
+    }
+    // Inside the stack the gateway answers plain HTTP, on a network only the stack's
+    // containers are on; fakts sends a credential there only when told it may.
+    if fakts_url.starts_with("http://") {
+        environment.push(("FAKTS_ALLOW_INSECURE_TRANSPORT", s("1")));
+    }
+
+    let mut depends_on = vec![s(&config.gateway.host)];
+    if let Some(lok) = config.running_lok() {
+        depends_on.push(s(&lok.host));
+    }
+    for id in [ServiceId::Kabinet, ServiceId::Rekuest] {
+        depends_on.push(s(&config.service(id).host));
+    }
+
+    map(vec![
+        ("image", s(&engine.image)),
+        ("command", list(vec![s("arkitekt"), s("run"), s("prod")])),
+        ("environment", map(environment)),
+        (
+            "env_file",
+            list(vec![s(&format!("./{PLUGIN_ENGINE_ENV_FILE}"))]),
+        ),
+        (
+            "volumes",
+            list(vec![
+                s(&format!(
+                    "{}:{}",
+                    engine
+                        .host_socket
+                        .as_deref()
+                        .unwrap_or(&engine.container_socket),
+                    engine.container_socket
+                )),
+                s(&format!("{}:{PLUGIN_ENGINE_STATE_DIR}", engine.volume_name)),
+            ]),
+        ),
+        ("networks", list(vec![s(&config.internal_network)])),
+        ("depends_on", list(depends_on)),
+        // Like the reporter: recover from a crash, never start behind the app's back.
+        ("restart", s("on-failure")),
     ])
 }
 

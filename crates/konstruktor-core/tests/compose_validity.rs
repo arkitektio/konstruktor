@@ -98,6 +98,8 @@ fn docker_accepts_a_meshed_attached_engine() {
     });
     let compose = build_engine_compose(&EngineCompose {
         engine: EngineKind::Docker,
+        deployer_id: "meshed-engine",
+        device_id: Some("device"),
         host_socket: None,
         coord_server: "go.arkitekt.live",
         project: "meshed-engine",
@@ -111,6 +113,13 @@ fn docker_accepts_a_meshed_attached_engine() {
     std::fs::write(
         dir.join("docker-compose.yaml"),
         serde_norway::to_string(&compose).unwrap(),
+    )
+    .unwrap();
+    // The credential the compose file names.
+    std::fs::create_dir_all(dir.join("secrets")).unwrap();
+    std::fs::write(
+        dir.join(konstruktor_core::engine::SECRETS_FILE),
+        "FAKTS_TOKEN=client:refresh\n",
     )
     .unwrap();
 
@@ -151,12 +160,19 @@ fn docker_accepts_a_self_contained_project() {
         eprintln!("skipping self-contained: no docker compose on this machine");
         return;
     }
-    let config = support::hub(&HubConfigOptions {
+    let mut config = support::hub(&HubConfigOptions {
         device_id: "device".into(),
         coord_server: LOCAL_COORD_SERVER.into(),
         https_port: None,
         ..Default::default()
     });
+    // With the plugin engine: its socket, its state volume and its env file.
+    config.plugin_engine = Some(konstruktor_core::config::hub::PluginEngineBlock::new(
+        "lab",
+        "/var/run/docker.sock",
+        None,
+    ));
+    assert!(config.running_plugin_engine().is_some());
     let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("self-contained");

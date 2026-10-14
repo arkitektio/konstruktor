@@ -39,6 +39,8 @@ async fn an_attached_engine_waits_for_its_hubs_network() {
     std::fs::create_dir_all(&dir).unwrap();
     let compose = build_engine_compose(&EngineCompose {
         engine: EngineKind::Docker,
+        deployer_id: "attached-engine",
+        device_id: None,
         host_socket: None,
         coord_server: "go.arkitekt.live",
         project: "attached-engine",

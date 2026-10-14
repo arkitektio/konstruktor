@@ -88,8 +88,15 @@ work the same for all three:
 | | what it is |
 |---|---|
 | `hub` | the services — rekuest, mikro, fluss and the rest — behind a gateway |
-| `engine` | a plugin engine: one deployer container running an organization's plugins |
+| `engine` | a plugin engine on its own: the [plugin engine](https://github.com/arkitektio/plugin_engine) running an organization's plugins on a machine without a hub |
 | `coord` | a coordination server: where users, organizations and permissions live, and what a hub or an engine authorizes against |
+
+A hub with Kabinet and Rekuest runs a plugin engine of its own, beside its services: the
+[plugin engine](https://github.com/arkitektio/plugin_engine) app, handed this machine's
+container engine socket, which starts the apps the organization installs through Kabinet on
+the hub's network. It is approved with the hub, with no second login: the hub's manifest asks
+for it with a redeem token Konstruktor writes into `secrets/plugin_engine.env`.
+`hub create --no-plugin-engine` leaves it out. `down` and `destroy` remove the apps it started.
 
 ```
 # create a deployment

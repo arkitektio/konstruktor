@@ -75,6 +75,14 @@ pub fn generate_hub_files(
         }
     }
 
+    // --- the plugin engine's redeem token, which the compose file only names ----
+    if let Some(engine) = config.running_plugin_engine() {
+        files.insert(
+            compose::PLUGIN_ENGINE_ENV_FILE.to_string(),
+            format!("FAKTS_REDEEM_TOKEN={}\n", engine.redeem_token),
+        );
+    }
+
     // --- Lovekit's media server ------------------------------------------------
     if let Some(livekit) = config.running_livekit() {
         files.insert(

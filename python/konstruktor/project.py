@@ -78,6 +78,10 @@ class KonstruktorProject(BaseModel):
     #: How many redeem tokens to mint. One token serves one app, so this is how
     #: many apps can connect.
     redeem_tokens: int = 1
+    #: Run the plugin engine beside a hub that has Kabinet: the app that starts the
+    #: apps the organization installs, as containers on this machine. It is handed
+    #: the machine's Docker socket, so it is off unless asked for.
+    plugin_engine: bool = False
     #: Images to run instead of the ones a new hub gets, by compose service:
     #: ``{"rekuest": "jhnnsrs/rekuest:1.2.3"}``.
     images: dict[str, str] = Field(default_factory=dict)
@@ -156,6 +160,8 @@ class KonstruktorProject(BaseModel):
             # Starting is `up`'s: the folder is written here and nothing runs yet.
             "--no-start",
         ]
+        if not self.plugin_engine:
+            args.append("--no-plugin-engine")
         for service, image in self.images.items():
             args += ["--image", f"{service}={image}"]
         for service in self.debug:

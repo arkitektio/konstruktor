@@ -1076,6 +1076,18 @@ pub fn down(args: DownArgs) -> Result<()> {
         }
     }
 
+    // The apps the plugin engine started are no part of the compose project: they go
+    // first, or the hub's network stays up under them.
+    let dir = args.target.resolve_any()?.dir;
+    let removed = konstruktor_core::docker::remove_plugin_containers(&dir)
+        .map_err(|e| anyhow!("Could not remove the apps the plugin engine started: {e}"))?;
+    if removed > 0 {
+        ui::say("");
+        ui::step(&format!(
+            "Removed {removed} app container(s) the plugin engine started."
+        ));
+    }
+
     let argv = if args.volumes {
         compose::down_volumes()
     } else {

@@ -122,13 +122,45 @@ pub struct InstanceRequest {
     pub aliases: Vec<StagingAlias>,
 }
 
+/// What a client the hub runs itself is allowed to be: Lok's `Manifest`, as far as the
+/// token it is approved with is pinned to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientManifest {
+    pub identifier: String,
+    /// The coordination server pins the token to no version, so the hub's next release of
+    /// the app logs in on it too.
+    pub version: String,
+    pub scopes: Vec<String>,
+    pub requirements: Vec<ClientRequirement>,
+    /// The device the client runs on, which the token is pinned to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientRequirement {
+    pub key: String,
+    pub service: String,
+}
+
+/// A client the hub runs beside its services and asks to be approved with it — the
+/// plugin engine. Approving the hub gives it a redeem token: the one proposed here, which
+/// Konstruktor has already written into the client's environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientRequest {
+    pub identifier: String,
+    pub description: Option<String>,
+    pub manifest: ClientManifest,
+    pub redeem_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubManifest {
     pub identifier: String,
     pub description: Option<String>,
     pub logo: Option<String>,
     pub instances: Vec<InstanceRequest>,
-    pub clients: Vec<serde_json::Value>,
+    pub clients: Vec<ClientRequest>,
     /// Ask the coordination server to mint a tailnet pre-auth key for this hub while it
     /// accepts it. Whoever approves decides whether to grant one, so the envelope can come
     /// back without a key even when this is set.
@@ -290,6 +322,40 @@ fn livekit_alias(alias: StagingAlias, port: u16) -> StagingAlias {
     }
 }
 
+/// The clients this hub runs itself and asks to be approved with it: the plugin engine,
+/// when it runs one. Approving the hub then approves the engine, with the token the
+/// engine's environment already holds.
+pub fn client_requests(config: &HubConfig, device_id: Option<&str>) -> Vec<ClientRequest> {
+    use crate::config::hub::{
+        PLUGIN_ENGINE_IDENTIFIER, PLUGIN_ENGINE_REQUIREMENTS, PLUGIN_ENGINE_SCOPES,
+    };
+    config
+        .running_plugin_engine()
+        .map(|engine| ClientRequest {
+            identifier: engine.host.clone(),
+            description: Some(
+                "Runs the apps this organization installs, as containers beside the hub"
+                    .to_string(),
+            ),
+            manifest: ClientManifest {
+                identifier: PLUGIN_ENGINE_IDENTIFIER.to_string(),
+                version: engine.version(),
+                scopes: PLUGIN_ENGINE_SCOPES.iter().map(|s| s.to_string()).collect(),
+                requirements: PLUGIN_ENGINE_REQUIREMENTS
+                    .iter()
+                    .map(|(key, service)| ClientRequirement {
+                        key: key.to_string(),
+                        service: service.to_string(),
+                    })
+                    .collect(),
+                device_id: device_id.map(str::to_string),
+            },
+            redeem_token: engine.redeem_token.clone(),
+        })
+        .into_iter()
+        .collect()
+}
+
 pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> HubStartRequest {
     let ssl = config.gateway.ssl;
     let port = advertised_port(config);
@@ -434,7 +500,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             description: options.description.clone(),
             logo: None,
             instances,
-            clients: Vec::new(),
+            clients: client_requests(config, options.node_id.as_deref()),
             request_auth_key: options.request_auth_key,
         },
         expiration_time_seconds: options.expiration_seconds.unwrap_or(600),

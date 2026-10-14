@@ -81,6 +81,11 @@ pub struct HubAnswers {
     /// Run `docker compose up -d` once everything is written.
     #[serde(default = "yes")]
     pub start: bool,
+    /// Run the plugin engine beside the hub, so the apps its organization installs
+    /// through Kabinet run on this machine. Only where Kabinet and Rekuest run; on by
+    /// default. See [`crate::config::hub::PluginEngineBlock`].
+    #[serde(default = "yes")]
+    pub plugin_engine: bool,
     /// Make this a *dev hub*: check every enabled service's repository out into
     /// `mounts/<service>` and mount it over the image's workspace, so the containers run
     /// the source on this machine rather than the code baked into the image. Needs git.
@@ -384,6 +389,17 @@ pub async fn create_hub(
         storage: answers.storage,
         ..Default::default()
     });
+    // The plugin engine, with the socket of the engine on this machine. Before the images,
+    // so `--image plugin_engine=…` reaches it, and before the authorization, whose
+    // manifest asks for it.
+    let engine = crate::engine_probe::engine();
+    add_plugin_engine(
+        &mut config,
+        answers,
+        engine.kind.container_socket(),
+        docker::host_socket(&engine).await,
+    );
+
     // Before the authorization and before anything is generated: the images are part of
     // what the hub *is*, and every later path reads them back out of the profile.
     let defaults = images_this_hub_runs(&config, &answers.default_images);
@@ -705,6 +721,10 @@ async fn authorize_new_hub(
         }
     }
 
+    if let Some(warning) = confirm_plugin_engine(&mut config, &envelope) {
+        on(CreateEvent::Log { line: warning });
+    }
+
     if answers.mesh_only {
         match config.mesh.as_mut() {
             Some(mesh) => mesh.mesh_only = true,
@@ -857,6 +877,8 @@ pub fn preview_files(answers: &HubAnswers) -> Vec<String> {
         storage: answers.storage,
         ..Default::default()
     });
+    let mut config = config;
+    add_plugin_engine(&mut config, answers, "/var/run/docker.sock", None);
     // A preview asks no image anything: it names the files, and those do not depend on
     // what the images say.
     crate::generate::generate_hub_files(
@@ -866,6 +888,46 @@ pub fn preview_files(answers: &HubAnswers) -> Vec<String> {
     )
     .into_keys()
     .collect()
+}
+
+/// Gives the hub its plugin engine, when it was asked for and the hub runs what the engine
+/// needs: Kabinet, whose backend it is, and Rekuest, through which it offers its actions.
+/// Named after the hub, so the apps it starts stay recognisably this hub's.
+pub fn add_plugin_engine(
+    config: &mut HubConfig,
+    answers: &HubAnswers,
+    container_socket: &str,
+    host_socket: Option<String>,
+) {
+    let runs_what_it_needs = config.service(crate::catalog::ServiceId::Kabinet).enabled
+        && config.service(crate::catalog::ServiceId::Rekuest).enabled;
+    if answers.plugin_engine && runs_what_it_needs {
+        config.plugin_engine = Some(crate::config::hub::PluginEngineBlock::new(
+            answers.identifier.trim(),
+            container_socket,
+            host_socket,
+        ));
+    }
+}
+
+/// Keeps the plugin engine only if the coordination server approved it with the hub: a
+/// server from before client requests ignores the request, and an engine whose token it
+/// never heard of would fail its login on every start. Says why it went, when it did.
+pub fn confirm_plugin_engine(
+    config: &mut HubConfig,
+    envelope: &crate::connect::authorize::HubEnvelope,
+) -> Option<String> {
+    let engine = config.running_plugin_engine()?;
+    if envelope.approves_client(&engine.host, &engine.redeem_token) {
+        return None;
+    }
+    config.plugin_engine = None;
+    Some(
+        "The coordination server did not approve the plugin engine with the hub — it \
+         predates hubs asking for clients of their own — so this hub runs without one, and \
+         apps installed through Kabinet have nowhere to run here."
+            .to_string(),
+    )
 }
 
 /// The verdict on the container engine and what to do about it, as text. Worded once, in
@@ -1493,6 +1555,9 @@ pub async fn reauthorize(
     }
 
     enable_reporter(&mut config, &envelope);
+    if let Some(warning) = confirm_plugin_engine(&mut config, &envelope) {
+        on(CreateEvent::Log { line: warning });
+    }
     // Added to, never narrowed: an origin somebody put into the profile by hand stays.
     let mut origins = config.csrf_trusted_origins.take().unwrap_or_default();
     for origin in trusted_origins(&config, &host_names(&hosts)) {

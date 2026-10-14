@@ -688,6 +688,97 @@ impl Default for ReporterBlock {
     }
 }
 
+/// The image of the plugin engine, pinned to a release: the engine starts every app the
+/// organization installs, so it moves only when Konstruktor is released with a new one.
+pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:1.0.1-vanilla";
+
+/// What the plugin engine is registered as: its app identifier, which the token the hub
+/// is approved with is pinned to.
+pub const PLUGIN_ENGINE_IDENTIFIER: &str = "plugin_engine";
+
+/// The scopes the plugin engine is approved with. Rekuest and Kabinet declare both.
+pub const PLUGIN_ENGINE_SCOPES: [&str; 2] = ["read", "write"];
+
+/// The services the plugin engine needs, as `(key, service)`: what its manifest requires,
+/// and so the most its token may be redeemed for.
+pub const PLUGIN_ENGINE_REQUIREMENTS: [(&str, &str); 3] = [
+    ("kabinet", "live.arkitekt.kabinet"),
+    ("rekuest", "live.arkitekt.rekuest"),
+    ("s3", "live.arkitekt.s3"),
+];
+
+/// The plugin engine: the app that runs, as containers on this machine, the apps the
+/// organization installs through Kabinet. It is Kabinet's Docker backend, and the reason
+/// a hub with Kabinet can install anything at all.
+///
+/// An app, not a service: no database, no contract, nothing it is asked. It logs in like
+/// any app, with a redeem token, and the token is one the hub asks for while it is
+/// approved (`ClientRequest`, see [`crate::connect::manifest`]): Konstruktor makes the
+/// secret, writes it into the engine's environment and proposes it, and whoever approves
+/// the hub approves the engine with it. On a self-contained hub the hub's own Lok takes the
+/// same request from the preconfigured manifest.
+///
+/// On by default wherever Kabinet and Rekuest run; `--no-plugin-engine` leaves it out. Like
+/// [`ReporterBlock`] it is omitted entirely rather than written disabled, so a hub without
+/// one generates the files it always did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginEngineBlock {
+    pub enabled: bool,
+    /// The compose service name.
+    pub host: String,
+    pub image: String,
+    /// The redeem token the engine logs in with, proposed to the coordination server with
+    /// the hub's manifest.
+    pub redeem_token: String,
+    /// What marks the containers the engine starts as its own (`KABINET_DEPLOYER_ID`), and
+    /// names its backend in Kabinet: the hub's identifier. It has to outlive the engine's
+    /// container, or every app it started is taken for someone else's when it is recreated.
+    pub deployer_id: String,
+    /// The engine's socket on this machine, when it is not the classic path — a rootless
+    /// daemon serves from `$XDG_RUNTIME_DIR`. Probed once, when the hub is created, so
+    /// generating the files stays a function of the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_socket: Option<String>,
+    /// The socket inside the engine's container: `/var/run/docker.sock`, or Podman's.
+    pub container_socket: String,
+    /// Where the engine keeps its session — a rotating refresh token — across restarts.
+    pub volume_name: String,
+}
+
+impl PluginEngineBlock {
+    pub fn new(deployer_id: &str, container_socket: &str, host_socket: Option<String>) -> Self {
+        Self {
+            enabled: true,
+            host: "plugin_engine".into(),
+            image: PLUGIN_ENGINE_IMAGE.into(),
+            redeem_token: crate::secrets::generate_redeem_token(),
+            deployer_id: deployer_id.to_string(),
+            host_socket,
+            container_socket: container_socket.to_string(),
+            volume_name: "plugin_engine_state".into(),
+        }
+    }
+
+    /// The version of the engine the image is, from its tag (`1.0.1-vanilla` → `1.0.1`),
+    /// for the manifest the hub asks with. The coordination server pins the engine's token
+    /// to no version, so this only has to be a version.
+    pub fn version(&self) -> String {
+        image_version(&self.image)
+    }
+}
+
+/// The app version an image of an arkitekt app is, from its tag: a release's flavour is
+/// tagged `<version>-<flavour>`. `0.0.0` for a tag that is not a version (a channel).
+pub fn image_version(image: &str) -> String {
+    let reference = image.split('@').next().unwrap_or(image);
+    let name_starts = reference.rfind('/').map_or(0, |slash| slash + 1);
+    reference[name_starts..]
+        .rsplit_once(':')
+        .map(|(_, tag)| tag.split('-').next().unwrap_or(tag).to_string())
+        .filter(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .unwrap_or_else(|| "0.0.0".to_string())
+}
+
 /// What `coord_server` says on a hub that runs its own coordination server, the way
 /// `rekuest_server: local` says it runs its own Rekuest.
 pub const LOCAL_COORD_SERVER: &str = "local";
@@ -888,6 +979,10 @@ pub struct HubConfig {
     /// Present once the hub is authorized. See [`ReporterBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reporter: Option<ReporterBlock>,
+    /// Present on a hub that runs the apps its organization installs. See
+    /// [`PluginEngineBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_engine: Option<PluginEngineBlock>,
     /// The hub's services, by name.
     ///
     /// **Every service of the catalogue has a block**, switched on or not: a service that
@@ -1165,6 +1260,16 @@ impl HubConfig {
             .collect()
     }
 
+    /// The plugin engine this stack runs, if it runs one. Only beside Kabinet and Rekuest:
+    /// it is Kabinet's backend, and it offers its actions through Rekuest.
+    pub fn running_plugin_engine(&self) -> Option<&PluginEngineBlock> {
+        self.plugin_engine.as_ref().filter(|engine| {
+            engine.enabled
+                && self.service(ServiceId::Kabinet).enabled
+                && self.service(ServiceId::Rekuest).enabled
+        })
+    }
+
     /// The coordination server this stack runs, if it runs one.
     pub fn running_lok(&self) -> Option<&LokBlock> {
         self.lok.as_ref().filter(|lok| lok.enabled)
@@ -1286,6 +1391,9 @@ impl HubConfig {
         if let Some(reporter) = self.reporter.as_ref().filter(|r| r.enabled) {
             images.push((reporter.host.clone(), reporter.image.clone()));
         }
+        if let Some(engine) = self.running_plugin_engine() {
+            images.push((engine.host.clone(), engine.image.clone()));
+        }
         images
     }
 
@@ -1337,6 +1445,10 @@ impl HubConfig {
         }
         if let Some(reporter) = self.reporter.as_mut().filter(|r| r.host == service) {
             reporter.image = image.to_string();
+            return;
+        }
+        if let Some(engine) = self.plugin_engine.as_mut().filter(|e| e.host == service) {
+            engine.image = image.to_string();
             return;
         }
         if let Some(livekit) = self.livekit.as_mut().filter(|l| l.host == service) {
@@ -1864,6 +1976,8 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         // Added when the hub is authorized; a profile that never was has nothing to log
         // in as.
         reporter: None,
+        // Added by whoever creates the hub: the socket it mounts is this machine's.
+        plugin_engine: None,
         takt_image: None,
         minio: MinioBlock {
             access_key: generate_alpha_numeric_string(40),

@@ -1,8 +1,8 @@
 //! A *plugin engine*: a deployment that runs plugin containers rather than services.
 //!
 //! Where a hub is a stack of Django services with a database and object storage behind a
-//! gateway, an engine is one container — `jhnnsrs/deployer:next` — with the Docker socket
-//! handed to it, so it can start and stop the plugin containers an organization installs
+//! gateway, an engine is one container — the plugin engine app, `arkitektio/plugin_engine` —
+//! with the Docker socket handed to it, so it can start and stop the plugin containers an organization installs
 //! through Kabinet. It is a deployment in every other respect: its own folder, its own
 //! compose project, its own row in the registry, and the same dashboard.
 //!
@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_norway::Value;
 
+use crate::config::hub::{
+    image_version, PLUGIN_ENGINE_IDENTIFIER, PLUGIN_ENGINE_REQUIREMENTS, PLUGIN_ENGINE_SCOPES,
+};
 use crate::config::mesh::{
     build_mesh_block, mesh_hostname, MeshBlock, MeshOptions, MESH_STATE_DIR,
 };
@@ -30,8 +33,8 @@ use crate::generate::write::write_generated_files;
 use crate::generate::GeneratedFiles;
 use crate::registry;
 
-/// The image the engine runs. Pinned by tag, like every other image this app writes.
-pub const DEPLOYER_IMAGE: &str = "jhnnsrs/deployer:next";
+/// The image the engine runs: the plugin engine a hub runs beside itself, too.
+pub const ENGINE_IMAGE: &str = crate::config::hub::PLUGIN_ENGINE_IMAGE;
 
 /// The compose service the engine runs under, and the name its config file is keyed by.
 pub const DEPLOYER_SERVICE: &str = "deployer";
@@ -41,17 +44,21 @@ pub const DEPLOYER_SERVICE: &str = "deployer";
 /// Podman has no `docker.sock` — so it is read off the discovered engine rather than
 /// hardcoded, and passed down explicitly so the generators stay pure.
 
-/// The engine's own config, in the deployment folder and inside the container.
+/// The engine's record: where it was authorized, as what, and the client the grant made.
+/// Not mounted — the container logs in from [`SECRETS_FILE`] — but what [`attach`] reads
+/// back, and what marks a folder as an engine's.
 pub const CONFIG_FILE: &str = "configs/deployer.yaml";
-const CONFIG_MOUNT: &str = "/workspace/config.yaml";
 
-/// What an engine asks to be, when it asks. Reverse-DNS like every Arkitekt manifest.
-const ENGINE_APP_IDENTIFIER: &str = "live.arkitekt.deployer";
-const ENGINE_APP_VERSION: &str = "1.0.0";
+/// The credential the engine logs in with, as its container reads it: `FAKTS_TOKEN`, the
+/// grant's client and refresh token. Spent on the first login; from then on the engine
+/// lives on the rotating chain it keeps in [`STATE_VOLUME`].
+pub const SECRETS_FILE: &str = "secrets/plugin_engine.env";
 
-/// What a deployer needs to be allowed to do: read what it should be running, and say
-/// what it is running.
-const ENGINE_SCOPES: [&str; 2] = ["read", "write"];
+/// Where the engine keeps its session, so a restart does not fall back on the spent
+/// token. arkitekt keeps it under the user's state directory, which `XDG_STATE_HOME`
+/// moves here.
+const STATE_VOLUME: &str = "plugin_engine_state";
+const STATE_DIR: &str = "/state";
 
 /// Everything a front end has to collect for an engine. Flat and serde-friendly, like
 /// [`crate::create::HubAnswers`].
@@ -84,6 +91,12 @@ pub struct EngineAnswers {
 #[derive(Debug, Clone)]
 pub struct EngineCompose<'a> {
     pub engine: EngineKind,
+    /// What marks the plugins as this engine's (`KABINET_DEPLOYER_ID`): the identifier it
+    /// was authorized as. It has to outlive the container, or a recreated engine takes the
+    /// plugins it started for someone else's.
+    pub deployer_id: &'a str,
+    /// The machine, which the engine names itself by (`ARKITEKT_DEVICE_ID`).
+    pub device_id: Option<&'a str>,
     /// The host side of the socket mount, when it is not the engine's usual one — a
     /// rootless daemon on Linux serves from under `$XDG_RUNTIME_DIR`, not `/var/run`.
     pub host_socket: Option<&'a str>,
@@ -135,13 +148,20 @@ pub fn build_engine_compose(compose: &EngineCompose<'_>) -> Value {
         None => format!("{}_default", compose.project),
     };
 
+    let fakts_url = crate::connect::wellknown::base_url(compose.coord_server);
     let mut environment = vec![
-        (
-            "ARKITEKT_GATEWAY",
-            s(&crate::connect::wellknown::base_url(compose.coord_server)),
-        ),
+        ("FAKTS_URL", s(&fakts_url)),
+        // What the plugins it starts are pointed at: where it logged in itself.
+        ("ARKITEKT_GATEWAY", s(&fakts_url)),
         ("ARKITEKT_NETWORK", s(&plugin_network)),
+        ("KABINET_DEPLOYER_ID", s(compose.deployer_id)),
+        ("ARKITEKT_HEADLESS", s("1")),
+        ("DOCKER_HOST", s(&format!("unix://{socket}"))),
+        ("XDG_STATE_HOME", s(STATE_DIR)),
     ];
+    if let Some(device_id) = compose.device_id {
+        environment.push(("ARKITEKT_DEVICE_ID", s(device_id)));
+    }
     if let Some(mesh) = compose.mesh {
         environment.push((
             "ARKITEKT_NETWORK_MODE",
@@ -153,22 +173,22 @@ pub fn build_engine_compose(compose: &EngineCompose<'_>) -> Value {
     }
 
     let mut deployer = vec![
-        ("image", s(DEPLOYER_IMAGE)),
+        ("image", s(ENGINE_IMAGE)),
+        ("command", list(vec![s("arkitekt"), s("run"), s("prod")])),
         ("restart", s("unless-stopped")),
         ("stop_grace_period", s("2s")),
         ("environment", map(environment)),
+        // Its identity: the client and refresh token the device-code flow produced, which
+        // is all the engine needs to get itself an access token from then on.
+        ("env_file", list(vec![s(&format!("./{SECRETS_FILE}"))])),
         (
             "volumes",
             list(vec![
-                // The socket is bind-mounted, not proxied: the deployer starts sibling
+                // The socket is bind-mounted, not proxied: the engine starts sibling
                 // containers on this machine's daemon rather than running a daemon of its
-                // own. Inside the container it stays at the classic path, which is where
-                // the deployer looks.
+                // own. Inside the container it is where `DOCKER_HOST` says.
                 s(&format!("{host}:{socket}")),
-                // Its identity, read-only. This is the file the device-code flow
-                // produced: a client id and a refresh token, which is all the engine
-                // needs to get itself an access token from then on.
-                s(&format!("./{CONFIG_FILE}:{CONFIG_MOUNT}:ro")),
+                s(&format!("{STATE_VOLUME}:{STATE_DIR}")),
             ]),
         ),
     ];
@@ -181,18 +201,17 @@ pub fn build_engine_compose(compose: &EngineCompose<'_>) -> Value {
 
     let mut services = vec![];
     let mut document = vec![];
+    let mut volumes = vec![(STATE_VOLUME, map(vec![]))];
     match compose.mesh {
         Some(mesh) => {
             deployer.push(("network_mode", s(&format!("service:{}", mesh.host))));
             deployer.push(("depends_on", list(vec![s(&mesh.host)])));
             services.push((mesh.host.as_str(), sidecar_service(mesh, joins)));
-            document.push((
-                "volumes",
-                map(vec![(mesh.volume_name.as_str(), map(vec![]))]),
-            ));
+            volumes.push((mesh.volume_name.as_str(), map(vec![])));
         }
         None => deployer.extend(joins),
     }
+    document.push(("volumes", map(volumes)));
     services.insert(0, (DEPLOYER_SERVICE, map(deployer)));
 
     if let Some(network) = compose.hub_network {
@@ -273,6 +292,9 @@ pub fn generate_engine_files(
         CONFIG_FILE.to_string(),
         crate::generate::dump(&build_engine_config(answers, granted, engine)),
     );
+    if let Some(secrets) = engine_secrets(&granted.client_id, granted.refresh_token.as_deref()) {
+        files.insert(SECRETS_FILE.to_string(), secrets);
+    }
     if let Some(mesh) = compose.mesh {
         files.insert(
             MESH_FILE.to_string(),
@@ -282,7 +304,16 @@ pub fn generate_engine_files(
     files
 }
 
-/// The engine's identity, as the container reads it.
+/// [`SECRETS_FILE`]: `FAKTS_TOKEN`, the `client_id:refresh_token` pair arkitekt logs in with.
+/// None without both halves: the token endpoint authenticates the client before it reads
+/// the token.
+fn engine_secrets(client_id: &str, refresh_token: Option<&str>) -> Option<String> {
+    let refresh_token = refresh_token.map(str::trim).filter(|t| !t.is_empty())?;
+    let client_id = client_id.trim();
+    (!client_id.is_empty()).then(|| format!("FAKTS_TOKEN={client_id}:{refresh_token}\n"))
+}
+
+/// The engine's identity, as the grant made it.
 ///
 /// The two values that matter are the ones the grant produced: `client_id` and
 /// `refresh_token`. Together they are a client that can mint its own access tokens for as
@@ -315,8 +346,8 @@ fn build_engine_config(
         (
             "app",
             map(vec![
-                ("identifier", s(ENGINE_APP_IDENTIFIER)),
-                ("version", s(ENGINE_APP_VERSION)),
+                ("identifier", s(PLUGIN_ENGINE_IDENTIFIER)),
+                ("version", s(&image_version(ENGINE_IMAGE))),
                 ("instance_id", s(answers.identifier.trim())),
             ]),
         ),
@@ -330,8 +361,8 @@ fn build_engine_config(
 /// What an engine says about itself when it asks to be let in.
 fn build_engine_manifest(answers: &EngineAnswers, node_id: Option<String>) -> AppManifest {
     AppManifest {
-        identifier: ENGINE_APP_IDENTIFIER.to_string(),
-        version: ENGINE_APP_VERSION.to_string(),
+        identifier: PLUGIN_ENGINE_IDENTIFIER.to_string(),
+        version: image_version(ENGINE_IMAGE),
         description: answers
             .description
             .as_deref()
@@ -339,7 +370,18 @@ fn build_engine_manifest(answers: &EngineAnswers, node_id: Option<String>) -> Ap
             .filter(|d| !d.is_empty())
             .map(str::to_string),
         logo: None,
-        scopes: ENGINE_SCOPES.iter().map(|s| s.to_string()).collect(),
+        scopes: PLUGIN_ENGINE_SCOPES.iter().map(|s| s.to_string()).collect(),
+        // What the engine's own manifest requires: the coordination server hands the
+        // client the instances of these, and the engine finds Kabinet and Rekuest by them.
+        requirements: PLUGIN_ENGINE_REQUIREMENTS
+            .iter()
+            .map(
+                |(key, service)| crate::connect::manifest::ClientRequirement {
+                    key: key.to_string(),
+                    service: service.to_string(),
+                },
+            )
+            .collect(),
         // One engine per machine per name: the identifier the wizard collects is what
         // tells two engines on the same coordination server apart.
         instance_id: answers.identifier.trim().to_string(),
@@ -354,7 +396,7 @@ fn build_engine_manifest(answers: &EngineAnswers, node_id: Option<String>) -> Ap
 /// goes through the app device-code flow — a manifest describing itself, a code somebody
 /// accepts in a browser, and an OAuth2 client in return — rather than the hub manifest
 /// endpoint. The `client_id` and `refresh_token` from that grant are written into
-/// `configs/deployer.yaml` and mounted into the container read-only.
+/// `configs/deployer.yaml`, and handed to the container as `FAKTS_TOKEN`.
 pub async fn create_engine(
     answers: &EngineAnswers,
     cancel: &tokio_util::sync::CancellationToken,
@@ -451,6 +493,8 @@ pub async fn create_engine(
         &granted,
         &EngineCompose {
             engine: engine.kind,
+            deployer_id: answers.identifier.trim(),
+            device_id: Some(&store.device_id),
             host_socket: host_socket.as_deref(),
             coord_server: &answers.coord_server,
             project: &project,
@@ -506,15 +550,16 @@ fn hub_network_of(dir: &Path) -> Result<String, CreateError> {
         })
 }
 
-/// The coordination server an engine was authorized against, out of its own config.
-fn engine_coord_server(dir: &Path) -> Option<String> {
+/// One value of the engine's record, by its path in [`CONFIG_FILE`].
+fn engine_record(dir: &Path, section: &str, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(dir.join(CONFIG_FILE)).ok()?;
     let config: Value = serde_norway::from_str(&text).ok()?;
-    config
-        .get("fakts")?
-        .get("endpoint_url")?
-        .as_str()
-        .map(str::to_string)
+    config.get(section)?.get(key)?.as_str().map(str::to_string)
+}
+
+/// The coordination server an engine was authorized against, out of its own config.
+fn engine_coord_server(dir: &Path) -> Option<String> {
+    engine_record(dir, "fakts", "endpoint_url")
 }
 
 /// Attaches the engine in `dir` to the hub in `hub` — or, with `None`, detaches it.
@@ -542,8 +587,12 @@ pub async fn attach(dir: &Path, hub: Option<&Path>) -> Result<(), CreateError> {
     let project = crate::compose::project_name(&dir.to_string_lossy());
     // On the mesh stays on the mesh: attaching is about which hub network it also joins.
     let mesh = engine_mesh(dir);
+    let deployer_id = engine_record(dir, "app", "instance_id").unwrap_or_else(|| project.clone());
+    let device_id = registry::load().device_id;
     let compose = build_engine_compose(&EngineCompose {
         engine: engine.kind,
+        deployer_id: &deployer_id,
+        device_id: Some(&device_id),
         host_socket: host_socket.as_deref(),
         coord_server: &coord_server,
         project: &project,
@@ -555,6 +604,15 @@ pub async fn attach(dir: &Path, hub: Option<&Path>) -> Result<(), CreateError> {
         "docker-compose.yaml".to_string(),
         crate::generate::dump(&compose),
     );
+    // An engine written before the container read `FAKTS_TOKEN` has its credential only in
+    // its record: the compose file names the file it is in now.
+    if !dir.join(SECRETS_FILE).exists() {
+        let client_id = engine_record(dir, "fakts", "client_id").unwrap_or_default();
+        let refresh_token = engine_record(dir, "fakts", "refresh_token");
+        if let Some(secrets) = engine_secrets(&client_id, refresh_token.as_deref()) {
+            files.insert(SECRETS_FILE.to_string(), secrets);
+        }
+    }
     write_generated_files(dir, &files)?;
     Ok(())
 }
@@ -601,6 +659,8 @@ mod tests {
     fn inputs(hub_network: Option<&str>) -> EngineCompose<'_> {
         EngineCompose {
             engine: EngineKind::Docker,
+            deployer_id: "my-engine",
+            device_id: Some("device"),
             host_socket: None,
             coord_server: "go.arkitekt.live",
             project: "myengine",
@@ -725,7 +785,7 @@ mod tests {
         );
         assert_eq!(
             compose["services"][DEPLOYER_SERVICE]["image"].as_str(),
-            Some(DEPLOYER_IMAGE)
+            Some(ENGINE_IMAGE)
         );
     }
 
@@ -817,7 +877,10 @@ mod tests {
     fn an_engine_is_a_compose_file_and_its_identity() {
         let files = generate_engine_files(&answers(), &granted(), &inputs(None));
         let names: Vec<&str> = files.keys().map(String::as_str).collect();
-        assert_eq!(names, ["configs/deployer.yaml", "docker-compose.yaml"]);
+        assert_eq!(
+            names,
+            ["configs/deployer.yaml", "docker-compose.yaml", SECRETS_FILE]
+        );
     }
 
     /// The guard that keeps a useless engine off the disk.
@@ -836,23 +899,95 @@ mod tests {
     #[test]
     fn the_container_is_handed_the_client_and_the_refresh_token() {
         let files = generate_engine_files(&answers(), &granted(), &inputs(None));
-        let config = &files["configs/deployer.yaml"];
 
-        assert!(config.contains("client_id: engine-client-id"));
-        assert!(config.contains("refresh_token: the-long-lived-one"));
-        assert!(
-            !config.contains("expires-within-the-hour"),
-            "the access token must not be written down"
-        );
-
-        // And it is mounted, or writing it would have been pointless.
-        let compose = build_engine_compose(&inputs(None));
-        let volumes = compose["services"][DEPLOYER_SERVICE]["volumes"]
-            .as_sequence()
-            .expect("volumes");
+        // As arkitekt reads a credential issued earlier: `client_id:refresh_token`.
         assert_eq!(
-            volumes[1].as_str(),
-            Some("./configs/deployer.yaml:/workspace/config.yaml:ro")
+            files[SECRETS_FILE],
+            "FAKTS_TOKEN=engine-client-id:the-long-lived-one\n"
         );
+        for file in files.values() {
+            assert!(
+                !file.contains("expires-within-the-hour"),
+                "the access token must not be written down"
+            );
+        }
+
+        // And the container reads it, or writing it would have been pointless — next to
+        // the session the first login starts, which is what it lives on from then on.
+        let compose = build_engine_compose(&inputs(None));
+        let deployer = &compose["services"][DEPLOYER_SERVICE];
+        assert_eq!(
+            deployer["env_file"][0].as_str(),
+            Some("./secrets/plugin_engine.env")
+        );
+        assert_eq!(
+            deployer["volumes"][1].as_str(),
+            Some("plugin_engine_state:/state")
+        );
+        assert!(compose["volumes"]["plugin_engine_state"].is_mapping());
+        assert_eq!(deployer["command"][0].as_str(), Some("arkitekt"));
+    }
+
+    /// The engine is the plugin engine app, which logs in like any app: from `FAKTS_URL`,
+    /// as the device it is, and keeps its plugins recognisable across a recreate.
+    #[test]
+    fn the_engine_logs_in_where_it_was_authorized_and_names_its_plugins() {
+        let compose = build_engine_compose(&inputs(None));
+        let env = &compose["services"][DEPLOYER_SERVICE]["environment"];
+        assert_eq!(env["FAKTS_URL"].as_str(), Some("https://go.arkitekt.live"));
+        assert_eq!(env["KABINET_DEPLOYER_ID"].as_str(), Some("my-engine"));
+        assert_eq!(env["ARKITEKT_DEVICE_ID"].as_str(), Some("device"));
+        assert_eq!(
+            env["DOCKER_HOST"].as_str(),
+            Some("unix:///var/run/docker.sock")
+        );
+    }
+
+    /// It asks for what it needs: the client is handed the instances of these.
+    #[test]
+    fn the_engine_asks_for_the_services_it_needs() {
+        let manifest = build_engine_manifest(&answers(), None);
+        assert_eq!(manifest.identifier, "plugin_engine");
+        let services: Vec<&str> = manifest
+            .requirements
+            .iter()
+            .map(|r| r.service.as_str())
+            .collect();
+        assert_eq!(
+            services,
+            [
+                "live.arkitekt.kabinet",
+                "live.arkitekt.rekuest",
+                "live.arkitekt.s3"
+            ]
+        );
+    }
+
+    /// An engine from before keeps its credential only in its record; attaching it writes
+    /// the file the new compose file names.
+    #[tokio::test]
+    async fn an_older_engine_is_given_its_credential_file_when_it_is_attached() {
+        let root = std::env::temp_dir().join(format!("konstruktor-older-{}", std::process::id()));
+        let engine_dir = root.join("engine");
+        std::fs::create_dir_all(engine_dir.join("configs")).unwrap();
+        std::fs::write(
+            engine_dir.join(CONFIG_FILE),
+            "fakts:\n  endpoint_url: https://go.arkitekt.live\n  client_id: old\n  refresh_token: chain\napp:\n  instance_id: older\n",
+        )
+        .unwrap();
+
+        attach(&engine_dir, None).await.expect("attached");
+
+        assert_eq!(
+            std::fs::read_to_string(engine_dir.join(SECRETS_FILE)).unwrap(),
+            "FAKTS_TOKEN=old:chain\n"
+        );
+        let text = std::fs::read_to_string(engine_dir.join("docker-compose.yaml")).unwrap();
+        let compose: Value = serde_norway::from_str(&text).unwrap();
+        assert_eq!(
+            compose["services"][DEPLOYER_SERVICE]["environment"]["KABINET_DEPLOYER_ID"].as_str(),
+            Some("older")
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -346,11 +346,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn config() -> HubConfig {
-        build_hub_config(&HubConfigOptions {
+        let mut config = build_hub_config(&HubConfigOptions {
             device_id: "device".into(),
             coord_server: "go.arkitekt.live".into(),
             ..Default::default()
-        })
+        });
+        // Every compose service there can be, the plugin engine included.
+        config.plugin_engine = Some(crate::config::hub::PluginEngineBlock::new(
+            "lab",
+            "/var/run/docker.sock",
+            None,
+        ));
+        assert!(config.running_plugin_engine().is_some());
+        config
     }
 
     fn previous(pins: &[(&str, &str, Option<&str>)]) -> Entry {

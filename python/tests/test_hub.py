@@ -93,6 +93,23 @@ def test_the_seed_is_passed_through(fake_konstruktor, tmp_path: Path) -> None:
     assert len(hub.redeem_tokens) == 3
 
 
+def test_a_testing_hub_starts_no_plugin_engine_unless_asked(fake_konstruktor) -> None:
+    with testing_hub(services=["rekuest", "kabinet"]) as hub:
+        hub.create()
+    with testing_hub(services=["rekuest", "kabinet"], plugin_engine=True) as hub:
+        hub.create()
+
+    left_out, asked = [call for call in fake_konstruktor.calls if call[:2] == ["hub", "create"]]
+    assert "--no-plugin-engine" in left_out
+    assert "--no-plugin-engine" not in asked
+
+
+def test_a_local_hub_runs_the_plugin_engine_as_any_hub_does(fake_konstruktor, tmp_path: Path) -> None:
+    with local_hub(tmp_path / "lab") as hub:
+        hub.create()
+    assert "--no-plugin-engine" not in fake_konstruktor.calls[0]
+
+
 def test_images_are_pinned_by_compose_service(fake_konstruktor, tmp_path: Path) -> None:
     with local_hub(
         tmp_path / "lab",

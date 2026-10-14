@@ -135,6 +135,7 @@ pub fn of(dir: &Path, kind: DeploymentKind, config: Option<&HubConfig>) -> Owned
     match kind {
         DeploymentKind::Engine => {
             files.insert(crate::engine::CONFIG_FILE.to_string());
+            files.insert(crate::engine::SECRETS_FILE.to_string());
             files.insert(crate::engine::MESH_FILE.to_string());
         }
         DeploymentKind::Coord => {

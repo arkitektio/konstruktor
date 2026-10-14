@@ -763,6 +763,50 @@ pub fn command() -> Command {
     engine_probe::command()
 }
 
+/// The label the plugin engine marks the containers it starts with, valued with its
+/// `KABINET_DEPLOYER_ID` — the hub's [`crate::config::hub::PluginEngineBlock::deployer_id`].
+pub const PLUGIN_LABEL: &str = "arkitekt.live.kabinet";
+
+/// Removes the containers the plugin engine of the hub in `dir` started, and says how many.
+///
+/// They are the engine's, not the hub's compose project's, so `compose down` leaves them
+/// running — attached to the hub's network, which it then cannot remove. A hub without an
+/// engine, or a folder without a profile, has none.
+pub fn remove_plugin_containers(dir: &std::path::Path) -> Result<usize, String> {
+    let Ok(profile) = crate::profile::read_profile(dir) else {
+        return Ok(0);
+    };
+    let Some(engine) = profile.config.plugin_engine.as_ref() else {
+        return Ok(0);
+    };
+    let filter = format!("label={PLUGIN_LABEL}={}", engine.deployer_id);
+    let listed = command()
+        .args(["ps", "-aq", "--filter", &filter])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Could not run docker: {e}"))?;
+    if !listed.status.success() {
+        return Err(String::from_utf8_lossy(&listed.stderr).trim().to_string());
+    }
+    let ids: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let removed = command()
+        .args(["rm", "-f"])
+        .args(&ids)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Could not run docker: {e}"))?;
+    if !removed.status.success() {
+        return Err(String::from_utf8_lossy(&removed.stderr).trim().to_string());
+    }
+    Ok(ids.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
