@@ -131,7 +131,8 @@ pub fn build_caddyfile(
         }
     };
 
-    let mut out = String::from("http:// {\n");
+    let mut out = String::from(GLOBAL_OPTIONS);
+    out.push_str("http:// {\n");
     out.push_str(CORS);
     out.push_str(INTERNAL_HOOKS);
 
@@ -188,6 +189,14 @@ pub fn build_caddyfile(
     }
     out
 }
+
+/// The gateway's global options: which HTTP versions its listeners speak.
+///
+/// A hub is served over plain `http://`, where Caddy's default is HTTP/1.1 only. `h2c` is
+/// HTTP/2 without TLS, for the clients that ask for it — curl, gRPC, an HTTP library told
+/// to. Browsers are not among them: they negotiate HTTP/2 only inside TLS, so a web or
+/// Electron client of this site stays on HTTP/1.1 and its six connections per origin.
+const GLOBAL_OPTIONS: &str = "{\n\tservers {\n\t\tprotocols h1 h2 h2c\n\t}\n}\n\n";
 
 /// The response headers every route gets, and the preflight answer — the same set the
 /// Arkitekt lab gateway serves.
