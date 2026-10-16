@@ -144,14 +144,14 @@ pub struct ClientRequirement {
 }
 
 /// A client the hub runs beside its services and asks to be approved with it — the
-/// plugin engine. Approving the hub gives it a redeem token: the one proposed here, which
+/// plugin engine. Approving the hub gives it a mandate key: the one proposed here, which
 /// Konstruktor has already written into the client's environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientRequest {
     pub identifier: String,
     pub description: Option<String>,
     pub manifest: ClientManifest,
-    pub redeem_token: String,
+    pub mandate_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,7 +350,7 @@ pub fn client_requests(config: &HubConfig, device_id: Option<&str>) -> Vec<Clien
                     .collect(),
                 device_id: device_id.map(str::to_string),
             },
-            redeem_token: engine.redeem_token.clone(),
+            mandate_key: engine.mandate_key.clone(),
         })
         .into_iter()
         .collect()

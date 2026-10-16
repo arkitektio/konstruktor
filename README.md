@@ -95,7 +95,7 @@ A hub with Kabinet and Rekuest runs a plugin engine of its own, beside its servi
 [plugin engine](https://github.com/arkitektio/plugin_engine) app, handed this machine's
 container engine socket, which starts the apps the organization installs through Kabinet on
 the hub's network. It is approved with the hub, with no second login: the hub's manifest asks
-for it with a redeem token Konstruktor writes into `secrets/plugin_engine.env`.
+for it with a mandate key Konstruktor writes into `secrets/plugin_engine.env`.
 `hub create --no-plugin-engine` leaves it out. `down` and `destroy` remove the apps it started.
 
 ```
@@ -313,7 +313,7 @@ job or a demo on a laptop needs:
 
 ```
 konstruktor hub create ./hub --server local --services rekuest,mikro \
-  --http-port 7190 --redeem-tokens 3 --yes --json
+  --http-port 7190 --mandate-keys 3 --yes --json
 konstruktor wait ./hub          # until everything a client opens answers
 ```
 
@@ -325,20 +325,20 @@ stack starts out with is yours to say:
 | flag | |
 |---|---|
 | `--org`, `--user`, `--user-password` | the organization, and the account in it that apps act as (`demo` / `demo`, password generated) |
-| `--redeem-tokens N` | how many redeem tokens to mint (1) |
-| `--redeem-token TOKEN` | one to provision as given, for a caller that has to know it beforehand; repeatable |
+| `--mandate-keys N` | how many mandate keys to mint (1) |
+| `--mandate-key TOKEN` | one to provision as given, for a caller that has to know it beforehand; repeatable |
 | `--host`, `--reach`, `--http-port` | where its services are advertised — this machine only (`--reach local-only`) and port 7080 unless said |
 | `--service-image IMAGE` | a hub of exactly the services these images are: each is asked which service it is, so only the image has to be named. Repeatable; in place of `--services`. Rekuest runs only if one of them is Rekuest's |
 | `--image SERVICE=IMAGE` | run a service on another image than a new hub gets; repeatable, and not only for this kind of hub. `KONSTRUKTOR_IMAGES` sets the same for every hub created while it is set |
 
-A **redeem token** is what an app trades for a client of its own, with no browser involved:
+A **mandate key** is what an app trades for a client of its own, with no browser involved:
 point the app at the hub and hand it one.
 
 ```
-FAKTS_URL=http://localhost:7190 FAKTS_REDEEM_TOKEN=… python my_app.py
+FAKTS_URL=http://localhost:7190 FAKTS_MANDATE_KEY=… python my_app.py
 ```
 
-One token serves one app — the coordination server pins it to the first app that redeems
+One key serves one app — the coordination server pins it to the first app that logs in with
 it — so mint as many as there are apps.
 
 Everything needed to connect is written to **`secrets/access.json`** in the hub's folder,

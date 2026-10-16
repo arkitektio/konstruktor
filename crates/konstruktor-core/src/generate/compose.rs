@@ -850,7 +850,7 @@ pub fn build_compose(
     ])
 }
 
-/// `secrets/plugin_engine.env`: the engine's redeem token, kept out of the compose file.
+/// `secrets/plugin_engine.env`: the engine's mandate key, kept out of the compose file.
 pub const PLUGIN_ENGINE_ENV_FILE: &str = "secrets/plugin_engine.env";
 
 /// Where the engine's session lives inside its container: arkitekt keeps it under the

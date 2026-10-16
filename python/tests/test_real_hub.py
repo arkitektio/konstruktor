@@ -13,7 +13,7 @@ pytestmark = pytest.mark.konstruktor
 
 @pytest.fixture(scope="session")
 def hub(konstruktor_hub) -> Hub:
-    return konstruktor_hub(services=["rekuest"], redeem_tokens=1)
+    return konstruktor_hub(services=["rekuest"], mandate_keys=1)
 
 
 def _json(request: urllib.request.Request | str) -> dict:
@@ -21,7 +21,7 @@ def _json(request: urllib.request.Request | str) -> dict:
         return json.load(response)
 
 
-def test_an_app_redeems_a_token_and_rekuest_accepts_it(hub: Hub) -> None:
+def test_an_app_logs_in_with_a_key_and_rekuest_accepts_it(hub: Hub) -> None:
     well_known = _json(f"{hub.fakts_url}/.well-known/fakts")
     # Reachable from here, which the compose-internal name of the coordination
     # server would not be.
@@ -38,8 +38,8 @@ def test_an_app_redeems_a_token_and_rekuest_accepts_it(hub: Hub) -> None:
             well_known["token_endpoint"],
             data=urllib.parse.urlencode(
                 {
-                    "grant_type": "urn:fakts:grant-type:redeem",
-                    "redeem_token": hub.redeem_token("pytest"),
+                    "grant_type": "urn:fakts:grant-type:mandate-key",
+                    "key": hub.mandate_key("pytest"),
                     "manifest": json.dumps(manifest),
                 }
             ).encode(),

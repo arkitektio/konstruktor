@@ -26,7 +26,7 @@ def test_the_fixture_builds_a_hub_and_destroys_it(fake_konstruktor, pytester: py
 
         @pytest.fixture(scope="session")
         def hub(konstruktor_hub):
-            return konstruktor_hub(services=["rekuest", "mikro"], redeem_tokens=2)
+            return konstruktor_hub(services=["rekuest", "mikro"], mandate_keys=2)
 
         def test_first(hub):
             assert set(hub.services) == {"lok", "rekuest", "mikro"}
@@ -37,7 +37,7 @@ def test_the_fixture_builds_a_hub_and_destroys_it(fake_konstruktor, pytester: py
             assert [check.service for check in hub.health_checks] == ["lok", "rekuest", "mikro"]
 
         def test_second(hub):
-            assert hub.redeem_token("a") != hub.redeem_token("b")
+            assert hub.mandate_key("a") != hub.mandate_key("b")
         """
     )
     result = pytester.runpytest_subprocess()

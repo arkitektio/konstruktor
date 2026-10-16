@@ -44,7 +44,7 @@ fn self_contained(services: Vec<ServiceId>) -> HubConfig {
             organization: "acme".into(),
             user: "ada".into(),
             user_password: Some("pass".into()),
-            redeem_tokens: vec!["token-one".into(), "token-two".into()],
+            mandate_keys: vec!["token-one".into(), "token-two".into()],
             key_pair: Some(signing_key()),
         }),
         ..Default::default()
@@ -206,18 +206,21 @@ fn the_seed_names_line_up_the_way_lok_looks_them_up() {
         Value::from("lab")
     );
 
-    let tokens = config["redeem_tokens"].as_sequence().expect("tokens");
-    assert_eq!(tokens.len(), 2);
-    for (token, expected) in tokens.iter().zip(["token-one", "token-two"]) {
-        assert_eq!(token["token"], Value::from(expected));
-        assert_eq!(token["user"], Value::from("ada"));
-        assert_eq!(token["organization"], Value::from("acme"));
-        // `ensuretokens` looks the hub up by this, in that organization.
-        assert_eq!(token["hub"], partner["preconfigured_hub"]["identifier"]);
-        // Present and null: left out, a token expires after 90 days.
-        assert_eq!(token["expires_in_days"], Value::Null);
-        assert_eq!(token["max_redemptions"], Value::Null);
+    let keys = config["mandate_keys"].as_sequence().expect("keys");
+    assert_eq!(keys.len(), 2);
+    let mut names = Vec::new();
+    for (key, expected) in keys.iter().zip(["token-one", "token-two"]) {
+        assert_eq!(key["key"], Value::from(expected));
+        assert_eq!(key["user"], Value::from("ada"));
+        assert_eq!(key["organization"], Value::from("acme"));
+        // `ensuremandates` looks the hub up by this, in that organization.
+        assert_eq!(key["hub"], partner["preconfigured_hub"]["identifier"]);
+        // What the setup job recognises the entry by: stable, and not the key.
+        let name = key["name"].as_str().expect("a name").to_string();
+        assert!(name.starts_with("konstruktor-") && !name.contains(expected));
+        names.push(name);
     }
+    assert_ne!(names[0], names[1]);
 }
 
 #[test]
@@ -430,7 +433,7 @@ fn the_access_document_says_how_to_reach_the_hub() {
     assert_eq!(access["users"][0]["username"], "ada");
     assert_eq!(access["users"][0]["password"], "pass");
     assert_eq!(
-        access["redeem_tokens"],
+        access["mandate_keys"],
         serde_json::json!(["token-one", "token-two"])
     );
     assert_eq!(access["services"]["mikro"]["url"], format!("{base}/mikro"));

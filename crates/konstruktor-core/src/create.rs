@@ -125,7 +125,7 @@ pub struct HubAnswers {
     pub seed: SeedAnswers,
 }
 
-/// The account, the organization and the redeem tokens a self-contained hub's own
+/// The account, the organization and the mandate keys a self-contained hub's own
 /// coordination server starts out with. Everything has a default, so a hub created with
 /// none of it said is still one an app can connect to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,11 +139,11 @@ pub struct SeedAnswers {
     pub user_password: Option<String>,
     /// Tokens to provision as given — for a caller that has to know them beforehand.
     #[serde(default)]
-    pub redeem_tokens: Vec<String>,
+    pub mandate_keys: Vec<String>,
     /// How many more to mint. One app redeems one token, so this is how many apps can
     /// connect unattended.
     #[serde(default = "one")]
-    pub generated_redeem_tokens: usize,
+    pub generated_mandate_keys: usize,
 }
 
 impl Default for SeedAnswers {
@@ -152,8 +152,8 @@ impl Default for SeedAnswers {
             organization: demo(),
             user: demo(),
             user_password: None,
-            redeem_tokens: Vec::new(),
-            generated_redeem_tokens: one(),
+            mandate_keys: Vec::new(),
+            generated_mandate_keys: one(),
         }
     }
 }
@@ -615,13 +615,14 @@ fn validate_self_contained(answers: &HubAnswers) -> Result<(), CreateError> {
             )));
         }
     }
+    // Lok refuses a shorter one: a key is the whole credential.
     if seed
-        .redeem_tokens
+        .mandate_keys
         .iter()
-        .any(|token| token.trim().is_empty())
+        .any(|key| key.trim().chars().count() < 32)
     {
         return Err(CreateError::Answers(
-            "A redeem token cannot be empty.".into(),
+            "A mandate key has at least 32 characters.".into(),
         ));
     }
     Ok(())
@@ -630,14 +631,14 @@ fn validate_self_contained(answers: &HubAnswers) -> Result<(), CreateError> {
 /// The coordination server a self-contained hub starts out with, from the answers.
 fn seeded_lok(answers: &HubAnswers, hosts: &[AdvertisedHost]) -> LokOptions {
     let seed = &answers.seed;
-    let mut redeem_tokens: Vec<String> = seed
-        .redeem_tokens
+    let mut mandate_keys: Vec<String> = seed
+        .mandate_keys
         .iter()
         .map(|token| token.trim().to_string())
         .collect();
-    redeem_tokens.extend(
-        std::iter::repeat_with(crate::secrets::generate_redeem_token)
-            .take(seed.generated_redeem_tokens),
+    mandate_keys.extend(
+        std::iter::repeat_with(crate::secrets::generate_mandate_key)
+            .take(seed.generated_mandate_keys),
     );
     LokOptions {
         hub_identifier: answers.identifier.trim().to_string(),
@@ -645,7 +646,7 @@ fn seeded_lok(answers: &HubAnswers, hosts: &[AdvertisedHost]) -> LokOptions {
         organization: seed.organization.trim().to_string(),
         user: seed.user.trim().to_string(),
         user_password: seed.user_password.clone(),
-        redeem_tokens,
+        mandate_keys,
         key_pair: None,
     }
 }
@@ -918,7 +919,7 @@ pub fn confirm_plugin_engine(
     envelope: &crate::connect::authorize::HubEnvelope,
 ) -> Option<String> {
     let engine = config.running_plugin_engine()?;
-    if envelope.approves_client(&engine.host, &engine.redeem_token) {
+    if envelope.approves_client(&engine.host, &engine.mandate_key) {
         return None;
     }
     config.plugin_engine = None;

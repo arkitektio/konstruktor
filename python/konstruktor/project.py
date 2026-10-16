@@ -75,9 +75,9 @@ class KonstruktorProject(BaseModel):
     user: str = "demo"
     #: Its password. Generated when left out.
     user_password: str | None = None
-    #: How many redeem tokens to mint. One token serves one app, so this is how
+    #: How many mandate keys to mint. One token serves one app, so this is how
     #: many apps can connect.
-    redeem_tokens: int = 1
+    mandate_keys: int = 1
     #: Run the plugin engine beside a hub that has Kabinet: the app that starts the
     #: apps the organization installs, as containers on this machine. It is handed
     #: the machine's Docker socket, so it is off unless asked for.
@@ -153,8 +153,8 @@ class KonstruktorProject(BaseModel):
             self.organization,
             "--user",
             self.user,
-            "--redeem-tokens",
-            str(self.redeem_tokens),
+            "--mandate-keys",
+            str(self.mandate_keys),
             "--no-open",
             "--yes",
             # Starting is `up`'s: the folder is written here and nothing runs yet.

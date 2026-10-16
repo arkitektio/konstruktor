@@ -7,11 +7,11 @@ for the fixture::
 
     @pytest.fixture(scope="session")
     def hub(konstruktor_hub):
-        return konstruktor_hub(services=["rekuest", "mikro"], redeem_tokens=2)
+        return konstruktor_hub(services=["rekuest", "mikro"], mandate_keys=2)
 
     @pytest.mark.konstruktor
     def test_my_app(hub):
-        ...  # connect to hub.fakts_url with hub.redeem_token("my-app")
+        ...  # connect to hub.fakts_url with hub.mandate_key("my-app")
 
 The hub is a :class:`konstruktor.Hub`, entered for the session: started and
 answering when the factory returns it, and open to everything a hub can be asked
@@ -143,7 +143,7 @@ def konstruktor_hub(
 
     Call it with what :func:`konstruktor.testing_hub` takes::
 
-        hub = konstruktor_hub(services=["rekuest", "mikro"], redeem_tokens=2)
+        hub = konstruktor_hub(services=["rekuest", "mikro"], mandate_keys=2)
 
     or, by the images that host the services::
 
@@ -161,7 +161,7 @@ def konstruktor_hub(
         *,
         services: Sequence[str] = ("rekuest",),
         service_images: Sequence[str] = (),
-        redeem_tokens: int = 1,
+        mandate_keys: int = 1,
         images: Mapping[str, str] | None = None,
         debug: Sequence[str] = (),
         mounts: Mapping[str, str | os.PathLike[str]] | None = None,
@@ -179,7 +179,7 @@ def konstruktor_hub(
             organization=organization,
             user=user,
             user_password=user_password,
-            redeem_tokens=redeem_tokens,
+            mandate_keys=mandate_keys,
             images=images,
             debug=debug,
             mounts=mounts,

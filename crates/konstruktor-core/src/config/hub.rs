@@ -700,7 +700,7 @@ pub const PLUGIN_ENGINE_IDENTIFIER: &str = "plugin_engine";
 pub const PLUGIN_ENGINE_SCOPES: [&str; 2] = ["read", "write"];
 
 /// The services the plugin engine needs, as `(key, service)`: what its manifest requires,
-/// and so the most its token may be redeemed for.
+/// and so the most its key may log it in with.
 pub const PLUGIN_ENGINE_REQUIREMENTS: [(&str, &str); 3] = [
     ("kabinet", "live.arkitekt.kabinet"),
     ("rekuest", "live.arkitekt.rekuest"),
@@ -712,7 +712,7 @@ pub const PLUGIN_ENGINE_REQUIREMENTS: [(&str, &str); 3] = [
 /// a hub with Kabinet can install anything at all.
 ///
 /// An app, not a service: no database, no contract, nothing it is asked. It logs in like
-/// any app, with a redeem token, and the token is one the hub asks for while it is
+/// any app, with a mandate key, and the token is one the hub asks for while it is
 /// approved (`ClientRequest`, see [`crate::connect::manifest`]): Konstruktor makes the
 /// secret, writes it into the engine's environment and proposes it, and whoever approves
 /// the hub approves the engine with it. On a self-contained hub the hub's own Lok takes the
@@ -727,9 +727,10 @@ pub struct PluginEngineBlock {
     /// The compose service name.
     pub host: String,
     pub image: String,
-    /// The redeem token the engine logs in with, proposed to the coordination server with
-    /// the hub's manifest.
-    pub redeem_token: String,
+    /// The mandate key the engine logs in with, proposed to the coordination server with
+    /// the hub's manifest. Saved as `redeem_token` by Konstruktor before mandate keys.
+    #[serde(alias = "redeem_token")]
+    pub mandate_key: String,
     /// What marks the containers the engine starts as its own (`KABINET_DEPLOYER_ID`), and
     /// names its backend in Kabinet: the hub's identifier. It has to outlive the engine's
     /// container, or every app it started is taken for someone else's when it is recreated.
@@ -741,7 +742,7 @@ pub struct PluginEngineBlock {
     pub host_socket: Option<String>,
     /// The socket inside the engine's container: `/var/run/docker.sock`, or Podman's.
     pub container_socket: String,
-    /// Where the engine keeps its session — a rotating refresh token — across restarts.
+    /// Where the engine keeps its state across restarts.
     pub volume_name: String,
 }
 
@@ -751,7 +752,7 @@ impl PluginEngineBlock {
             enabled: true,
             host: "plugin_engine".into(),
             image: PLUGIN_ENGINE_IMAGE.into(),
-            redeem_token: crate::secrets::generate_redeem_token(),
+            mandate_key: crate::secrets::generate_mandate_key(),
             deployer_id: deployer_id.to_string(),
             host_socket,
             container_socket: container_socket.to_string(),
@@ -798,21 +799,35 @@ pub struct LokUser {
 /// The organization Lok creates on boot, and registers this hub in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LokOrganization {
-    /// The slug: what a redeem token and a membership name the organization by.
+    /// The slug: what a mandate key and a membership name the organization by.
     pub identifier: String,
     pub name: String,
 }
 
-/// A token an app trades for a client of its own, without anybody accepting anything.
+/// A key an app logs in with, without anybody accepting anything.
 ///
-/// One token serves one app: Lok pins it to the first manifest it is redeemed with, and
+/// One key serves one app: Lok fixes it to the first app that logs in with it, and
 /// refuses a different one afterwards. A deployment that several apps connect to
-/// unattended therefore needs one per app.
+/// unattended therefore needs one per app. It works for as long as it stays in Lok's
+/// config, and is never revived once revoked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LokRedeemToken {
-    pub token: String,
-    /// The account the redeeming app acts as.
+pub struct LokMandateKey {
+    /// Saved as `token` by Konstruktor before mandate keys; the value works as a key.
+    #[serde(alias = "token")]
+    pub key: String,
+    /// The account the app acts as.
     pub user: String,
+}
+
+impl LokMandateKey {
+    /// What Lok's setup job knows the key by: stable for as long as the key is, and
+    /// nothing that gives the key away.
+    pub fn name(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(self.key.as_bytes());
+        let hex: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+        format!("konstruktor-{hex}")
+    }
 }
 
 /// The coordination server, when this hub runs its own — a *self-contained* hub.
@@ -853,7 +868,9 @@ pub struct LokBlock {
     pub advertised_hosts: Vec<AdvertisedHost>,
     pub organization: LokOrganization,
     pub users: Vec<LokUser>,
-    pub redeem_tokens: Vec<LokRedeemToken>,
+    /// Saved as `redeem_tokens` by Konstruktor before mandate keys.
+    #[serde(alias = "redeem_tokens")]
+    pub mandate_keys: Vec<LokMandateKey>,
 }
 
 /// What a front end says about the coordination server a self-contained hub runs.
@@ -866,8 +883,8 @@ pub struct LokOptions {
     pub user: String,
     /// Left out, a strong one is generated.
     pub user_password: Option<String>,
-    /// The redeem tokens to provision, all of them for [`Self::user`].
-    pub redeem_tokens: Vec<String>,
+    /// The mandate keys to provision, all of them for [`Self::user`].
+    pub mandate_keys: Vec<String>,
     /// Injected by the tests; generated fresh otherwise.
     pub key_pair: Option<KeyPair>,
 }
@@ -883,7 +900,7 @@ impl Default for LokOptions {
             organization: "demo".into(),
             user: "demo".into(),
             user_password: None,
-            redeem_tokens: vec![crate::secrets::generate_redeem_token()],
+            mandate_keys: vec![crate::secrets::generate_mandate_key()],
             key_pair: None,
         }
     }
@@ -932,11 +949,11 @@ fn build_lok_block(options: &LokOptions) -> LokBlock {
                 .unwrap_or_else(|| generate_alpha_numeric_string(40)),
             email: None,
         }],
-        redeem_tokens: options
-            .redeem_tokens
+        mandate_keys: options
+            .mandate_keys
             .iter()
-            .map(|token| LokRedeemToken {
-                token: token.clone(),
+            .map(|key| LokMandateKey {
+                key: key.clone(),
                 user: options.user.clone(),
             })
             .collect(),

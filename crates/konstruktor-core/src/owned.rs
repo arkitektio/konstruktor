@@ -48,10 +48,10 @@ const MARKERS: &[&str] = &[
     crate::coord::COORD_CONFIG_FILE,
 ];
 
-/// Which app was handed which of a hub's redeem tokens: written beside the access
+/// Which app was handed which of a hub's mandate keys: written beside the access
 /// document by the Python package (`TAKEN_FILE` in `python/konstruktor/hub.py`), which is
 /// the only thing in a hub's folder that the binary did not write itself.
-const TAKEN_FILE: &str = "secrets/redeem-tokens-taken.json";
+const TAKEN_FILE: &str = "secrets/mandate-keys-taken.json";
 
 /// The folders that are Konstruktor's own by name, whatever kind of deployment this is.
 const TREES: &[&str] = &[".konstruktor", crate::deregister::RESCUE_DIR];

@@ -169,7 +169,7 @@ pub fn secrets_in_deployment(dir: &Path) -> Vec<Secret> {
     for name in [
         crate::credentials::CREDENTIALS_FILENAME,
         crate::hubhealth::STATE_FILENAME,
-        // A self-contained hub's passwords and redeem tokens, as it hands them to scripts.
+        // A self-contained hub's passwords and mandate keys, as it hands them to scripts.
         crate::generate::lok::ACCESS_FILE,
     ] {
         if let Ok(text) = std::fs::read_to_string(dir.join(name)) {

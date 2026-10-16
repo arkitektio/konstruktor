@@ -321,9 +321,9 @@ pub fn generate_rsa_key_pair() -> KeyPair {
     }
 }
 
-/// A redeem token: 32 random bytes, URL-safe base64 without padding — what Python's
+/// A mandate key: 32 random bytes, URL-safe base64 without padding — what Python's
 /// `secrets.token_urlsafe(32)` writes, which is how Lok mints one itself.
-pub fn generate_redeem_token() -> String {
+pub fn generate_mandate_key() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes(32))
 }
 
@@ -397,12 +397,12 @@ mod tests {
     }
 
     #[test]
-    fn redeem_tokens_are_long_and_url_safe() {
-        let token = generate_redeem_token();
+    fn mandate_keys_are_long_and_url_safe() {
+        let token = generate_mandate_key();
         assert_eq!(token.len(), 43);
         assert!(token
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-        assert_ne!(token, generate_redeem_token());
+        assert_ne!(token, generate_mandate_key());
     }
 }

@@ -151,7 +151,7 @@ pub struct HubEnvelope {
     #[serde(default)]
     pub clients: BTreeMap<String, serde_json::Value>,
     /// The clients the hub asked to be approved with ([`crate::connect::manifest::ClientRequest`]),
-    /// by the request's identifier, with the redeem token each was given. A server from
+    /// by the request's identifier, with the mandate key each was given. A server from
     /// before client requests sends none — and approved none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub client_requests: BTreeMap<String, HubClientRequestClaim>,
@@ -159,22 +159,29 @@ pub struct HubEnvelope {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-/// A client the hub asked for, as the coordination server approved it.
+/// A client the hub asked for, as the coordination server approved it. The server never
+/// sends the key back, only its SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubClientRequestClaim {
-    pub redeem_token: String,
-    /// Set once the client has redeemed its token.
+    pub mandate: String,
+    pub key_sha256: String,
+    /// The clients that logged in with the key, one per device.
     #[serde(default)]
-    pub client_id: Option<String>,
+    pub client_ids: Vec<String>,
 }
 
 impl HubEnvelope {
     /// Whether the server approved the client the hub asked for as `identifier`, with the
-    /// redeem token it proposed.
-    pub fn approves_client(&self, identifier: &str, redeem_token: &str) -> bool {
+    /// mandate key it proposed.
+    pub fn approves_client(&self, identifier: &str, mandate_key: &str) -> bool {
+        use sha2::{Digest, Sha256};
+        let digest: String = Sha256::digest(mandate_key.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         self.client_requests
             .get(identifier)
-            .is_some_and(|claim| claim.redeem_token == redeem_token)
+            .is_some_and(|claim| claim.key_sha256 == digest)
     }
 
     /// The JWKS URL, wherever the server put it: under `self` now, under `auth` on

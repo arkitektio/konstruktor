@@ -53,7 +53,7 @@ if args[:2] == ["hub", "create"]:
         "organization": flag("--org"),
         "admin": {{"username": "admin", "password": "admin-pass"}},
         "users": [{{"username": flag("--user"), "password": "user-pass"}}],
-        "redeem_tokens": ["token-%d" % i for i in range(int(flag("--redeem-tokens")))],
+        "mandate_keys": ["token-%d" % i for i in range(int(flag("--mandate-keys")))],
         "services": {{
             name: {{
                 "identifier": "live.arkitekt." + name,

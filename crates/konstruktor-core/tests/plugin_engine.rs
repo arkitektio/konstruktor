@@ -17,7 +17,7 @@ mod support;
 
 // The plugin engine: the app that runs, beside a hub, the apps its organization installs
 // through Kabinet. It is approved with the hub: the hub's manifest asks for it with a
-// redeem token Konstruktor made, and the same token is in the engine's environment.
+// mandate key Konstruktor made, and the same token is in the engine's environment.
 
 const DOCKER_SOCKET: &str = "/var/run/docker.sock";
 
@@ -54,7 +54,7 @@ fn self_contained(services: Vec<ServiceId>) -> HubConfig {
             organization: "acme".into(),
             user: "ada".into(),
             user_password: Some("pass".into()),
-            redeem_tokens: vec!["token-one".into()],
+            mandate_keys: vec!["token-one".into()],
             key_pair: Some(signing_key()),
         }),
         ..Default::default()
@@ -160,14 +160,14 @@ fn a_rootless_daemons_socket_is_mounted_where_the_engine_looks() {
 }
 
 #[test]
-fn the_redeem_token_is_in_a_file_of_its_own_and_not_in_the_compose_file() {
+fn the_mandate_key_is_in_a_file_of_its_own_and_not_in_the_compose_file() {
     let config = with_engine(remote(kabinet_hub()));
-    let token = &config.plugin_engine.as_ref().unwrap().redeem_token;
+    let token = &config.plugin_engine.as_ref().unwrap().mandate_key;
     let files = files_of(&config);
 
     assert_eq!(
         files[PLUGIN_ENGINE_ENV_FILE],
-        format!("FAKTS_REDEEM_TOKEN={token}\n")
+        format!("FAKTS_MANDATE_KEY={token}\n")
     );
     assert!(!files["docker-compose.yaml"].contains(token.as_str()));
     assert_eq!(
@@ -195,8 +195,8 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
     };
     assert_eq!(client.identifier, "plugin_engine");
     assert_eq!(
-        client.redeem_token,
-        config.plugin_engine.as_ref().unwrap().redeem_token
+        client.mandate_key,
+        config.plugin_engine.as_ref().unwrap().mandate_key
     );
     assert_eq!(client.manifest.identifier, PLUGIN_ENGINE_IDENTIFIER);
     assert_eq!(client.manifest.version, "1.0.1");
@@ -217,18 +217,18 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
         ]
     );
     // Lok refuses a proposed secret shorter than this.
-    assert!(client.redeem_token.len() >= 32);
+    assert!(client.mandate_key.len() >= 32);
 }
 
 #[test]
 fn a_self_contained_hubs_own_lok_approves_the_engine_on_boot() {
     let config = with_engine(self_contained(kabinet_hub()));
     let lok = config.running_lok().unwrap();
-    let token = config.plugin_engine.as_ref().unwrap().redeem_token.clone();
+    let token = config.plugin_engine.as_ref().unwrap().mandate_key.clone();
 
     let hub = preconfigured_hub(&config, lok, &support::said());
     assert_eq!(hub.clients.len(), 1);
-    assert_eq!(hub.clients[0].redeem_token, token);
+    assert_eq!(hub.clients[0].mandate_key, token);
 
     // Over the hub's own network, in plain HTTP, which fakts has to be told it may use.
     let environment = engine_of(&config)["environment"].clone();
@@ -242,7 +242,7 @@ fn a_self_contained_hubs_own_lok_approves_the_engine_on_boot() {
 
     // The engine's token is the hub's, not one of the tokens handed to apps.
     let access = build_access(&config, lok);
-    assert_eq!(access["redeem_tokens"], serde_json::json!(["token-one"]));
+    assert_eq!(access["mandate_keys"], serde_json::json!(["token-one"]));
 }
 
 #[test]
@@ -341,6 +341,12 @@ fn the_profile_keeps_the_engine_and_regenerates_the_same_files() {
     assert_eq!(files_of(&read_back), files_of(&config));
 }
 
+/// What the coordination server names an approved key by: never the key itself.
+fn sha256_hex(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(key.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn envelope(client_requests: serde_json::Value) -> HubEnvelope {
     serde_json::from_value(serde_json::json!({
         "token_type": "Bearer",
@@ -354,9 +360,9 @@ fn envelope(client_requests: serde_json::Value) -> HubEnvelope {
 #[test]
 fn an_engine_the_server_approved_with_the_hub_is_kept() {
     let mut config = with_engine(remote(kabinet_hub()));
-    let token = config.plugin_engine.as_ref().unwrap().redeem_token.clone();
+    let key = config.plugin_engine.as_ref().unwrap().mandate_key.clone();
     let approved = envelope(serde_json::json!({
-        "plugin_engine": {"redeem_token": token, "client_id": null}
+        "plugin_engine": {"mandate": "1", "key_sha256": sha256_hex(&key), "client_ids": []}
     }));
 
     assert_eq!(confirm_plugin_engine(&mut config, &approved), None);
@@ -369,7 +375,7 @@ fn an_engine_the_server_approved_with_the_hub_is_kept() {
 fn an_engine_the_server_never_approved_is_left_out_and_says_so() {
     for answer in [
         serde_json::json!({}),
-        serde_json::json!({"plugin_engine": {"redeem_token": "another-secret"}}),
+        serde_json::json!({"plugin_engine": {"mandate": "1", "key_sha256": sha256_hex("another-secret")}}),
     ] {
         let mut config = with_engine(remote(kabinet_hub()));
         let warning = confirm_plugin_engine(&mut config, &envelope(answer));

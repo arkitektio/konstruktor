@@ -20,12 +20,12 @@ it, reads back what it wrote, and hands you the result as a
 ```python
 from konstruktor import testing_hub
 
-with testing_hub(services=["rekuest", "mikro"], redeem_tokens=2) as hub:
+with testing_hub(services=["rekuest", "mikro"], mandate_keys=2) as hub:
     hub.up()                        # written, then started
     hub.wait_ready()                # until everything a client opens answers
 
     hub.fakts_url                   # http://localhost:<port> — where an app is pointed
-    hub.redeem_token("my-app")      # what the app trades for a client, with no browser
+    hub.mandate_key("my-app")      # what the app trades for a client, with no browser
     hub.services["mikro"].url       # http://localhost:<port>/mikro
 # gone: containers, data and folder
 ```
@@ -78,7 +78,7 @@ an `a`-prefixed async twin (`await hub.aup()`, `async with hub:`).
 
 These run on a loop the block owns, so they need the block. Outside of a `with` — in a
 fixture, a notebook — `hub.enter()` and `hub.exit()` are the two halves of it. How to get
-in (`fakts_url`, `redeem_token`, `services`, ...) is read from the hub's folder and works
+in (`fakts_url`, `mandate_key`, `services`, ...) is read from the hub's folder and works
 anywhere.
 
 ### Developing a service against a hub
@@ -97,23 +97,23 @@ changes. The folder is written the first time and used as it is from then on.
 
 ### Connecting an app
 
-Connecting an app to it takes the address and a redeem token:
+Connecting an app to it takes the address and a mandate key:
 
 ```python
 from arkitekt import App, connect
 
 app = App("my-app", "0.1.0", services=[...])
-with connect(app, url=hub.fakts_url, redeem_token=hub.redeem_token("my-app")) as runtime:
+with connect(app, url=hub.fakts_url, mandate_key=hub.mandate_key("my-app")) as runtime:
     ...
 ```
 
 or, for an app in another process, `hub.env("my-app")` — `FAKTS_URL` and
-`FAKTS_REDEEM_TOKEN`. An app in a container on the hub's own docker network points at
+`FAKTS_MANDATE_KEY`. An app in a container on the hub's own docker network points at
 `http://gateway` instead: the hub can be logged into at any address it answers on.
 
-**One redeem token serves one app.** The coordination server pins a token to the first app
-that redeems it, so `redeem_tokens=` is how many apps can connect, and
-`hub.redeem_token(name)` hands each name its own.
+**One mandate key serves one app.** The coordination server pins a token to the first app
+that logs in with it, so `mandate_keys=` is how many apps can connect, and
+`hub.mandate_key(name)` hands each name its own.
 
 To run a particular build of a service rather than the one a new hub gets, pin it by its
 name in the stack: `testing_hub(..., images={"rekuest": "jhnnsrs/rekuest:1.2.3"})`.
@@ -128,7 +128,7 @@ import pytest
 
 @pytest.fixture(scope="session")
 def hub(konstruktor_hub):
-    return konstruktor_hub(services=["rekuest", "mikro"], redeem_tokens=2)
+    return konstruktor_hub(services=["rekuest", "mikro"], mandate_keys=2)
 
 
 @pytest.mark.konstruktor

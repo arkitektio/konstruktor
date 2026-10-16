@@ -23,11 +23,11 @@ from konstruktor._binary import find_konstruktor_bin
 from konstruktor.project import ACCESS_FILE, KonstruktorError, KonstruktorProject
 from konstruktor.runs import hub_dir, registry_dir, runs_dir
 
-#: Where this package writes down which app was handed which redeem token. Beside the
+#: Where this package writes down which app was handed which mandate key. Beside the
 #: access document, because it is as secret, and in the hub's folder, because it is the
 #: hub's: a token is pinned to its app by the coordination server, for as long as the hub
 #: lives and whichever process asks.
-TAKEN_FILE = "secrets/redeem-tokens-taken.json"
+TAKEN_FILE = "secrets/mandate-keys-taken.json"
 
 #: How long a test hub's teardown may take before leaving the block gives up on it.
 #: A hub is a dozen containers and their volumes, not the one or two of a compose file
@@ -35,8 +35,8 @@ TAKEN_FILE = "secrets/redeem-tokens-taken.json"
 TEARDOWN_TIMEOUT = 300.0
 
 
-class NoRedeemTokenLeftError(LookupError):
-    """Every redeem token of the hub is already taken by another app."""
+class NoMandateKeyLeftError(LookupError):
+    """Every mandate key of the hub is already taken by another app."""
 
 
 class HubNotCreatedError(RuntimeError):
@@ -93,9 +93,9 @@ class Access:
     admin: Account
     #: The accounts apps act as. The first one owns the organization.
     users: tuple[Account, ...]
-    #: Every redeem token there is. Prefer :meth:`Hub.redeem_token`, which hands
+    #: Every mandate key there is. Prefer :meth:`Hub.mandate_key`, which hands
     #: each app its own.
-    redeem_tokens: tuple[str, ...]
+    mandate_keys: tuple[str, ...]
     services: Mapping[str, Service]
 
     @classmethod
@@ -110,13 +110,13 @@ class Access:
             organization=access["organization"],
             admin=Account(**access["admin"]),
             users=tuple(Account(**user) for user in access["users"]),
-            redeem_tokens=tuple(access["redeem_tokens"]),
+            mandate_keys=tuple(access["mandate_keys"]),
             services={name: Service(name=name, **service) for name, service in access["services"].items()},
         )
 
 
 def _read_taken(directory: Path) -> dict[str, str]:
-    """Which app was handed which redeem token, as written down in the hub's folder."""
+    """Which app was handed which mandate key, as written down in the hub's folder."""
     try:
         taken = json.loads((directory / TAKEN_FILE).read_text())
     except (OSError, ValueError):
@@ -140,7 +140,7 @@ class Hub(Deployment):
         with testing_hub(services=["mikro", "rekuest"]) as hub:
             hub.up()            # written, then started
             hub.wait_ready()    # until every endpoint a client opens answers
-            hub.fakts_url, hub.redeem_token("my-app")
+            hub.fakts_url, hub.mandate_key("my-app")
             hub.ps(); hub.logs("mikro"); hub.exec("mikro", "python manage.py check")
 
     Starting, stopping and removing are ``konstruktor``'s commands of the same
@@ -149,7 +149,7 @@ class Hub(Deployment):
     dokker's, on the compose project in the hub's folder.
 
     The methods run on a loop the block owns, so they need the block (or
-    :meth:`enter`). How to get in -- :attr:`fakts_url`, :meth:`redeem_token`,
+    :meth:`enter`). How to get in -- :attr:`fakts_url`, :meth:`mandate_key`,
     :attr:`services` and the rest of the access document -- is read from the
     folder and works anywhere.
     """
@@ -250,36 +250,36 @@ class Hub(Deployment):
         return self.access.users
 
     @property
-    def redeem_tokens(self) -> tuple[str, ...]:
-        """Every redeem token there is. Prefer :meth:`redeem_token`."""
-        return self.access.redeem_tokens
+    def mandate_keys(self) -> tuple[str, ...]:
+        """Every mandate key there is. Prefer :meth:`mandate_key`."""
+        return self.access.mandate_keys
 
     @property
     def services(self) -> Mapping[str, Service]:
         """The hub's services as they are reached through the gateway, by name."""
         return self.access.services
 
-    def redeem_token(self, app: str) -> str:
-        """The redeem token of the app called ``app``: the same one every time.
+    def mandate_key(self, app: str) -> str:
+        """The mandate key of the app called ``app``: the same one every time.
 
-        A redeem token serves one app -- the coordination server pins it to the
-        first manifest it is redeemed with and refuses another -- so each app
+        A mandate key serves one app -- the coordination server fixes it to the
+        first app that logs in with it and refuses another -- so each app
         that connects needs its own. ``app`` is only a name to remember the
         choice by; it need not be the app's identifier.
 
         Raises:
-            NoRedeemTokenLeftError: If every token is taken. Create the hub with
-                more ``redeem_tokens``.
+            NoMandateKeyLeftError: If every token is taken. Create the hub with
+                more ``mandate_keys``.
         """
         # Read again: another process may have taken one since this hub was loaded.
         self._taken = {**_read_taken(self.directory), **self._taken}
         if app not in self._taken:
-            free = [token for token in self.redeem_tokens if token not in self._taken.values()]
+            free = [token for token in self.mandate_keys if token not in self._taken.values()]
             if not free:
-                raise NoRedeemTokenLeftError(
-                    f"All {len(self.redeem_tokens)} redeem token(s) of this hub are taken "
+                raise NoMandateKeyLeftError(
+                    f"All {len(self.mandate_keys)} mandate key(s) of this hub are taken "
                     f"(by {', '.join(sorted(self._taken))}), and one token serves one app. "
-                    "Create the hub with more `redeem_tokens`."
+                    "Create the hub with more `mandate_keys`."
                 )
             self._taken[app] = free[0]
             _write_taken(self.directory, self._taken)
@@ -288,10 +288,10 @@ class Hub(Deployment):
     def env(self, app: str) -> dict[str, str]:
         """What to put in an app's environment so it connects to this hub unattended.
 
-        ``FAKTS_URL`` and ``FAKTS_REDEEM_TOKEN``, the latter :meth:`redeem_token`
+        ``FAKTS_URL`` and ``FAKTS_MANDATE_KEY``, the latter :meth:`mandate_key`
         of ``app``.
         """
-        return {"FAKTS_URL": self.fakts_url, "FAKTS_REDEEM_TOKEN": self.redeem_token(app)}
+        return {"FAKTS_URL": self.fakts_url, "FAKTS_MANDATE_KEY": self.mandate_key(app)}
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -417,7 +417,7 @@ def testing_hub(
     organization: str = "demo",
     user: str = "demo",
     user_password: str | None = None,
-    redeem_tokens: int = 1,
+    mandate_keys: int = 1,
     plugin_engine: bool = False,
     images: Mapping[str, str] | None = None,
     debug: Sequence[str] = (),
@@ -430,7 +430,7 @@ def testing_hub(
 
     ::
 
-        with testing_hub(service_images=["jhnnsrs/mikro:7"], redeem_tokens=2) as hub:
+        with testing_hub(service_images=["jhnnsrs/mikro:7"], mandate_keys=2) as hub:
             hub.up()
             hub.wait_ready()
             ...
@@ -450,7 +450,7 @@ def testing_hub(
         organization: The organization the coordination server starts with.
         user: The account in it that apps act as.
         user_password: Its password. Generated when left out.
-        redeem_tokens: How many apps can connect -- see :meth:`Hub.redeem_token`.
+        mandate_keys: How many apps can connect -- see :meth:`Hub.mandate_key`.
         plugin_engine: Run the plugin engine beside Kabinet: it is handed this
             machine's Docker socket and starts the apps the organization installs.
             Off for a test, which should start nothing it did not ask for.
@@ -472,7 +472,7 @@ def testing_hub(
             organization=organization,
             user=user,
             user_password=user_password,
-            redeem_tokens=redeem_tokens,
+            mandate_keys=mandate_keys,
             plugin_engine=plugin_engine,
             images=images,
             debug=debug,
@@ -499,7 +499,7 @@ def local_hub(
     organization: str = "demo",
     user: str = "demo",
     user_password: str | None = None,
-    redeem_tokens: int = 1,
+    mandate_keys: int = 1,
     plugin_engine: bool = True,
     images: Mapping[str, str] | None = None,
     debug: Sequence[str] = (),
@@ -541,7 +541,7 @@ def local_hub(
             organization=organization,
             user=user,
             user_password=user_password,
-            redeem_tokens=redeem_tokens,
+            mandate_keys=mandate_keys,
             plugin_engine=plugin_engine,
             images=images,
             debug=debug,
@@ -563,7 +563,7 @@ __all__ = [
     "Hub",
     "HubNotCreatedError",
     "KonstruktorError",
-    "NoRedeemTokenLeftError",
+    "NoMandateKeyLeftError",
     "Service",
     "local_hub",
     "testing_hub",

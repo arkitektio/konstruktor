@@ -69,10 +69,10 @@ def test_a_local_hub_is_stopped_kept_and_found_again(tmp_path: Path) -> None:
     project = folder.name
 
     try:
-        with local_hub(folder, services=["rekuest"], redeem_tokens=2, data_dir=registry) as hub:
+        with local_hub(folder, services=["rekuest"], mandate_keys=2, data_dir=registry) as hub:
             hub.up()
             hub.wait_ready(300)
-            address, token = hub.fakts_url, hub.redeem_token("first")
+            address, token = hub.fakts_url, hub.mandate_key("first")
             assert "running" in _states(project)
 
         # Stopped, not removed: the containers are there, and so is everything in the folder.
@@ -83,8 +83,8 @@ def test_a_local_hub_is_stopped_kept_and_found_again(tmp_path: Path) -> None:
         with Hub.load(folder, data_dir=registry) as again:
             # The same hub: its address, and which app holds which token.
             assert again.fakts_url == address
-            assert again.redeem_token("first") == token
-            assert again.redeem_token("second") != token
+            assert again.mandate_key("first") == token
+            assert again.mandate_key("second") != token
 
             again.pull()
             again.up()

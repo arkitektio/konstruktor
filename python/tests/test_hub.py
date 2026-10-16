@@ -13,7 +13,7 @@ from konstruktor import (
     HubNotCreatedError,
     KonstruktorError,
     KonstruktorNotFoundError,
-    NoRedeemTokenLeftError,
+    NoMandateKeyLeftError,
     find_konstruktor_bin,
     free_port,
     local_hub,
@@ -79,7 +79,7 @@ def test_the_seed_is_passed_through(fake_konstruktor, tmp_path: Path) -> None:
         organization="acme",
         user="ada",
         user_password="pass",
-        redeem_tokens=3,
+        mandate_keys=3,
     ) as hub:
         hub.create()
     create = fake_konstruktor.calls[0]
@@ -87,10 +87,10 @@ def test_the_seed_is_passed_through(fake_konstruktor, tmp_path: Path) -> None:
     assert flag(create, "--org") == "acme"
     assert flag(create, "--user") == "ada"
     assert flag(create, "--user-password") == "pass"
-    assert flag(create, "--redeem-tokens") == "3"
+    assert flag(create, "--mandate-keys") == "3"
     assert hub.identifier == "lab-hub"
     assert hub.organization == "acme"
-    assert len(hub.redeem_tokens) == 3
+    assert len(hub.mandate_keys) == 3
 
 
 def test_a_testing_hub_starts_no_plugin_engine_unless_asked(fake_konstruktor) -> None:
@@ -188,35 +188,35 @@ def test_not_answering_in_time_is_an_error(
     assert flag(wait, "--timeout") == "5"
 
 
-def test_every_app_gets_a_redeem_token_of_its_own(fake_konstruktor, tmp_path: Path) -> None:
-    with local_hub(tmp_path / "lab", redeem_tokens=2) as hub:
+def test_every_app_gets_a_mandate_key_of_its_own(fake_konstruktor, tmp_path: Path) -> None:
+    with local_hub(tmp_path / "lab", mandate_keys=2) as hub:
         hub.create()
 
     # How to get in is read from the folder: it needs no block.
-    greeter = hub.redeem_token("greeter")
-    caller = hub.redeem_token("caller")
+    greeter = hub.mandate_key("greeter")
+    caller = hub.mandate_key("caller")
     assert greeter != caller
-    # And keeps it: an app that reconnects has to redeem the same one again.
-    assert hub.redeem_token("greeter") == greeter
-    assert hub.env("caller") == {"FAKTS_URL": hub.fakts_url, "FAKTS_REDEEM_TOKEN": caller}
+    # And keeps it: an app that reconnects has to log in with the same one again.
+    assert hub.mandate_key("greeter") == greeter
+    assert hub.env("caller") == {"FAKTS_URL": hub.fakts_url, "FAKTS_MANDATE_KEY": caller}
 
-    with pytest.raises(NoRedeemTokenLeftError, match="more `redeem_tokens`"):
-        hub.redeem_token("one too many")
+    with pytest.raises(NoMandateKeyLeftError, match="more `mandate_keys`"):
+        hub.mandate_key("one too many")
 
 
 def test_a_token_stays_with_its_app_for_whoever_opens_the_hub_again(fake_konstruktor, tmp_path: Path) -> None:
-    """The coordination server pins a token to the app that redeemed it, for as long as the
+    """The coordination server pins a key to the app that logged in with it, for as long as the
     hub lives: so which app has which is written down in the hub, not kept in one process."""
-    with local_hub(tmp_path / "lab", redeem_tokens=2) as hub:
+    with local_hub(tmp_path / "lab", mandate_keys=2) as hub:
         hub.create()
-    greeter = hub.redeem_token("greeter")
+    greeter = hub.mandate_key("greeter")
 
     again = Hub.load(tmp_path / "lab")
-    assert again.redeem_token("greeter") == greeter
-    assert again.redeem_token("caller") != greeter
+    assert again.mandate_key("greeter") == greeter
+    assert again.mandate_key("caller") != greeter
     # And the first one learns of what the second took.
-    with pytest.raises(NoRedeemTokenLeftError):
-        hub.redeem_token("one too many")
+    with pytest.raises(NoMandateKeyLeftError):
+        hub.mandate_key("one too many")
 
 
 def test_a_testing_hub_is_gone_after_its_block(fake_konstruktor) -> None:
@@ -293,7 +293,7 @@ def test_a_loaded_hub_is_left_as_it_is(fake_konstruktor, tmp_path: Path) -> None
     with Hub.load(tmp_path / "lab") as loaded:
         loaded.up()
         assert loaded.gateway_url == created.gateway_url
-        assert loaded.redeem_tokens == created.redeem_tokens
+        assert loaded.mandate_keys == created.mandate_keys
     assert verbs(fake_konstruktor) == ["hub", "up"]
 
 

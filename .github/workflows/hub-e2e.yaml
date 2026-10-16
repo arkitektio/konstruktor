@@ -66,7 +66,7 @@ jobs:
         run: docker ps -a
 
   # A self-contained hub — one that runs its own coordination server — started and then
-  # *used*: a redeem token traded for an access token, and a service accepting it. First
+  # *used*: a mandate key traded for an access token, and a service accepting it. First
   # from Rust, against the generator; then from Python, against the wheel, which is how
   # every other repository's integration tests reach it.
   hub-local:

@@ -24,7 +24,7 @@ pub struct CreateArgs {
     pub name: Option<String>,
     /// The coordination server this hub answers to. `local` runs one in this stack: a
     /// self-contained hub, which nobody has to accept and which needs no network — see
-    /// `--org`, `--user` and `--redeem-tokens` for what it starts out with.
+    /// `--org`, `--user` and `--mandate-keys` for what it starts out with.
     #[arg(long)]
     pub server: Option<String>,
     /// The hub's name inside the organization that accepts it.
@@ -154,14 +154,14 @@ pub struct CreateArgs {
     /// Left out, a strong one is generated.
     #[arg(long)]
     pub user_password: Option<String>,
-    /// With `--server local`: a redeem token to provision as given. Repeatable. An app
+    /// With `--server local`: a mandate key to provision as given. Repeatable. An app
     /// trades one for a client without anybody accepting it — one token per app.
-    #[arg(long = "redeem-token", value_name = "TOKEN")]
-    pub redeem_token: Vec<String>,
-    /// With `--server local`: how many redeem tokens to mint, besides any given. They are
+    #[arg(long = "mandate-key", value_name = "TOKEN")]
+    pub mandate_key: Vec<String>,
+    /// With `--server local`: how many mandate keys to mint, besides any given. They are
     /// written to `secrets/access.json` with everything else an app needs to connect.
     #[arg(long, default_value_t = 1, value_name = "N")]
-    pub redeem_tokens: usize,
+    pub mandate_keys: usize,
     /// Print what would be written and stop. Nothing is created, no image is fetched or
     /// asked anything, and the coordination server is never contacted — so an unattended
     /// invocation can be rehearsed safely. Creating for real asks every image what it is
@@ -423,8 +423,8 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
             organization: args.org.clone(),
             user: args.user.clone(),
             user_password: args.user_password.clone(),
-            redeem_tokens: args.redeem_token.clone(),
-            generated_redeem_tokens: args.redeem_tokens,
+            mandate_keys: args.mandate_key.clone(),
+            generated_mandate_keys: args.mandate_keys,
         },
     };
 
@@ -489,7 +489,7 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
     if created.config.running_lok().is_some() {
         ui::step(&ui::dim(&format!(
             "Runs its own coordination server. How to reach it — the address, the account \
-             and the redeem tokens — is in {}.",
+             and the mandate keys — is in {}.",
             konstruktor_core::generate::lok::ACCESS_FILE
         )));
     }

@@ -75,11 +75,11 @@ pub fn generate_hub_files(
         }
     }
 
-    // --- the plugin engine's redeem token, which the compose file only names ----
+    // --- the plugin engine's mandate key, which the compose file only names ----
     if let Some(engine) = config.running_plugin_engine() {
         files.insert(
             compose::PLUGIN_ENGINE_ENV_FILE.to_string(),
-            format!("FAKTS_REDEEM_TOKEN={}\n", engine.redeem_token),
+            format!("FAKTS_MANDATE_KEY={}\n", engine.mandate_key),
         );
     }
 

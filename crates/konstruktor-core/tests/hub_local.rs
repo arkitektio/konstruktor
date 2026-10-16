@@ -152,7 +152,7 @@ async fn an_app_redeems_a_token_and_a_service_accepts_it() {
         .as_str()
         .expect("a fakts url")
         .to_string();
-    let redeem_token = access["redeem_tokens"][0].as_str().expect("a redeem token");
+    let mandate_key = access["mandate_keys"][0].as_str().expect("a mandate key");
 
     let client = reqwest::Client::new();
     let well_known: serde_json::Value = client
@@ -210,7 +210,7 @@ async fn an_app_redeems_a_token_and_a_service_accepts_it() {
     assert_eq!(in_network["token_endpoint"], "http://gateway/lok/o/token/");
     assert_eq!(in_network["issuer"], "lok");
 
-    // --- an app trades its redeem token for a client ---------------------------
+    // --- an app trades its mandate key for a client ---------------------------
     let manifest = serde_json::json!({
         "identifier": "live.arkitekt.konstruktor.e2e",
         "version": "1.0.0",
@@ -223,8 +223,8 @@ async fn an_app_redeems_a_token_and_a_service_accepts_it() {
     let redeemed = client
         .post(token_endpoint)
         .form(&[
-            ("grant_type", "urn:fakts:grant-type:redeem"),
-            ("redeem_token", redeem_token),
+            ("grant_type", "urn:fakts:grant-type:mandate-key"),
+            ("key", mandate_key),
             ("manifest", &manifest.to_string()),
         ])
         .send()

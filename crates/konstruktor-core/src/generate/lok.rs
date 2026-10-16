@@ -4,7 +4,7 @@
 //! Everything a hub otherwise gets from a coordination server by being accepted is
 //! written here instead, into Lok's own config, as what Lok starts out with: an account
 //! and an organization to act in, the hub's manifest as a *preconfigured* hub that every
-//! new organization is given, and redeem tokens an app trades for a client without anybody
+//! new organization is given, and mandate keys an app logs in with without anybody
 //! approving anything. Lok's `migrate` applies them, in that order, as part of preparing
 //! its database ([`crate::contract::prepare_databases`]) — before it is started, so a Lok
 //! that answers has them.
@@ -278,21 +278,18 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
             ),
         ),
         (
-            "redeem_tokens",
+            "mandate_keys",
             list(
-                lok.redeem_tokens
+                lok.mandate_keys
                     .iter()
-                    .map(|token| {
+                    .map(|mandate| {
                         map(vec![
-                            ("token", s(&token.token)),
-                            ("user", s(&token.user)),
+                            // What Lok's setup job recognises the entry by across runs.
+                            ("name", s(&mandate.name())),
+                            ("key", s(&mandate.key)),
+                            ("user", s(&mandate.user)),
                             ("organization", s(&organization.identifier)),
                             ("hub", s(&lok.hub_identifier)),
-                            // Both default to a limit, and both are spelt out as none: the
-                            // tokens are this deployment's own, in a file only its owner
-                            // reads, and an app that restarts redeems again.
-                            ("expires_in_days", Value::Null),
-                            ("max_redemptions", Value::Null),
                         ])
                     })
                     .collect(),
@@ -395,7 +392,7 @@ pub fn gateway_url(config: &HubConfig, lok: &LokBlock) -> String {
 /// A self-contained hub is made to be driven — by a test suite, a script, a CI job — and
 /// none of those can read a person's summary off a terminal. This is that summary as
 /// data: where the gateway is, where an app points its `FAKTS_URL`, the account and the
-/// organization it acts in, and the redeem tokens it can trade for a client. Derived
+/// organization it acts in, and the mandate keys an app logs in with. Derived
 /// from the profile and nothing else, so it is rewritten with every other generated file
 /// and can never say something the stack does not.
 pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
@@ -450,7 +447,7 @@ pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
             "username": user.username,
             "password": user.password,
         })).collect::<Vec<_>>(),
-        "redeem_tokens": lok.redeem_tokens.iter().map(|t| t.token.clone()).collect::<Vec<_>>(),
+        "mandate_keys": lok.mandate_keys.iter().map(|m| m.key.clone()).collect::<Vec<_>>(),
         "services": services,
     })
 }

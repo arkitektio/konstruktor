@@ -5,11 +5,11 @@ package ships, writes and runs::
 
     from konstruktor import testing_hub
 
-    with testing_hub(services=["rekuest", "mikro"], redeem_tokens=2) as hub:
+    with testing_hub(services=["rekuest", "mikro"], mandate_keys=2) as hub:
         hub.up()
         hub.wait_ready()
         hub.fakts_url                  # where an app is pointed
-        hub.redeem_token("my-app")     # what it trades for a client, unattended
+        hub.mandate_key("my-app")     # what it trades for a client, unattended
         hub.ps(); hub.logs("mikro")    # and what its services are doing
     # gone, with its data and its folder
 
@@ -29,7 +29,7 @@ from konstruktor.hub import (
     Hub,
     HubNotCreatedError,
     KonstruktorError,
-    NoRedeemTokenLeftError,
+    NoMandateKeyLeftError,
     Service,
     local_hub,
     testing_hub,
@@ -51,7 +51,7 @@ __all__ = [
     "KonstruktorError",
     "KonstruktorNotFoundError",
     "KonstruktorProject",
-    "NoRedeemTokenLeftError",
+    "NoMandateKeyLeftError",
     "Service",
     "find_konstruktor_bin",
     "free_port",
