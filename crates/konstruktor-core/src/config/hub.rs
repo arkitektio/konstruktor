@@ -825,7 +825,11 @@ impl LokMandateKey {
     pub fn name(&self) -> String {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(self.key.as_bytes());
-        let hex: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+        let hex: String = digest
+            .iter()
+            .take(6)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         format!("konstruktor-{hex}")
     }
 }

@@ -344,7 +344,10 @@ fn the_profile_keeps_the_engine_and_regenerates_the_same_files() {
 /// What the coordination server names an approved key by: never the key itself.
 fn sha256_hex(key: &str) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(key.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(key.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn envelope(client_requests: serde_json::Value) -> HubEnvelope {
