@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use konstruktor_core::catalog::ServiceId;
 use konstruktor_core::config::hub::{HubConfig, HubConfigOptions};
 use konstruktor_core::contract::{
-    self, marks, owes_catalogue, Description, Descriptor, Hosts, Job, Said, Signal, Structure,
-    CATALOGUE_JOB,
+    self, marks, owes_catalogue, Description, Descriptor, Hosts, Job, Reach, Said, Signal,
+    Structure, CATALOGUE_JOB,
 };
 use konstruktor_core::generate::IssuedIdentity;
 use konstruktor_core::lock::{self, Rendering};
@@ -34,6 +34,7 @@ fn mikro_hosts() -> Hosts {
                 kind: "INT".into(),
                 description: Some("How many channels it has".into()),
             }],
+            reaches: Vec::new(),
         }],
         signals: vec![Signal {
             identifier: "@mikro/image".into(),
@@ -141,6 +142,33 @@ fn the_cataloguing_service_is_told_what_its_peers_host() {
     assert!(rekuest["peers"]["kraph"]["url"].is_string());
 }
 
+/// How far a share of an object may go is handed on as the image said it; a structure that
+/// says no reach carries none, so what Rekuest is told of it is what it was before reaches.
+#[test]
+fn reaches_are_handed_on_as_said() {
+    let config = hub();
+    let mut hosts = mikro_hosts();
+    hosts.structures[0].reaches = vec![Reach {
+        key: "derived".into(),
+        label: Some("With derived data".into()),
+        description: None,
+        includes: vec!["self".into()],
+    }];
+    let rekuest = told(&config, ServiceId::Rekuest, &said(hosts.clone(), true));
+    let told_hosts = &rekuest["peers"]["mikro"]["hosts"];
+    let reach = &told_hosts["structures"][0]["reaches"][0];
+    assert_eq!(reach["key"].as_str(), Some("derived"));
+    assert_eq!(reach["includes"][0].as_str(), Some("self"));
+    assert!(reach.get("description").is_none(), "unsaid, left out");
+    let back: Hosts = serde_norway::from_value(told_hosts.clone()).expect("the same shape");
+    assert_eq!(back, hosts);
+
+    let plain = told(&config, ServiceId::Rekuest, &said(mikro_hosts(), true));
+    assert!(plain["peers"]["mikro"]["hosts"]["structures"][0]
+        .get("reaches")
+        .is_none());
+}
+
 /// Nobody else has a use for it — and a release from before services said what they host
 /// would refuse facts that mention it. So only a service that offers the job is told.
 #[test]
@@ -184,6 +212,7 @@ fn a_change_in_what_is_hosted_owes_the_job_and_no_restart() {
         label: None,
         description: None,
         descriptors: Vec::new(),
+        reaches: Vec::new(),
     });
     let after = marks(
         "rekuest:1",

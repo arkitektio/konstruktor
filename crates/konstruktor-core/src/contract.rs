@@ -173,6 +173,24 @@ pub struct Structure {
     pub description: Option<String>,
     #[serde(default)]
     pub descriptors: Vec<Descriptor>,
+    /// How far a share of one of its objects may go beyond `self`, the object alone. Left
+    /// out when there are none, so that a structure that says none hosts what it did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reaches: Vec<Reach>,
+}
+
+/// How far a share of one of a structure's objects goes (`derived`: also what was computed
+/// from it). Handed on as it was said: the service binds what it covers, the hub's rekuest
+/// offers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reach {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub includes: Vec<String>,
 }
 
 /// What a service announces about a structure's objects, and with which descriptors.
