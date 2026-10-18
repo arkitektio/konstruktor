@@ -191,6 +191,9 @@ pub struct Reach {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub includes: Vec<String>,
+    /// Whether the share permits writes (`annotate`: drawing on the shared object).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub writes: bool,
 }
 
 /// What a service announces about a structure's objects, and with which descriptors.

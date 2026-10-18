@@ -148,18 +148,34 @@ fn the_cataloguing_service_is_told_what_its_peers_host() {
 fn reaches_are_handed_on_as_said() {
     let config = hub();
     let mut hosts = mikro_hosts();
-    hosts.structures[0].reaches = vec![Reach {
-        key: "derived".into(),
-        label: Some("With derived data".into()),
-        description: None,
-        includes: vec!["self".into()],
-    }];
+    hosts.structures[0].reaches = vec![
+        Reach {
+            key: "derived".into(),
+            label: Some("With derived data".into()),
+            description: None,
+            includes: vec!["self".into()],
+            writes: false,
+        },
+        Reach {
+            key: "annotate".into(),
+            label: None,
+            description: None,
+            includes: vec!["self".into()],
+            writes: true,
+        },
+    ];
     let rekuest = told(&config, ServiceId::Rekuest, &said(hosts.clone(), true));
     let told_hosts = &rekuest["peers"]["mikro"]["hosts"];
     let reach = &told_hosts["structures"][0]["reaches"][0];
     assert_eq!(reach["key"].as_str(), Some("derived"));
     assert_eq!(reach["includes"][0].as_str(), Some("self"));
     assert!(reach.get("description").is_none(), "unsaid, left out");
+    assert!(
+        reach.get("writes").is_none(),
+        "a reading reach says nothing of writes"
+    );
+    let annotate = &told_hosts["structures"][0]["reaches"][1];
+    assert_eq!(annotate["writes"].as_bool(), Some(true));
     let back: Hosts = serde_norway::from_value(told_hosts.clone()).expect("the same shape");
     assert_eq!(back, hosts);
 
