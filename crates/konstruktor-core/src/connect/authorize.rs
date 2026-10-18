@@ -202,6 +202,37 @@ impl HubEnvelope {
             .filter(|url| !url.is_empty())
     }
 
+    /// The id of each service instance the server registered for this hub, by the service
+    /// it is an instance of (what the manifest registered it as: `live.arkitekt.mikro`).
+    ///
+    /// The envelope keys instances by an opaque token, which names no service: each claim
+    /// says its `service` and `id` itself. A server from before claims said so sends
+    /// neither, and an instance it does not say both of is not listed. Neither is a service
+    /// two claims name — an instance left behind by an earlier authorization — since which
+    /// of them a guest's tokens are composed for is not this hub's to tell.
+    pub fn instance_ids(&self) -> BTreeMap<String, String> {
+        let mut ids = BTreeMap::new();
+        let mut named_twice = Vec::new();
+        for claim in self.instances.values() {
+            let field = |name: &str| {
+                claim
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+            };
+            let (Some(service), Some(id)) = (field("service"), field("id")) else {
+                continue;
+            };
+            if ids.insert(service.to_string(), id.to_string()).is_some() {
+                named_twice.push(service.to_string());
+            }
+        }
+        for service in named_twice {
+            ids.remove(&service);
+        }
+        ids
+    }
+
     /// The mesh key and control server, under `mesh` now or `auth` on older servers.
     pub fn mesh_grant(&self) -> &HubMeshGrant {
         match &self.auth {

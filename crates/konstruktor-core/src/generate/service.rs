@@ -24,7 +24,8 @@ pub(crate) fn list(values: Vec<Value>) -> Value {
     Value::Sequence(values)
 }
 
-/// The `aud` authentikate will accept: anything. See [`build_authentikate`].
+/// The `aud` authentikate will accept when it knows no other: anything. See
+/// [`build_authentikate`].
 const ANY_AUDIENCE: &str = "*";
 
 /// An issuer whose keys are written into the config itself — authentikate's `jwks_dict`.
@@ -119,7 +120,11 @@ pub fn secret_file(service: &ServiceBlock, name: &str) -> String {
 /// The issuer string comes from the grant and is used verbatim — authentikate selects a
 /// trust anchor by exact string equality, and `https://<host>` is not `<host>`. The JWKS
 /// URL is the one place the grant is not taken at its word: see [`jwks_at_base`].
-pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value {
+pub fn build_authentikate(
+    config: &HubConfig,
+    service: &ServiceBlock,
+    issued: &IssuedIdentity,
+) -> Value {
     let issuer = match config.running_lok() {
         Some(lok) => crate::generate::lok::rsa_issuer(lok),
         None => {
@@ -136,16 +141,26 @@ pub fn build_authentikate(config: &HubConfig, issued: &IssuedIdentity) -> Value 
         }
     };
 
+    // The service's own instance at the coordination server: a token composed for it
+    // carries the instance's id as `aud`, and a guest's `collabs` are listed under it, so
+    // it is what the service reads its own entry by. Authentikate requires `aud` to be
+    // declared — a config without it does not start — and where the grant names no
+    // instance for this service (a hub not authorized yet, a server from before it said,
+    // a service not yet asked what it is), `*` accepts what the services accepted before
+    // the field existed. Such a service serves no guests: authentikate refuses their
+    // tokens without an audience to find their collaborations under. On a hub that runs
+    // its own Lok, a grant's instances are another server's, whose ids its tokens never
+    // carry: a wrong audience would refuse everyone, so it is `*` there too.
+    let audience = service
+        .identifier
+        .as_deref()
+        .filter(|_| config.running_lok().is_none())
+        .and_then(|identifier| issued.instances.get(identifier))
+        .map(String::as_str)
+        .unwrap_or(ANY_AUDIENCE);
+
     let mut pairs = vec![
-        // Every audience, for now. Authentikate began requiring `aud` to be declared —
-        // a config without it does not start — and nothing in the grant tells us which
-        // audience a token issued for this hub will carry. `*` accepts what the services
-        // already accepted before the field existed, so it is the honest translation of
-        // "not checked" rather than a guess that would silently reject every token.
-        //
-        // To be replaced by the service instance the configure request returns, once it
-        // returns one.
-        ("audience", s(ANY_AUDIENCE)),
+        ("audience", s(audience)),
         ("issuers", list(vec![issuer])),
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
@@ -317,7 +332,7 @@ pub(crate) fn hub_blocks(config: &HubConfig, id: ServiceId, issued: &IssuedIdent
             ]),
         ));
     }
-    pairs.push(("authentikate", build_authentikate(config, issued)));
+    pairs.push(("authentikate", build_authentikate(config, service, issued)));
 
     // The object store, with its credentials, exactly for a service that declared storage.
     if service.uses_datalayer() {

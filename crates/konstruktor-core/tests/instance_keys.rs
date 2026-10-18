@@ -33,6 +33,7 @@ fn issued() -> IssuedIdentity {
         issuer: Some("https://coord.example.org".into()),
         jwks_url: Some("https://coord.example.org/lok/.well-known/jwks.json".into()),
         hub_keys_url: Some(HUB_KEYS.into()),
+        ..Default::default()
     }
 }
 

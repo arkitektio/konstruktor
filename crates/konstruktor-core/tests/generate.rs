@@ -181,6 +181,7 @@ mod authorized {
             issuer: Some(ISSUER.into()),
             jwks_url: Some(GRANTED_JWKS.into()),
             hub_keys_url: None,
+            ..Default::default()
         }
     }
 
@@ -218,6 +219,40 @@ mod authorized {
             provenance[0]["jwks_uri"].as_str(),
             Some("http://rekuest:80/rekuest/.well-known/jwks.json")
         );
+    }
+
+    /// Each service verifies tokens for its own instance, the id the grant gave it; one the
+    /// grant names no instance for keeps accepting any. Provenance is Rekuest's tokens, not
+    /// an instance's, and stays as it was.
+    #[test]
+    fn each_service_verifies_tokens_for_its_own_instance() {
+        let config = config_of("hub_config.yaml");
+        let mut issued = issued();
+        issued
+            .instances
+            .insert("live.arkitekt.mikro".into(), "17".into());
+
+        let mikro = auth_of(&config, ServiceId::Mikro, &issued);
+        assert_eq!(mikro["audience"].as_str(), Some("17"));
+        assert_eq!(mikro["provenance"]["audience"].as_str(), Some("*"));
+
+        let kabinet = auth_of(&config, ServiceId::Kabinet, &issued);
+        assert_eq!(kabinet["audience"].as_str(), Some("*"));
+    }
+
+    /// A service that was never asked what it is has no registration to look its instance
+    /// up by.
+    #[test]
+    fn a_service_not_yet_described_accepts_any_audience() {
+        let mut config = config_of("hub_config.yaml");
+        config.service_mut(ServiceId::Mikro).identifier = None;
+        let mut issued = issued();
+        issued
+            .instances
+            .insert("live.arkitekt.mikro".into(), "17".into());
+
+        let mikro = auth_of(&config, ServiceId::Mikro, &issued);
+        assert_eq!(mikro["audience"].as_str(), Some("*"));
     }
 
     /// Without a grant, both fall back to the CLI's own derivation from `coord_server`.

@@ -158,6 +158,27 @@ fn every_service_trusts_the_stacks_own_signing_key() {
     }
 }
 
+/// A grant left over from a remote server names that server's instances, whose ids the
+/// stack's own Lok never puts in `aud`: every service keeps accepting any audience.
+#[test]
+fn a_remote_grants_instances_are_not_the_stacks_audience() {
+    let config = default_hub();
+    assert_eq!(
+        config.service(ServiceId::Mikro).identifier.as_deref(),
+        Some("live.arkitekt.mikro")
+    );
+    let mut issued = IssuedIdentity::default();
+    issued
+        .instances
+        .insert("live.arkitekt.mikro".into(), "17".into());
+
+    let auth =
+        konstruktor_core::contract::facts(&config, ServiceId::Mikro, &issued, &Default::default())
+            ["hub"]["auth"]
+            .clone();
+    assert_eq!(auth["audience"].as_str(), Some("*"));
+}
+
 #[test]
 fn lok_signs_with_the_private_half_and_advertises_the_public_one() {
     let config = yaml(&files_of(&default_hub()), "configs/lok.yaml");
