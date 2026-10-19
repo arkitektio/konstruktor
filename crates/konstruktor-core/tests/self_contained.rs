@@ -158,25 +158,21 @@ fn every_service_trusts_the_stacks_own_signing_key() {
     }
 }
 
-/// A grant left over from a remote server names that server's instances, whose ids the
-/// stack's own Lok never puts in `aud`: every service keeps accepting any audience.
+/// A self-contained hub names itself and its services like any other: each service verifies
+/// tokens for its own name, and for this hub, so it serves guests too.
 #[test]
-fn a_remote_grants_instances_are_not_the_stacks_audience() {
+fn a_self_contained_hubs_services_are_named_by_it() {
     let config = default_hub();
-    assert_eq!(
-        config.service(ServiceId::Mikro).identifier.as_deref(),
-        Some("live.arkitekt.mikro")
-    );
-    let mut issued = IssuedIdentity::default();
-    issued
-        .instances
-        .insert("live.arkitekt.mikro".into(), "17".into());
-
-    let auth =
-        konstruktor_core::contract::facts(&config, ServiceId::Mikro, &issued, &Default::default())
-            ["hub"]["auth"]
-            .clone();
-    assert_eq!(auth["audience"].as_str(), Some("*"));
+    let auth = konstruktor_core::contract::facts(
+        &config,
+        ServiceId::Mikro,
+        &IssuedIdentity::default(),
+        &Default::default(),
+    )["hub"]["auth"]
+        .clone();
+    assert_eq!(auth["audience"].as_str(), Some("mikro"));
+    assert_eq!(auth["hub"].as_str(), Some(config.uid.as_str()));
+    assert!(!config.uid.is_empty());
 }
 
 #[test]

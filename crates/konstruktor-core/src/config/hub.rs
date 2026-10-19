@@ -966,6 +966,12 @@ fn build_lok_block(options: &LokOptions) -> LokBlock {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubConfig {
+    /// The hub's identity: a uuid it generated for itself when it was created, and sends the
+    /// coordination server when it is authorized. Tokens for its services carry it (`hub`),
+    /// and its services accept only those: a service is named only within its hub (`mikro`).
+    /// A profile from before it existed is given one the first time it is read.
+    #[serde(default)]
+    pub uid: String,
     pub coord_server: String,
     pub csrf_trusted_origins: Option<Vec<String>>,
     pub db: DbBlock,
@@ -1944,6 +1950,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
     rekuest.instance_key_pair = options.provenance_key_pair.clone();
 
     let mut config = HubConfig {
+        uid: crate::secrets::generate_uuid(),
         services,
         // Minted once Lovekit is known to run: see `HubConfig::provide`.
         livekit: None,

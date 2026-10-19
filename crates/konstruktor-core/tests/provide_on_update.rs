@@ -16,7 +16,7 @@ use konstruktor_core::config::hub::{
 use konstruktor_core::contract::{self, Description, Said};
 use konstruktor_core::generate::{generate_hub_files, IssuedIdentity};
 use konstruktor_core::lock::{self, Frozen};
-use konstruktor_core::profile::{self, hub_profile, write_profile, ProfileError};
+use konstruktor_core::profile::{self, hub_profile, write_profile};
 use konstruktor_core::services::{self, ProvideError};
 use serde_norway::Value;
 
@@ -176,52 +176,28 @@ fn a_release_that_declares_more_is_provided_it() {
     assert!(again.is_empty());
 }
 
-/// A key is the one thing somebody else has to vouch for. A release that newly asks for
-/// one is refused with the profile as it was, and told what it takes.
+/// A key of its own is the hub's to give like everything else: the hub's services trust
+/// each other through the bundle written into their configs, and nobody else has to vouch for
+/// it. A release that newly asks for one gets one, whoever coordinates the hub.
 #[test]
-fn a_release_that_newly_asks_for_a_key_is_refused() {
-    let mut config = hub_from(&options());
-    let before = config.clone();
-    let said = said_with(release_that_signs());
+fn a_release_that_newly_asks_for_a_key_is_given_one() {
+    for coord_server in [options().coord_server, LOCAL_COORD_SERVER.into()] {
+        let mut config = hub_from(&HubConfigOptions {
+            coord_server,
+            ..options()
+        });
+        let said = said_with(release_that_signs());
+        services::provide_declared(&mut config, &said).expect("the hub's own to give");
+        let minted = config.service(example()).instance_key_pair.clone();
+        assert!(minted.is_some());
 
-    assert_eq!(services::awaiting_key(&config, &said), ["example"]);
-    let refused = services::provide_declared(&mut config, &said).unwrap_err();
-    assert_eq!(
-        refused,
-        ProvideError::NeedsAuthorization {
-            service: "example".into()
-        }
-    );
-    let why = refused.to_string();
-    assert!(why.contains("`example`"), "{why}");
-    assert!(why.contains("konstruktor authorize"), "{why}");
-    assert_eq!(config, before, "nothing was taken in");
-
-    // Even when the same release also asks for what could have been given.
-    let mut both = next_release();
-    both.needs.instance_key = true;
-    assert!(services::provide_declared(&mut config, &said_with(both)).is_err());
-    assert_eq!(config, before);
-
-    // A service that holds a key already is not waiting for one.
-    assert!(services::awaiting_key(&config, &support::said()).is_empty());
+        // Asked again, it keeps the key it has.
+        services::provide_declared(&mut config, &said).unwrap();
+        assert_eq!(config.service(example()).instance_key_pair, minted);
+    }
 }
 
-/// A hub that runs its own coordination server writes its trust bundle itself: there a
-/// key is trusted the moment the files are written, and nobody has to be asked.
-#[test]
-fn a_self_contained_hub_mints_the_key_itself() {
-    let mut config = hub_from(&HubConfigOptions {
-        coord_server: LOCAL_COORD_SERVER.into(),
-        ..options()
-    });
-    let said = said_with(release_that_signs());
-    assert!(services::awaiting_key(&config, &said).is_empty());
-    services::provide_declared(&mut config, &said).expect("its own to give here");
-    assert!(config.service(example()).instance_key_pair.is_some());
-}
-
-/// A database that cannot be given is refused the same way, with nothing taken in.
+/// A database that cannot be given is refused, with nothing taken in.
 #[test]
 fn a_release_that_asks_for_what_cannot_be_given_is_refused() {
     let mut config = hub_from(&options());
@@ -287,27 +263,16 @@ fn regenerating_provides_what_the_images_have_said() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// And one that newly asks for a key is refused there too: not a file is written, the
-/// compose file's backup included.
+/// And one that newly asks for a key is given one there too, and every config's bundle lists it.
 #[test]
-fn regenerating_writes_nothing_for_a_release_that_asks_for_a_key() {
+fn regenerating_gives_a_release_that_asks_for_a_key_its_key() {
     let config = hub_from(&options());
     let dir = folder(&config, &said_with(support::example()));
     contract::remember(&dir, &config, &said_with(release_that_signs())).unwrap();
-    let before = snapshot(&dir);
 
-    let refused = profile::regenerate(&dir).unwrap_err();
-    assert!(
-        matches!(
-            &refused,
-            ProfileError::Provide(ProvideError::NeedsAuthorization { service }) if service == "example"
-        ),
-        "{refused}"
-    );
-    let why = refused.to_string();
-    assert!(why.contains("konstruktor authorize"), "{why}");
-    assert!(why.contains("Nothing was written"), "{why}");
-    assert_eq!(snapshot(&dir), before, "the folder is as it was");
+    profile::regenerate(&dir).expect("a key is the hub's own to give");
+    let after = profile::read_profile(&dir).unwrap().config;
+    assert!(after.service(example()).instance_key_pair.is_some());
     std::fs::remove_dir_all(&dir).ok();
 }
 

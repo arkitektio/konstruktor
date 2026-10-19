@@ -111,7 +111,18 @@ pub fn read_profile(dir: &Path) -> Result<Profile, ProfileError> {
         });
     }
 
-    serde_norway::from_str(&text).map_err(malformed)
+    let mut profile: Profile = serde_norway::from_str(&text).map_err(malformed)?;
+    // A hub from before hubs named themselves has its identity derived from what already
+    // makes it this hub (its machine and its network's random name): the same every time it
+    // is read, and kept from the first time the profile is written again.
+    if profile.config.uid.is_empty() {
+        profile.config.uid = crate::secrets::derived_uuid(&format!(
+            "{}:{}",
+            profile.config.device_id.as_deref().unwrap_or_default(),
+            profile.config.internal_network
+        ));
+    }
+    Ok(profile)
 }
 
 pub fn write_profile(dir: &Path, profile: &Profile) -> Result<(), ProfileError> {

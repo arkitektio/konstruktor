@@ -117,6 +117,9 @@ pub struct ServiceManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceRequest {
     pub identifier: String,
+    /// The service's name in the hub (`mikro`): the audience tokens for it carry, beside the
+    /// hub's `uid`. The hub names its services; the coordination server records the names.
+    pub name: String,
     pub description: Option<String>,
     pub manifest: ServiceManifest,
     pub aliases: Vec<StagingAlias>,
@@ -156,6 +159,8 @@ pub struct ClientRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubManifest {
+    /// The hub's identity: the uuid it generated for itself ([`HubConfig::uid`]).
+    pub uid: String,
     pub identifier: String,
     pub description: Option<String>,
     pub logo: Option<String>,
@@ -391,6 +396,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             let summary = (!said.summary.trim().is_empty()).then(|| said.summary.clone());
 
             Some(InstanceRequest {
+                name: block.host.clone(),
                 // What the catalogue calls it, where it has a word for it; the image's own
                 // name otherwise.
                 identifier: known
@@ -446,6 +452,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             })
             .collect();
         instances.push(InstanceRequest {
+            name: "s3".to_string(),
             identifier: "S3".to_string(),
             description: Some("Object storage for the hub's services".to_string()),
             manifest: ServiceManifest {
@@ -475,6 +482,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             .map(|alias| livekit_alias(alias, livekit.signal_port))
             .collect();
         instances.push(InstanceRequest {
+            name: "livekit".to_string(),
             identifier: "LiveKit".to_string(),
             description: Some("The media server Lovekit's rooms are hosted on".to_string()),
             manifest: ServiceManifest {
@@ -497,6 +505,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
     HubStartRequest {
         hub: HubManifest {
             identifier: options.identifier.clone(),
+            uid: config.uid.clone(),
             description: options.description.clone(),
             logo: None,
             instances,

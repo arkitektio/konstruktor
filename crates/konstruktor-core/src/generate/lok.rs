@@ -99,6 +99,7 @@ pub fn preconfigured_hub(
     mark_in_network(&mut aliases);
 
     hub.instances.push(InstanceRequest {
+        name: "lok".to_string(),
         identifier: "Lok".to_string(),
         description: Some("Users, organizations and permissions".to_string()),
         manifest: ServiceManifest {

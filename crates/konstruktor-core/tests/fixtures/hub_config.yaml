@@ -1,5 +1,6 @@
 backend: docker
 config:
+  uid: 0192f3c4-7a2b-4c1d-9e8f-1a2b3c4d5e6f
   coord_server: go.arkitekt.live
   csrf_trusted_origins: null
   db:

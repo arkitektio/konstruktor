@@ -135,11 +135,6 @@ pub struct Lock {
     /// takes. See [`crate::services::catalogue`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub recatalogue: BTreeMap<String, bool>,
-    /// The services whose next release asks for a key of their own, which they do not
-    /// hold: an update refused them, and the next authorization mints the key and has
-    /// the coordination server vouch for it. See [`crate::services::provide_declared`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub awaiting_key: Vec<String>,
     /// What each service's image said of itself, by compose service, and of which build:
     /// see [`crate::contract`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

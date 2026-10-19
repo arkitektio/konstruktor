@@ -26,7 +26,7 @@ http:// {
 		respond 204
 	}
 
-	@internal_hooks path_regexp ^/[^/]+/_rekuest(/|$)
+	@internal_hooks path_regexp ^/[^/]+/(_rekuest|_feed)(/|$)
 	handle @internal_hooks {
 		respond 404
 	}

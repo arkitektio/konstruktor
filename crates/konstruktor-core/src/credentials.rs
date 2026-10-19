@@ -41,8 +41,6 @@ impl HubCredentials {
         IssuedIdentity {
             issuer: self.issuer.clone(),
             jwks_url: self.envelope.jwks_url().map(str::to_string),
-            hub_keys_url: self.envelope.hub_keys_url().map(str::to_string),
-            instances: self.envelope.instance_ids(),
         }
     }
 }

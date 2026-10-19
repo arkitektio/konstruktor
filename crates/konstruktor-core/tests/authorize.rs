@@ -11,6 +11,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn request() -> HubStartRequest {
     HubStartRequest {
         hub: HubManifest {
+            uid: "0192f3c4-7a2b-4c1d-9e8f-1a2b3c4d5e6f".into(),
             identifier: "lab-hub".into(),
             description: None,
             logo: None,
@@ -254,36 +255,6 @@ fn credentials_saved_with_both_auth_and_mesh_still_load() {
     assert!(saved.get("mesh").is_some());
 }
 
-/// The envelope keys instances by an opaque token: each claim says which service it is an
-/// instance of, and its id there. A claim that does not say both is not listed, and neither
-/// is a service two claims name.
-#[test]
-fn reads_each_services_instance_id_off_its_claim() {
-    let envelope: konstruktor_core::connect::authorize::HubEnvelope =
-        serde_json::from_value(json!({
-            "token_type": "Bearer",
-            "access_token": "eyJ",
-            "client_id": "9c1d",
-            "instances": {
-                "tok-mikro": { "identifier": "tok-mikro", "id": "17", "service": "live.arkitekt.mikro" },
-                "tok-rekuest": { "identifier": "tok-rekuest", "id": "18", "service": "live.arkitekt.rekuest" },
-                "tok-old-kabinet": { "identifier": "tok-old-kabinet", "id": "3", "service": "live.arkitekt.kabinet" },
-                "tok-kabinet": { "identifier": "tok-kabinet", "id": "19", "service": "live.arkitekt.kabinet" },
-                "tok-older-server": { "identifier": "tok-older-server", "private_key": null }
-            }
-        }))
-        .expect("loads");
-
-    let ids = envelope.instance_ids();
-    assert_eq!(
-        ids.into_iter().collect::<Vec<_>>(),
-        vec![
-            ("live.arkitekt.mikro".to_string(), "17".to_string()),
-            ("live.arkitekt.rekuest".to_string(), "18".to_string()),
-        ]
-    );
-}
-
 /// Servers from before the rename sent the mesh key as `auth`; it is still read.
 #[tokio::test]
 async fn still_reads_a_mesh_key_sent_as_auth() {
@@ -388,24 +359,5 @@ async fn a_cancelled_wait_returns_immediately() {
     assert!(
         matches!(error, HubAuthorizationError::Cancelled),
         "got {error:?}"
-    );
-}
-
-#[test]
-fn the_hub_keys_url_is_read_from_self() {
-    let envelope: konstruktor_core::connect::authorize::HubEnvelope =
-        serde_json::from_value(json!({
-            "token_type": "Bearer",
-            "access_token": "eyJ",
-            "client_id": "9c1d",
-            "self": {
-                "jwks_url": "https://coord.example.org/.well-known/jwks.json",
-                "hub_keys_url": "https://coord.example.org/lok/.well-known/hub-keys/7"
-            }
-        }))
-        .expect("parses");
-    assert_eq!(
-        envelope.hub_keys_url(),
-        Some("https://coord.example.org/lok/.well-known/hub-keys/7")
     );
 }

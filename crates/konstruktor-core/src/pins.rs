@@ -120,6 +120,14 @@ pub async fn resolve(images: &[(String, String)]) -> BTreeMap<String, Pin> {
 /// builds were written down — a tag may have been fetched further since, and what is
 /// pinned has to be what runs.
 pub async fn adopt(dir: &Path, images: &[(String, String)]) -> BTreeMap<String, Pin> {
+    let mut pins = resolve(images).await;
+    pins.extend(running(dir, images).await);
+    pins
+}
+
+/// The build each of `images` runs as, read off its container: only those with one. What a
+/// service an update refused stays on — its tag may already name the release it was refused.
+pub async fn running(dir: &Path, images: &[(String, String)]) -> BTreeMap<String, Pin> {
     let engine = crate::engine_probe::engine();
     let listed = engine
         .async_command()
@@ -155,7 +163,7 @@ pub async fn adopt(dir: &Path, images: &[(String, String)]) -> BTreeMap<String, 
         .map(|state| (state.service, state.repo_digests))
         .collect();
 
-    let mut pins = resolve(images).await;
+    let mut pins = BTreeMap::new();
     for (service, image) in images {
         if let Some(digest) = running
             .get(service)

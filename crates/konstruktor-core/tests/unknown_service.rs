@@ -253,7 +253,7 @@ fn it_is_told_of_the_hub_what_it_asked_for() {
         Some("/secrets/example.signing")
     );
     assert!(facts.get("instance").is_none());
-    // The other services know where it is, and what it is registered as.
+    // The other services know where it is, and what it signs as: its name in the hub.
     let mikro = konstruktor_core::contract::facts(
         &config,
         ServiceId::Mikro,
@@ -266,7 +266,7 @@ fn it_is_told_of_the_hub_what_it_asked_for() {
     );
     assert_eq!(
         mikro["peers"]["example"]["identifier"].as_str(),
-        Some("org.example.service")
+        Some("example")
     );
 }
 

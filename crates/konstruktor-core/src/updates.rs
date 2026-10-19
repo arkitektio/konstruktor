@@ -1517,24 +1517,9 @@ async fn apply_on(
                 .map(|why| format!("`{service}` was not updated: {why}."))
         });
         // A release that asks for more than its service holds gets it — a database, a
-        // bucket, a secret are this hub's own to give. All but a key of its own, which
-        // somebody else has to vouch for: that release waits for an authorization, and
-        // is written down as waiting so that the next one mints the key.
+        // bucket, a secret, a key of its own are this hub's to give.
         let unprovidable = said.as_ref().and_then(|said| {
             let alone: crate::contract::Said = [(service.clone(), said.clone())].into();
-            if !crate::services::awaiting_key(&config, &alone).is_empty() {
-                let mut held = lock::read(dir);
-                if !held.awaiting_key.contains(&service) {
-                    held.awaiting_key.push(service.clone());
-                    let _ = lock::write(dir, &held);
-                }
-                return Some(format!(
-                    "{} It was left on the release it runs.",
-                    crate::services::ProvideError::NeedsAuthorization {
-                        service: service.clone()
-                    }
-                ));
-            }
             // Among the services of this hub only, whichever others move with it.
             config
                 .databases_can_be_provided(&alone)
@@ -1598,11 +1583,15 @@ async fn apply_on(
         .into_iter()
         .filter(|(service, _)| !builds.contains_key(service))
         .filter(|(service, _)| !fetched.iter().any(|(name, _)| name == service))
-        // A refused service's tag has just been fetched to an image it must not run; with
-        // no container to read the build off, it stays unpinned rather than pinned to that.
-        .filter(|(service, _)| !report.refused.iter().any(|(name, _)| name == service))
         .collect();
+    // A refused service's tag has just been fetched to an image it must not run: it is
+    // pinned to the build its container runs, so it stays on it. With no container to read
+    // the build off, it stays unpinned rather than pinned to the refused one.
+    let (refused, untouched): (Vec<_>, Vec<_>) = untouched
+        .into_iter()
+        .partition(|(service, _)| report.refused.iter().any(|(name, _)| name == service));
     builds.extend(crate::pins::adopt(dir, &untouched).await);
+    builds.extend(crate::pins::running(dir, &refused).await);
     if let Err(error) = crate::pins::record(dir, builds) {
         warn(format!(
             "could not write down the builds this hub runs ({error}) — its compose file \

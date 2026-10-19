@@ -27,14 +27,6 @@ pub struct IssuedIdentity {
     pub issuer: Option<String>,
     /// Where that issuer's verification keys live, from the grant envelope.
     pub jwks_url: Option<String>,
-    /// The hub's trust bundle (its service instances' public keys), from the grant envelope.
-    pub hub_keys_url: Option<String>,
-    /// The id the coordination server gave each of the hub's service instances, by what
-    /// the service is registered as ([`crate::config::hub::ServiceBlock::identifier`]),
-    /// from the grant envelope ([`crate::connect::authorize::HubEnvelope::instance_ids`]).
-    /// A token composed for an instance carries its id as `aud`, and a guest's `collabs`
-    /// are listed under it: it is the audience the service verifies tokens for.
-    pub instances: BTreeMap<String, String>,
 }
 
 /// Python's `yaml.dump(..., default_flow_style=False)`: block style, sorted keys.

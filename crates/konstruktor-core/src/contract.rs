@@ -1248,10 +1248,8 @@ pub fn facts(
                 offers.push(("agent".to_string(), s(&takt)));
             }
         }
-        let mut entry = Vec::new();
-        if let Some(identifier) = &peer.identifier {
-            entry.push(("identifier", s(identifier)));
-        }
+        // What it signs as and is trusted under: its name in the hub (the bundle's `service`).
+        let mut entry = vec![("identifier", s(&peer.host))];
         entry.extend([
             ("url", s(&base)),
             (

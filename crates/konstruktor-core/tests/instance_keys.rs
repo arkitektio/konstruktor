@@ -26,13 +26,10 @@ fn legacy_config() -> HubConfig {
     serde_norway::from_value(profile["config"].clone()).expect("deserializes")
 }
 
-const HUB_KEYS: &str = "https://coord.example.org/lok/.well-known/hub-keys/7";
-
 fn issued() -> IssuedIdentity {
     IssuedIdentity {
         issuer: Some("https://coord.example.org".into()),
         jwks_url: Some("https://coord.example.org/lok/.well-known/jwks.json".into()),
-        hub_keys_url: Some(HUB_KEYS.into()),
         ..Default::default()
     }
 }
@@ -200,19 +197,26 @@ fn every_service_is_told_its_own_key_and_whom_the_hub_trusts() {
                     .as_str()
             )
         );
-        assert_eq!(
-            said["instance"]["trust"]["jwks_uri"].as_str(),
-            Some(HUB_KEYS)
-        );
+        // The hub's bundle, inline: no coordination server is asked whom to trust.
+        assert!(said["instance"]["trust"].get("jwks_uri").is_none());
+        assert!(said["instance"]["trust"]["jwks"]["keys"]
+            .as_sequence()
+            .is_some());
         assert_eq!(
             said["peers"]["rekuest"]["offers"]["agent"].as_str(),
             // takt, which serves the agent protocol the reports and signals belong to.
             Some("http://rekuest-takt:8080/rekuest")
         );
         let provenance = &said["hub"]["auth"]["provenance"]["issuers"][0];
+        assert_eq!(provenance["kind"].as_str(), Some("jwks_dict"));
+        // Each service is named by its name in the hub, for this hub.
         assert_eq!(
-            provenance["jwks_uri"].as_str(),
-            Some(format!("{HUB_KEYS}?service=live.arkitekt.rekuest").as_str())
+            said["hub"]["auth"]["audience"].as_str(),
+            Some(block.host.as_str())
+        );
+        assert_eq!(
+            said["hub"]["auth"]["hub"].as_str(),
+            Some(config.uid.as_str())
         );
     }
 
@@ -254,18 +258,14 @@ fn every_service_is_told_its_own_key_and_whom_the_hub_trusts() {
             offers["rekuest_hook"].as_str(),
             Some(format!("http://{name}:80/{name}/_rekuest/hook").as_str())
         );
-        assert_eq!(
-            rekuest["peers"][name]["identifier"].as_str(),
-            Some(format!("live.arkitekt.{name}").as_str())
-        );
+        assert_eq!(rekuest["peers"][name]["identifier"].as_str(), Some(name));
     }
 }
 
-/// A hub the coordination server handed no `hub_keys_url` (not enrolled yet, or the e2e
-/// hub, which is never authorized) still has to trust its own services: every service is
-/// told the bundle inline, one key per enabled service, under its service.
+/// Every service is told the hub's bundle inline, one key per enabled service, under the
+/// service's name in the hub: the hub's services trust each other through it alone.
 #[test]
-fn without_a_hub_keys_url_the_bundle_is_written_inline() {
+fn the_bundle_is_written_inline_under_the_services_names() {
     let config = keyed_config();
 
     let enabled: Vec<ServiceId> = config
@@ -281,7 +281,7 @@ fn without_a_hub_keys_url_the_bundle_is_written_inline() {
             .instance_key_pair
             .as_ref()
             .unwrap(),
-        "live.arkitekt.rekuest",
+        "rekuest",
     )
     .unwrap();
 
@@ -303,7 +303,7 @@ fn without_a_hub_keys_url_the_bundle_is_written_inline() {
             .map(|k| k["service"].as_str().unwrap())
             .collect();
         for other in &enabled {
-            assert!(services.contains(&format!("live.arkitekt.{}", other.as_str()).as_str()));
+            assert!(services.contains(&config.service(*other).host.as_str()));
         }
         for key in keys {
             assert_eq!(key["kty"].as_str(), Some("OKP"));
@@ -319,7 +319,7 @@ fn without_a_hub_keys_url_the_bundle_is_written_inline() {
         // This service's own entry is its own public key.
         let own = keys
             .iter()
-            .find(|k| k["service"].as_str() == Some(&format!("live.arkitekt.{}", id.as_str())))
+            .find(|k| k["service"].as_str() == Some(config.service(*id).host.as_str()))
             .unwrap();
         let expected = konstruktor_core::secrets::public_jwk(
             config.service(*id).instance_key_pair.as_ref().unwrap(),

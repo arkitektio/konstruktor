@@ -40,6 +40,43 @@ const DJANGO_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*(-_
 const ALPHA_NUMERIC: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
 /// A 50-character Django `SECRET_KEY`.
+/// A random (version 4) uuid, hyphenated: the identity a hub gives itself.
+pub fn generate_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// A uuid derived from `seed` (version 8, SHA-256): the same seed, the same uuid.
+pub fn derived_uuid(seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(format!("arkitekt-hub:{seed}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
 pub fn generate_django_secret_key() -> String {
     choose(DJANGO_ALPHABET, 50)
 }

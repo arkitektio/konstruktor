@@ -504,8 +504,11 @@ konstruktor hub services apply [hub]   # what --no-apply leaves for later
 ```
 
 A change is a re-authorization: the new set of services goes to the coordination server (a new
-service needs its grant, and its key vouched for), somebody accepts the device code, and only then
-are the profile and files rewritten. The stack is then brought to the new set — missing databases
+service needs its grant, and the coordination server learns its name and key), somebody accepts
+the device code, and only then are the profile and files rewritten. A hub names itself (a uuid
+it generates when it is created) and its services (their names in the hub, `mikro`): tokens for
+a service carry its name as `aud` and the hub's uuid as `hub`, and the hub's services trust each
+other through the bundle of their keys written into every config — nothing is negotiated. The stack is then brought to the new set — missing databases
 are created, new containers started, and removed ones taken away with `--remove-orphans`. **A
 removed service keeps its data**: its database and buckets stay provisioned, its keys stay in the
 profile, and adding it back picks everything up again. Rekuest cannot be removed while a service

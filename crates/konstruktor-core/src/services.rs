@@ -420,46 +420,8 @@ impl Provided {
 /// Why a hub cannot take in what its images now say.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProvideError {
-    /// The release asks for a key of its own, and the service holds none.
-    #[error(
-        "`{service}`'s release asks for a key of its own, and the coordination server has \
-         to vouch for a key before any other service accepts what is signed with it. That \
-         takes a re-authorization: run `konstruktor authorize`, which mints the key and \
-         sends it to be accepted, then `konstruktor update` again."
-    )]
-    NeedsAuthorization { service: String },
     #[error("{0}")]
     Unacceptable(String),
-}
-
-/// The services of `said` that ask for a key of their own and hold none, on a hub whose
-/// keys somebody else vouches for.
-///
-/// Everything else a release can newly declare is the hub's own to give — a database is
-/// in its Postgres, a bucket in its object store, a secret a file in its folder. A key is
-/// not: its public half is what the coordination server publishes in the hub's trust
-/// bundle, and until it does, every request the service signs is refused by the others.
-/// So a key is only ever minted where it is also sent — when the hub is authorized.
-///
-/// A hub that runs its own coordination server has nobody to ask: its trust bundle is
-/// written inline from the profile, so a key minted there is trusted the moment the
-/// files are written.
-pub fn awaiting_key(config: &HubConfig, said: &Said) -> Vec<String> {
-    if config.running_lok().is_some() {
-        return Vec::new();
-    }
-    config
-        .enabled_services()
-        .into_iter()
-        .map(|id| config.service(id))
-        .filter(|block| {
-            block.instance_key_pair.is_none()
-                && said
-                    .get(&block.host)
-                    .is_some_and(|description| description.needs.instance_key)
-        })
-        .map(|block| block.host.clone())
-        .collect()
 }
 
 /// Takes what the images say (`said`, by compose service) into a profile that already
@@ -467,13 +429,11 @@ pub fn awaiting_key(config: &HubConfig, said: &Said) -> Vec<String> {
 ///
 /// What an update and a regeneration do with a description that declares more than the
 /// block holds: a release that gained a bucket, a database or a secret gets them, without
-/// anybody being asked. Refused, with `config` untouched, when a service asks for a key it
-/// does not hold ([`awaiting_key`]) or for something the hub cannot give
+/// anybody being asked — a key of its own included: the hub's services trust each other through
+/// the bundle written here, so nobody else has to vouch for it. Refused, with `config`
+/// untouched, when a service asks for something the hub cannot give
 /// ([`crate::contract::acceptable`]).
 pub fn provide_declared(config: &mut HubConfig, said: &Said) -> Result<Provided, ProvideError> {
-    if let Some(service) = awaiting_key(config, said).into_iter().next() {
-        return Err(ProvideError::NeedsAuthorization { service });
-    }
     crate::contract::acceptable(config, said).map_err(ProvideError::Unacceptable)?;
 
     let before = config.clone();

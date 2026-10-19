@@ -64,10 +64,6 @@ pub struct HubSelf {
     /// Where the hub's services fetch the keys that verify inbound tokens. Absolute.
     #[serde(default)]
     pub jwks_url: Option<String>,
-    /// The hub's trust bundle: its service instances' public keys (sent as each manifest's
-    /// `challenge_key`), which the services verify each other's signed requests against.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub_keys_url: Option<String>,
     /// The user who accepted the grant — the token's `sub`.
     #[serde(
         default,
@@ -192,45 +188,6 @@ impl HubEnvelope {
             .and_then(|s| s.jwks_url.as_deref())
             .or(self.auth.as_ref().and_then(|a| a.jwks_url.as_deref()))
             .filter(|url| !url.is_empty())
-    }
-
-    /// The hub's trust bundle (its instances' public keys), if the server publishes one.
-    pub fn hub_keys_url(&self) -> Option<&str> {
-        self.self_
-            .as_ref()
-            .and_then(|s| s.hub_keys_url.as_deref())
-            .filter(|url| !url.is_empty())
-    }
-
-    /// The id of each service instance the server registered for this hub, by the service
-    /// it is an instance of (what the manifest registered it as: `live.arkitekt.mikro`).
-    ///
-    /// The envelope keys instances by an opaque token, which names no service: each claim
-    /// says its `service` and `id` itself. A server from before claims said so sends
-    /// neither, and an instance it does not say both of is not listed. Neither is a service
-    /// two claims name — an instance left behind by an earlier authorization — since which
-    /// of them a guest's tokens are composed for is not this hub's to tell.
-    pub fn instance_ids(&self) -> BTreeMap<String, String> {
-        let mut ids = BTreeMap::new();
-        let mut named_twice = Vec::new();
-        for claim in self.instances.values() {
-            let field = |name: &str| {
-                claim
-                    .get(name)
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|value| !value.is_empty())
-            };
-            let (Some(service), Some(id)) = (field("service"), field("id")) else {
-                continue;
-            };
-            if ids.insert(service.to_string(), id.to_string()).is_some() {
-                named_twice.push(service.to_string());
-            }
-        }
-        for service in named_twice {
-            ids.remove(&service);
-        }
-        ids
     }
 
     /// The mesh key and control server, under `mesh` now or `auth` on older servers.

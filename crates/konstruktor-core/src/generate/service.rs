@@ -42,15 +42,10 @@ fn jwks_of(keys: Vec<serde_json::Value>) -> Value {
     serde_norway::to_value(serde_json::json!({ "keys": keys })).expect("a JWKS is plain data")
 }
 
-/// The hub's trust bundle, inline: every enabled service instance's public key, under its
-/// service. What the coordination server serves as the hub's `hub_keys_url`, for a hub that
-/// was not handed one (not enrolled yet) — without it, every signed request between the
-/// hub's services fails with "No key … in the hub's trust bundle". Same shape as
-/// `scripts/instance_keys.py` in the reference deployment writes.
-///
-/// A key is listed under what its service is registered as, which is the image's to say
-/// ([`ServiceBlock::identifier`]): a service that holds a key and was never asked what it
-/// is has nothing to be listed under, and is left out.
+/// The hub's trust bundle: every enabled service's public key, under the service's name in
+/// the hub (`mikro`). Written into every service's config: the hub's services trust each other
+/// through it alone, and no coordination server is asked. A name is unique only within a hub;
+/// the tokens they sign carry the hub's uid (`hub`), which every service checks.
 fn inline_trust_bundle(config: &HubConfig) -> Option<Value> {
     let keys: Vec<serde_json::Value> = config
         .enabled_services()
@@ -58,7 +53,7 @@ fn inline_trust_bundle(config: &HubConfig) -> Option<Value> {
         .filter_map(|id| {
             let block = config.service(id);
             let pair = block.instance_key_pair.as_ref()?;
-            public_jwk(pair, block.identifier.as_deref()?)
+            public_jwk(pair, &block.host)
         })
         .collect();
     (!keys.is_empty()).then(|| jwks_of(keys))
@@ -141,26 +136,15 @@ pub fn build_authentikate(
         }
     };
 
-    // The service's own instance at the coordination server: a token composed for it
-    // carries the instance's id as `aud`, and a guest's `collabs` are listed under it, so
-    // it is what the service reads its own entry by. Authentikate requires `aud` to be
-    // declared — a config without it does not start — and where the grant names no
-    // instance for this service (a hub not authorized yet, a server from before it said,
-    // a service not yet asked what it is), `*` accepts what the services accepted before
-    // the field existed. Such a service serves no guests: authentikate refuses their
-    // tokens without an audience to find their collaborations under. On a hub that runs
-    // its own Lok, a grant's instances are another server's, whose ids its tokens never
-    // carry: a wrong audience would refuse everyone, so it is `*` there too.
-    let audience = service
-        .identifier
-        .as_deref()
-        .filter(|_| config.running_lok().is_none())
-        .and_then(|identifier| issued.instances.get(identifier))
-        .map(String::as_str)
-        .unwrap_or(ANY_AUDIENCE);
+    // The service is named by its name in the hub (`mikro`), and a token composed for it says
+    // so (`aud`) and which hub it is for (`hub`, the uid this hub generated for itself): both
+    // are known here, before any authorization, whoever coordinates the hub. A guest's
+    // `collabs` are listed under the same name.
+    let audience = service.host.as_str();
 
     let mut pairs = vec![
         ("audience", s(audience)),
+        ("hub", s(&config.uid)),
         ("issuers", list(vec![issuer])),
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
@@ -170,35 +154,25 @@ pub fn build_authentikate(
 
     let provenance = if rekuest.enabled {
         let iss = rekuest.provenance_issuer.as_deref().unwrap_or_default();
-        // Rekuest signs provenance with its instance key. The coordination server's trust
-        // bundle, narrowed to Rekuest, is the vouched-for source. Without one (a hub not
-        // enrolled yet), the key itself, inline — Konstruktor minted it, so it needs no
-        // fetch. Both name Rekuest by what it is registered as; a Rekuest whose image was
-        // never asked, or whose key cannot be read, falls back to its own key set inside
-        // the network, behind its script name.
-        let registered = rekuest.identifier.as_deref();
-        match (issued.hub_keys_url.as_deref(), registered) {
-            (Some(url), Some(identifier)) => {
-                Some(jwks_issuer(iss, &format!("{url}?service={identifier}")))
-            }
-            _ => Some(
-                rekuest
-                    .instance_key_pair
-                    .as_ref()
-                    .zip(registered)
-                    .and_then(|(pair, identifier)| public_jwk(pair, identifier))
-                    .map(|jwk| inline_issuer(iss, jwks_of(vec![jwk])))
-                    .unwrap_or_else(|| {
-                        jwks_issuer(
-                            iss,
-                            &format!(
-                                "http://{}:{}/{}/{JWKS_PATH}",
-                                rekuest.host, rekuest.internal_port, rekuest.host
-                            ),
-                        )
-                    }),
-            ),
-        }
+        // Rekuest signs provenance with its instance key, which Konstruktor minted: it is
+        // written here inline, under Rekuest's name in the hub. A Rekuest whose key cannot be
+        // read falls back to its own key set inside the network, behind its script name.
+        Some(
+            rekuest
+                .instance_key_pair
+                .as_ref()
+                .and_then(|pair| public_jwk(pair, &rekuest.host))
+                .map(|jwk| inline_issuer(iss, jwks_of(vec![jwk])))
+                .unwrap_or_else(|| {
+                    jwks_issuer(
+                        iss,
+                        &format!(
+                            "http://{}:{}/{}/{JWKS_PATH}",
+                            rekuest.host, rekuest.internal_port, rekuest.host
+                        ),
+                    )
+                }),
+        )
     } else if !matches!(remote, "local" | "none" | "") {
         Some(jwks_issuer(
             remote,
@@ -339,17 +313,12 @@ pub(crate) fn hub_blocks(config: &HubConfig, id: ServiceId, issued: &IssuedIdent
         pairs.push(("datalayer", build_datalayer(config, service)));
     }
 
-    // This instance's key — its only secret towards the hub's other services — and where the
-    // keys live it trusts (the coordination server's bundle of this hub's instance keys).
+    // This instance's key — its only secret towards the hub's other services — and the hub's
+    // bundle of every service's public key, by name, which is all it trusts.
     if let Some(pair) = &service.instance_key_pair {
         let mut instance = vec![("private_key", s(&pair.private_key))];
-        match issued.hub_keys_url.as_deref() {
-            Some(url) => instance.push(("trust", map(vec![("jwks_uri", s(url))]))),
-            None => {
-                if let Some(bundle) = inline_trust_bundle(config) {
-                    instance.push(("trust", map(vec![("jwks", bundle)])));
-                }
-            }
+        if let Some(bundle) = inline_trust_bundle(config) {
+            instance.push(("trust", map(vec![("jwks", bundle)])));
         }
         pairs.push(("instance", map(instance)));
     }

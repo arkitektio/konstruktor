@@ -87,10 +87,11 @@ fn agent_route(out: &mut String, service: &str, upstream: &AgentUpstream) {
     out.push_str("\t}\n\n");
 }
 
-/// The services' internal hooks (`/<service>/_rekuest/…`: scheduled runs, manifests,
-/// Rekuest's upkeep jobs) are called inside the stack's own network, signed with instance
-/// keys. Nothing outside it has a reason to reach them, so the gateway answers 404.
-const INTERNAL_HOOKS: &str = "\t@internal_hooks path_regexp ^/[^/]+/_rekuest(/|$)\n\
+/// The services' internal endpoints — their hooks (`/<service>/_rekuest/…`: scheduled runs,
+/// manifests, Rekuest's upkeep jobs) and their change feeds (`/<service>/_feed`, which another
+/// service of the hub reads) — are called inside the stack's own network, signed with
+/// instance keys. Nothing outside it has a reason to reach them, so the gateway answers 404.
+const INTERNAL_HOOKS: &str = "\t@internal_hooks path_regexp ^/[^/]+/(_rekuest|_feed)(/|$)\n\
 \thandle @internal_hooks {\n\
 \t\trespond 404\n\
 \t}\n\n";
