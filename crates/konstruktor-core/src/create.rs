@@ -389,8 +389,7 @@ pub async fn create_hub(
         ..Default::default()
     });
     // The plugin engine, with the socket of the engine on this machine. Before the images,
-    // so `--image plugin_engine=…` reaches it, and before the authorization, whose
-    // manifest asks for it.
+    // so `--image plugin_engine=…` reaches it; connecting asks for its client.
     let engine = crate::engine_probe::engine();
     add_plugin_engine(
         &mut config,
@@ -398,6 +397,13 @@ pub async fn create_hub(
         engine.kind.container_socket(),
         docker::host_socket(&engine).await,
     );
+    // Run once the coordination server approved it with the hub, which connecting asks: a
+    // self-contained hub's own coordination server is told of it as it is set up.
+    if !self_contained {
+        if let Some(engine) = config.plugin_engine.as_mut() {
+            engine.enabled = false;
+        }
+    }
 
     // Before the authorization and before anything is generated: the images are part of
     // what the hub *is*, and every later path reads them back out of the profile.
@@ -818,15 +824,19 @@ pub fn add_plugin_engine(
     }
 }
 
-/// Keeps the plugin engine only if the coordination server approved it with the hub: a
-/// server from before client requests ignores the request, and an engine whose token it
-/// never heard of would fail its login on every start. Says why it went, when it did.
+/// Switches the plugin engine on once the coordination server approved it with the hub,
+/// and drops it otherwise: a server from before client requests ignores the request, and an
+/// engine whose token it never heard of would fail its login on every start. Says why it
+/// went, when it did.
 pub fn confirm_plugin_engine(
     config: &mut HubConfig,
     envelope: &crate::connect::authorize::HubEnvelope,
 ) -> Option<String> {
-    let engine = config.running_plugin_engine()?;
+    let engine = config.wanted_plugin_engine()?;
     if envelope.approves_client(&engine.host, &engine.mandate_key) {
+        if let Some(engine) = config.plugin_engine.as_mut() {
+            engine.enabled = true;
+        }
         return None;
     }
     config.plugin_engine = None;

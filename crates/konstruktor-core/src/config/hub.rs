@@ -1306,10 +1306,15 @@ impl HubConfig {
     /// The plugin engine this stack runs, if it runs one. Only beside Kabinet and Rekuest:
     /// it is Kabinet's backend, and it offers its actions through Rekuest.
     pub fn running_plugin_engine(&self) -> Option<&PluginEngineBlock> {
-        self.plugin_engine.as_ref().filter(|engine| {
-            engine.enabled
-                && self.service(ServiceId::Kabinet).enabled
-                && self.service(ServiceId::Rekuest).enabled
+        self.wanted_plugin_engine().filter(|engine| engine.enabled)
+    }
+
+    /// The plugin engine this hub is to run, whether it runs yet or not: one is switched on
+    /// only once the coordination server approved it with the hub — a hub created
+    /// unconnected wants its engine until it is connected.
+    pub fn wanted_plugin_engine(&self) -> Option<&PluginEngineBlock> {
+        self.plugin_engine.as_ref().filter(|_| {
+            self.service(ServiceId::Kabinet).enabled && self.service(ServiceId::Rekuest).enabled
         })
     }
 

@@ -328,14 +328,14 @@ fn livekit_alias(alias: StagingAlias, port: u16) -> StagingAlias {
 }
 
 /// The clients this hub runs itself and asks to be approved with it: the plugin engine,
-/// when it runs one. Approving the hub then approves the engine, with the token the
-/// engine's environment already holds.
+/// when it wants one — before it runs, which it does once approved. Approving the hub then
+/// approves the engine, with the token the engine's environment already holds.
 pub fn client_requests(config: &HubConfig, device_id: Option<&str>) -> Vec<ClientRequest> {
     use crate::config::hub::{
         PLUGIN_ENGINE_IDENTIFIER, PLUGIN_ENGINE_REQUIREMENTS, PLUGIN_ENGINE_SCOPES,
     };
     config
-        .running_plugin_engine()
+        .wanted_plugin_engine()
         .map(|engine| ClientRequest {
             identifier: engine.host.clone(),
             description: Some(

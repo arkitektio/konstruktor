@@ -372,6 +372,34 @@ fn an_engine_the_server_approved_with_the_hub_is_kept() {
     assert!(config.running_plugin_engine().is_some());
 }
 
+/// A hub created unconnected wants its engine but does not run it: nobody has approved its
+/// client yet, and an engine without one fails its login on every start. Connecting asks
+/// for the client, and the approval switches the engine on.
+#[test]
+fn an_unconnected_hubs_engine_runs_once_the_server_approved_it() {
+    let mut config = with_engine(remote(kabinet_hub()));
+    config.plugin_engine.as_mut().unwrap().enabled = false;
+    assert!(config.running_plugin_engine().is_none());
+    assert!(
+        engine_of(&config).is_null(),
+        "an unapproved engine is in the stack"
+    );
+    assert!(
+        konstruktor_core::connect::manifest::client_requests(&config, None)
+            .iter()
+            .any(|request| request.identifier == "plugin_engine"),
+        "connecting does not ask for the engine's client"
+    );
+
+    let key = config.plugin_engine.as_ref().unwrap().mandate_key.clone();
+    let approved = envelope(serde_json::json!({
+        "plugin_engine": {"mandate": "1", "key_sha256": sha256_hex(&key), "client_ids": []}
+    }));
+    assert_eq!(confirm_plugin_engine(&mut config, &approved), None);
+    assert!(config.running_plugin_engine().is_some());
+    assert!(!engine_of(&config).is_null());
+}
+
 /// A server from before client requests ignores the request: an engine left in the stack
 /// would fail its login on every start.
 #[test]
