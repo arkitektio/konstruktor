@@ -223,13 +223,15 @@ async fn docker_hub_answers_the_way_the_stand_in_does() {
 async fn a_local_copy_without_the_label_is_asked_past() {
     isolate_data_dir();
     let engine = konstruktor_core::engine_probe::engine();
-    let docker_here = engine
+    // An engine that runs Linux containers: a Windows runner's runs Windows ones, and an
+    // image imported there is not one a hub would run.
+    let linux = engine
         .command()
-        .args(["version"])
+        .args(["info", "--format", "{{.OSType}}"])
         .output()
-        .is_ok_and(|o| o.status.success());
-    if !docker_here {
-        eprintln!("skipping: no container engine here");
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "linux");
+    if !linux {
+        eprintln!("skipping: no engine running Linux containers here");
         return;
     }
     let labels = json!({"live.arkitekt.service": description().to_string()});
