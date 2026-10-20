@@ -47,7 +47,10 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
         )
     })?;
     let Ok(said) = serde_json::from_str::<Description>(&answer) else {
-        bail!("`{image}`'s `{}` label is not a description this build reads", contract::LABEL);
+        bail!(
+            "`{image}`'s `{}` label is not a description this build reads",
+            contract::LABEL
+        );
     };
     if json {
         // As the image printed it: whatever it says that this build does not read is kept.

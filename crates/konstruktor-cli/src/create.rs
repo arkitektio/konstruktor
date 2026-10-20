@@ -878,7 +878,7 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
 /// order — services, storage, mesh, then ports and addresses unless mesh-only. Each is
 /// pre-filled with what the flags say, which are the shared defaults unless given.
 async fn wizard(args: &mut CreateArgs) -> Result<()> {
-    use inquire::{Confirm, CustomType, MultiSelect, Password, Select, Text};
+    use inquire::{Confirm, CustomType, MultiSelect, Select};
     use konstruktor_core::catalog::catalog;
 
     ui::say("");
@@ -935,36 +935,20 @@ async fn wizard(args: &mut CreateArgs) -> Result<()> {
     };
 
     // --- mesh -------------------------------------------------------------------
-    let mesh_choices = vec![
-        "Join the organization's mesh — the coordination server grants the key",
-        "Use a key I already have",
-        "No mesh — reachable only at this machine's addresses",
-    ];
-    let mesh = Select::new("Mesh", mesh_choices.clone())
-        .with_starting_cursor(match args.mesh {
-            MeshMode::Coordination => 0,
-            MeshMode::Manual => 1,
-            MeshMode::None => 2,
-        })
-        .prompt()?;
-    args.mesh = match mesh_choices.iter().position(|c| *c == mesh) {
-        Some(0) => MeshMode::Coordination,
-        Some(1) => MeshMode::Manual,
-        _ => MeshMode::None,
-    };
-    if args.mesh == MeshMode::Manual {
-        if args.mesh_key.is_none() && std::env::var("KONSTRUKTOR_MESH_KEY").is_err() {
-            args.mesh_key = Some(
-                Password::new("Mesh auth key")
-                    .with_display_mode(inquire::PasswordDisplayMode::Masked)
-                    .without_confirmation()
-                    .prompt()?,
-            );
-        }
-        let url = Text::new("Control server (empty for Tailscale's own)")
-            .with_default(args.mesh_coord_url.as_deref().unwrap_or(""))
+    // One question: the coordination server grants the key. A key of one's own is for
+    // `--mesh manual`, and asked nothing more about when given.
+    if args.mesh != MeshMode::Manual {
+        let join = Confirm::new("Join the mesh?")
+            .with_help_message(
+                "the organization's private network; the key comes when the hub is connected",
+            )
+            .with_default(args.mesh != MeshMode::None)
             .prompt()?;
-        args.mesh_coord_url = Some(url.trim().to_string()).filter(|u| !u.is_empty());
+        args.mesh = if join {
+            MeshMode::Coordination
+        } else {
+            MeshMode::None
+        };
     }
     args.mesh_only = args.mesh != MeshMode::None
         && Confirm::new("Mesh only? No ports are opened here, and only mesh clients can connect")

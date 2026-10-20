@@ -1,12 +1,5 @@
 import { open } from "@tauri-apps/plugin-shell";
-import {
-  BookOpen,
-  Info,
-  KeyRound,
-  Network,
-  TriangleAlert,
-  Waypoints,
-} from "lucide-react";
+import { BookOpen, Info, TriangleAlert, Waypoints } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import * as api from "../../../api";
@@ -14,9 +7,7 @@ import { ErrorDisplay } from "../../../components/Error";
 import { UIField } from "../../../components/FormInput";
 import { Alert } from "../../../components/ui/alert";
 import { Button } from "../../../components/ui/button";
-import { Card } from "../../../components/ui/card";
 
-import { cn } from "../../../utils";
 import { DOCS } from "../../../docs";
 import { AdvancedFields, StepField, StepFrame } from "../../wizard/StepFrame";
 import type { MeshMode } from "../../../api";
@@ -39,8 +30,8 @@ const usePreviewHostname = (identifier: string): string => {
 };
 
 /**
- * Whether this hub joins a mesh, where its key comes from, and whether the mesh is the
- * *only* way in.
+ * Whether this hub joins a mesh, and whether the mesh is the *only* way in. The key comes
+ * from the coordination server; one of one's own is an advanced choice.
  *
  * A hub advertised only at LAN addresses is only reachable from that LAN. The mesh is
  * the way out: a Tailscale sidecar joins the hub to the organization's tailnet and the
@@ -53,37 +44,12 @@ const usePreviewHostname = (identifier: string): string => {
  * published on this machine, and nothing on its networks is advertised.
  */
 
-const OPTIONS: {
-  value: MeshMode;
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  body: string;
-}[] = [
-  {
-    value: "coordination",
-    icon: Waypoints,
-    title: "Join the organization's mesh",
-    body: "Recommended. The coordination server hands out a mesh key while it authorizes this hub — nothing extra to fill in here. Whoever accepts the hub decides whether to grant it.",
-  },
-  {
-    value: "manual",
-    icon: KeyRound,
-    title: "Use a key I already have",
-    body: "Paste a pre-authorized key from a tailnet you run yourself. Single-use, and it is written into docker-compose.yaml in the deployment folder.",
-  },
-  {
-    value: "none",
-    icon: Network,
-    title: "No mesh",
-    body: "The hub is reached only at the addresses you pick next. Fine for a machine everyone who uses it can already reach.",
-  },
-];
-
 export const MeshStep = () => {
   const { setValue } = useFormContext();
   const values = useWatch() as HubForm;
   const mode = values.meshMode ?? "coordination";
-  const meshOnly = mode !== "none" && !!values.meshOnly;
+  const joined = mode !== "none";
+  const meshOnly = joined && !!values.meshOnly;
   const hostname = usePreviewHostname(values.identifier ?? "");
 
   const choose = (value: MeshMode) => {
@@ -107,89 +73,24 @@ export const MeshStep = () => {
           </Button>
         </div>
 
-        {OPTIONS.map((option) => {
-          const selected = mode === option.value;
-          const Icon = option.icon;
-          return (
-            <Card
-              key={option.value}
-              onClick={() => choose(option.value)}
-              className={cn(
-                "gap-0 py-3 px-4 cursor-pointer border transition-colors",
-                selected ? "border-primary bg-primary/5" : "border-border"
-              )}
-            >
-              <div className="flex items-start gap-3">
-                <span
-                  className={cn(
-                    "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border",
-                    selected
-                      ? "border-primary text-primary"
-                      : "border-border text-muted-foreground"
-                  )}
-                >
-                  <Icon className="size-3.5" />
-                </span>
-                <div className="min-w-0">
-                  <div className="font-medium">{option.title}</div>
-                  <div className="text-sm text-muted-foreground mt-0.5">
-                    {option.body}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
-
-        {mode === "manual" && (
-          <div className="mt-3 flex flex-col gap-5">
-            <Alert>
-              <Info />
-              <div>
-                Already running Tailscale on this machine? Nothing changes for it — it
-                keeps working as it is. The hub joins through its own container and only
-                tunnels the hub's traffic; your machine's Tailscale is never touched.{" "}
-                <button
-                  type="button"
-                  className="underline underline-offset-2 hover:text-foreground"
-                  onClick={() => open(DOCS.meshWithTailscale)}
-                >
-                  Read more
-                </button>
-              </div>
-            </Alert>
-
-            <StepField
-              label="Mesh auth key"
-              hint="A pre-authorized key — tskey-auth-… from Tailscale, or one minted by your own control server."
-            >
-              <UIField
-                name="meshAuthKey"
-                type="password"
-                autoComplete="off"
-                spellCheck="false"
-              />
-              <ErrorDisplay name="meshAuthKey" className="mt-1" />
-            </StepField>
-
-            <AdvancedFields fields={["meshCoordUrl"]}>
-              <StepField
-                label="Control server"
-                hint="The login server the key belongs to. Leave empty for Tailscale's own."
-              >
-                <UIField
-                  name="meshCoordUrl"
-                  placeholder="https://mesh.example.org"
-                  autoComplete="off"
-                  spellCheck="false"
-                />
-                <ErrorDisplay name="meshCoordUrl" className="mt-1" />
-              </StepField>
-            </AdvancedFields>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={joined}
+            onChange={(e) => choose(e.target.checked ? "coordination" : "none")}
+          />
+          <div>
+            <div className="font-medium">Join the mesh</div>
+            <div className="text-sm text-muted-foreground mt-0.5">
+              {joined
+                ? "The coordination server hands out the key when the hub is connected — nothing to fill in here. Whoever accepts the hub decides whether to grant it."
+                : "The hub is reached only at the addresses you pick next. Fine for a machine everyone who uses it can already reach."}
+            </div>
           </div>
-        )}
+        </label>
 
-        {mode !== "none" && (
+        {joined && (
           <>
             <label className="mt-4 flex items-start gap-3 cursor-pointer">
               <input
@@ -223,6 +124,76 @@ export const MeshStep = () => {
                 </div>
               </Alert>
             )}
+
+            <div className="mt-4">
+              <AdvancedFields fields={["meshAuthKey", "meshCoordUrl"]}>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={mode === "manual"}
+                    onChange={(e) =>
+                      choose(e.target.checked ? "manual" : "coordination")
+                    }
+                  />
+                  <div>
+                    <div className="font-medium text-sm">Use a key I already have</div>
+                    <div className="text-sm text-muted-foreground mt-0.5">
+                      A pre-authorized key from a tailnet you run yourself, instead of
+                      the organization's. Single-use, and it is written into
+                      docker-compose.yaml in the deployment folder.
+                    </div>
+                  </div>
+                </label>
+
+                {mode === "manual" && (
+                  <>
+                    <Alert>
+                      <Info />
+                      <div>
+                        Already running Tailscale on this machine? Nothing changes for
+                        it — it keeps working as it is. The hub joins through its own
+                        container and only tunnels the hub's traffic; your machine's
+                        Tailscale is never touched.{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:text-foreground"
+                          onClick={() => open(DOCS.meshWithTailscale)}
+                        >
+                          Read more
+                        </button>
+                      </div>
+                    </Alert>
+
+                    <StepField
+                      label="Mesh auth key"
+                      hint="A pre-authorized key — tskey-auth-… from Tailscale, or one minted by your own control server."
+                    >
+                      <UIField
+                        name="meshAuthKey"
+                        type="password"
+                        autoComplete="off"
+                        spellCheck="false"
+                      />
+                      <ErrorDisplay name="meshAuthKey" className="mt-1" />
+                    </StepField>
+
+                    <StepField
+                      label="Control server"
+                      hint="The login server the key belongs to. Leave empty for Tailscale's own."
+                    >
+                      <UIField
+                        name="meshCoordUrl"
+                        placeholder="https://mesh.example.org"
+                        autoComplete="off"
+                        spellCheck="false"
+                      />
+                      <ErrorDisplay name="meshCoordUrl" className="mt-1" />
+                    </StepField>
+                  </>
+                )}
+              </AdvancedFields>
+            </div>
 
             <Alert className="mt-2 text-xs text-muted-foreground">
               This hub will join as{" "}
