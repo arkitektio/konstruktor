@@ -1307,16 +1307,23 @@ pub async fn update_app(
             plan.record.app.identifier, plan.record.app.version, plan.release.manifest.version
         ),
     });
-    let mesh = dir.join(MESH_FILE).is_file();
-    let accepted = accept(
+    // On the mesh it stays the node it is: its sidecar keeps its state, so no key is asked
+    // for — and an acceptance that would bring none cannot fail the update.
+    let mesh = std::fs::read_to_string(dir.join(MESH_FILE))
+        .ok()
+        .map(|text| serde_norway::from_str::<MeshBlock>(&text))
+        .transpose()
+        .map_err(|error| CreateError::Answers(format!("{MESH_FILE} cannot be read: {error}")))?;
+    let mut accepted = accept(
         &coord_server,
         &manifest,
-        mesh,
+        false,
         hub_grants.as_ref(),
         cancel,
         on,
     )
     .await?;
+    accepted.mesh = mesh;
     if let (Some(before), Some(now)) = (&plan.record.app.organization, &accepted.organization) {
         if before != now {
             return Err(CreateError::Answers(format!(

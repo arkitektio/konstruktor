@@ -292,7 +292,8 @@ fn ask(
 pub struct UpdateArgs {
     #[command(flatten)]
     pub target: crate::manage::Target,
-    /// The release to move to, `X.Y.Z`. Without it, the newest.
+    /// The release to move to, `X.Y.Z`. Without it, the newest. The release it runs
+    /// already is accepted again, in place: the way back for an app whose login was lost.
     #[arg(long)]
     pub to: Option<String>,
     /// Only say whether there is a newer release, and what it would ask for.
@@ -339,16 +340,12 @@ pub async fn update(args: UpdateArgs) -> Result<()> {
     ui::end_progress();
     let current = &plan.record.app;
     let target = &plan.release.manifest.version;
-    if target == &current.version {
+    let again = target == &current.version;
+    if again && args.to.is_none() {
         ui::ok(&format!(
-            "{} runs {}, the {} release.",
-            current.identifier,
-            current.version,
-            if args.to.is_some() {
-                "asked-for"
-            } else {
-                "newest"
-            }
+            "{} runs {}, the newest release. `--to {}` accepts it again, for an app whose \
+             login was lost.",
+            current.identifier, current.version, current.version
         ));
         return Ok(());
     }
@@ -362,7 +359,14 @@ pub async fn update(args: UpdateArgs) -> Result<()> {
 
     ui::table(&[
         ("app".into(), current.identifier.clone()),
-        ("release".into(), format!("{} → {target}", current.version)),
+        (
+            "release".into(),
+            if again {
+                format!("{target}, accepted again")
+            } else {
+                format!("{} → {target}", current.version)
+            },
+        ),
         ("flavour".into(), plan.flavour.clone()),
         ("folder".into(), dir.to_string_lossy().to_string()),
     ]);

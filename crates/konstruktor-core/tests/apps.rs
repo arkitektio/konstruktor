@@ -527,3 +527,94 @@ async fn an_update_accepted_into_another_organization_changes_nothing() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&hub).ok();
 }
+
+#[tokio::test]
+async fn an_app_on_the_mesh_stays_the_node_it_is_through_an_update() {
+    if !docker_is_ready().await {
+        eprintln!("skipped: updating checks Docker first, and there is none ready here");
+        return;
+    }
+    // Accepted onto the mesh at attach: the first acceptance brings a key.
+    let server = stand_in("3").await;
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "refresh_token": "rt-app",
+            "client_id": "engine-client",
+            "self": {"sub": "2", "organization": "3"},
+            "mesh": {"ionscale_auth_key": "tskey-first", "ionscale_coord_url": "https://mesh.example.org"},
+        })))
+        .up_to_n_times(1)
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let hub = a_connected_hub(&server, "mesh");
+    let dir = scratch("mesh");
+    let mut asked = answers(&server, &hub, &dir);
+    asked.mesh = true;
+    apps::attach_app(&asked, &CancellationToken::new(), &|_| {})
+        .await
+        .expect("attached on the mesh");
+    let node = std::fs::read_to_string(dir.join("configs/mesh.yaml")).expect("its mesh block");
+    let before = compose_of(&dir);
+    assert!(
+        before["services"]["app"]["network_mode"]
+            .as_str()
+            .is_some_and(|mode| mode.starts_with("service:")),
+        "{before:?}"
+    );
+
+    // The update's acceptance brings no key: the app keeps the node it is.
+    later_releases(&server, "3").await;
+    let plan = apps::plan_update(&dir, Some("2.2.0"))
+        .await
+        .expect("a plan");
+    apps::update_app(
+        &plan,
+        &update_answers(&dir),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("updated without a new mesh key");
+    let after = compose_of(&dir);
+    assert_eq!(
+        after["services"]["app"]["network_mode"], before["services"]["app"]["network_mode"],
+        "still inside its sidecar's network"
+    );
+    let sidecar = before["services"]["app"]["network_mode"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("service:")
+        .to_string();
+    assert_eq!(
+        after["services"][&sidecar], before["services"][&sidecar],
+        "the same sidecar"
+    );
+    let node_after = std::fs::read_to_string(dir.join("configs/mesh.yaml")).unwrap();
+    assert_eq!(node, node_after, "the same mesh block");
+    // And the update asked for no key.
+    let device_starts: Vec<serde_json::Value> = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| r.url.path() == "/o/device/")
+        .map(|r| serde_json::from_slice(&r.body).unwrap_or_default())
+        .collect();
+    assert_eq!(device_starts.len(), 2, "attached, then updated");
+    assert_eq!(
+        device_starts[0]["request_auth_key"], true,
+        "attaching asked for one"
+    );
+    assert!(
+        device_starts[1].get("request_auth_key").is_none(),
+        "{}",
+        device_starts[1]
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&hub).ok();
+}
