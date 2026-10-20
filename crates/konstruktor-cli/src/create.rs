@@ -698,9 +698,9 @@ async fn services_of_images(
             .await
             .with_context(|| {
                 format!(
-                    "`{asked}` does not say which service it is when it is run with no command: \
-                     it cannot be pulled, or it is a release from before a service \
-                     described itself"
+                    "`{asked}` carries no description: it cannot be found here or in its \
+                     registry, or it is not a service's release (no `{}` label)",
+                    konstruktor_core::contract::LABEL
                 )
             })?;
         // Any service is one a hub can host: what it needs, its image has just said. Only

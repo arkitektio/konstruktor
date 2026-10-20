@@ -170,6 +170,8 @@ async fn an_image_without_the_label_has_none_to_read() {
     let image = image(&server, "arkitektio/other", "1");
 
     assert_eq!(konstruktor_core::contract::labelled(&image).await, None);
+    // Nor is it run to be asked: without the label, it is no service's.
+    assert!(konstruktor_core::contract::describe(&image).await.is_none());
 }
 
 #[tokio::test]

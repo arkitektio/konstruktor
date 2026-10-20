@@ -579,8 +579,9 @@ another hub under this hub's uuid in an organization of one's own gains nothing 
 
 What a service is comes from its image: its release build stamps the description into the image as
 the `live.arkitekt.service` label, which Konstruktor reads from the registry — the image's config, a
-few kilobytes — before anybody has agreed to download the image. An image without the label is asked
-by running it with no command.
+few kilobytes — before anybody has agreed to download the image. An image without the label is not a
+service's release Konstruktor runs; a local build carries it when built with
+`--label "$(arkitekt-service label)"`.
 
 ## Disclaimer
 

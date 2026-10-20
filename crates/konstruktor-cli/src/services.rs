@@ -106,9 +106,9 @@ async fn services_of_images(
             .await
             .with_context(|| {
                 format!(
-                    "`{image}` does not say which service it is when it is run with no \
-                     command: it cannot be pulled, or it is a release from before a service \
-                     described itself"
+                    "`{image}` carries no description: it cannot be found here or in its \
+                     registry, or it is not a service's release (no `{}` label)",
+                    konstruktor_core::contract::LABEL
                 )
             })?;
         let id = ServiceId::parse(&said.name).with_context(|| {

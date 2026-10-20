@@ -425,7 +425,7 @@ pub async fn create_hub(
     // The images are asked before anybody is asked to accept the hub, and before anything
     // is written: what each needs from the hub, how it is started and what it is
     // registered as are theirs to say, and both the manifest and the files are written
-    // from that. An image that is not on this machine yet is fetched by the asking.
+    // from that, each read from its image's label without pulling it.
     on(CreateEvent::Log {
         line: "Asking the images what they are…".into(),
     });
@@ -433,9 +433,10 @@ pub async fn create_hub(
     let silent = crate::contract::undescribed(&config, &said);
     if !silent.is_empty() {
         return Err(CreateError::Answers(format!(
-            "{} did not say what it is when run with no command: the image cannot be pulled, \
-             or it is a release from before a service described itself. Nothing was written.",
-            silent.join(", ")
+            "{} carry no description: the image cannot be found here or in its registry, \
+             or it is not a service's release (no `{}` label). Nothing was written.",
+            silent.join(", "),
+            crate::contract::LABEL
         )));
     }
     crate::contract::acceptable(&config, &said).map_err(CreateError::Answers)?;
@@ -1362,9 +1363,10 @@ pub async fn connect(
     let silent = crate::contract::undescribed(&config, &said);
     if !silent.is_empty() {
         return Err(CreateError::Answers(format!(
-            "{} did not say what it is when run with no command: the image cannot be pulled, \
-             or it is a release from before a service described itself. Nothing was changed.",
-            silent.join(", ")
+            "{} carry no description: the image cannot be found here or in its registry, \
+             or it is not a service's release (no `{}` label). Nothing was changed.",
+            silent.join(", "),
+            crate::contract::LABEL
         )));
     }
     crate::contract::acceptable(&config, &said).map_err(CreateError::Answers)?;

@@ -2,16 +2,16 @@
 //!
 //! A hub's installer knows the hub: where the database is, which services run, which keys
 //! they trust. What a *service* is — what it needs, how this release of it spells its
-//! config — the service's own image says, through one entry point every image has
-//! (the `arkitekt-service` package; run with no command, an image says what it is):
+//! config — the service's own image says (the `arkitekt-service` package):
 //!
-//! - `describe`: what it needs from a hub and offers to it ([`Description`]);
+//! - its description, stamped as the [`LABEL`] at build: what it needs from a hub and
+//!   offers to it ([`Description`]), read without pulling the image;
 //! - `render`: this release's config, from the hub's facts ([`facts`]) with what the
 //!   operator set laid over ([`crate::overrides`]).
 //!
 //! So a key a release renames is renamed in that release's image, and nothing here has to
-//! learn of it. An image that does not answer `describe` has no contract, and is not a
-//! release this installer runs.
+//! learn of it. An image without the label has no contract, and is not a release this
+//! installer runs.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -365,21 +365,16 @@ pub struct Description {
 }
 
 /// The image label a service's release build stamps its description into
-/// (`arkitekt-service label`): the same JSON the image prints when run with no command.
+/// (`arkitekt-service label`): the JSON `arkitekt-service describe` prints.
 pub const LABEL: &str = "live.arkitekt.service";
 
-/// What `image` is. Read from its label when it carries one — from the engine if the image is
-/// here, else from its registry, without pulling it (see [`crate::oci`]) — and otherwise asked
-/// by running it with no command: a service's image answers with its description and stops.
-/// Nothing of what is inside is assumed — not a language, not a module — so anything that
-/// prints the description as its own command is a service. `None` for an image that does
-/// not: every release before this was the convention, or one that speaks a contract this
-/// build does not.
+/// What `image` is, read from its label — from the engine if the image is here, else from
+/// its registry, without pulling it (see [`crate::oci`]). Nothing of what is inside is
+/// assumed — not a language, not a module — so any image that carries the description is a
+/// service's. `None` for an image without the label, one that can be found neither here nor
+/// in its registry, or one that speaks a contract this build does not.
 pub async fn describe(image: &str) -> Option<Description> {
-    if let Some(said) = labelled(image).await.as_deref().and_then(read) {
-        return Some(said);
-    }
-    read(&answer(image).await?)
+    read(&labelled(image).await?)
 }
 
 /// The description `image` carries as its label, as it was stamped. `None` for an image
@@ -392,33 +387,6 @@ fn read(text: &str) -> Option<Description> {
     serde_json::from_str::<Description>(text)
         .ok()
         .filter(|said| said.contract == CONTRACT)
-}
-
-/// What `image` printed when it was run with no command, as it printed it: its description,
-/// if it is a service's. For showing an operator the whole of it (`konstruktor inspect`);
-/// everything that acts on a description reads [`describe`].
-pub async fn answer(image: &str) -> Option<String> {
-    // Named, so it can be removed: an image that is not a service's may well *start*
-    // something with no command, and never stop to answer.
-    let name = format!("konstruktor-describe-{:012x}", rand::random::<u64>() >> 16);
-    let asking = crate::engine_probe::engine()
-        .async_command()
-        .args(["run", "--rm", "--name", &name, image])
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let output = match tokio::time::timeout(DESCRIBE_TIMEOUT, asking).await {
-        Ok(output) => output.ok().filter(|output| output.status.success())?,
-        Err(_) => {
-            let _ = crate::engine_probe::engine()
-                .async_command()
-                .args(["rm", "--force", &name])
-                .output()
-                .await;
-            return None;
-        }
-    };
-    String::from_utf8(output.stdout).ok()
 }
 
 /// The image `service` of the hub at `dir` runs: the build written down for it, or what
@@ -434,10 +402,6 @@ pub fn image_of(dir: &Path, config: &HubConfig, service: &str) -> Option<String>
     let pinned = crate::pins::references(config, &crate::lock::read(dir).pins);
     Some(pinned.get(&lok.host).unwrap_or(&lok.image).clone())
 }
-
-/// How long an image gets to say what it is, fetching it included. One that describes itself
-/// answers in a second; this is for the one that serves something instead.
-const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// What an image answered when asked for its config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1075,7 +1039,7 @@ pub async fn prepare_databases(
         match said.get(&service) {
             None => failed.push(format!(
                 "`{service}`'s image does not say how its database is prepared \
-                 (run with no command, it has to say what it is), so nothing was started on it."
+                 (it carries no description), so nothing was started on it."
             )),
             // Nothing to prepare is prepared.
             Some(description) => match description.preparation() {
