@@ -578,7 +578,7 @@ pub(crate) fn report(event: CreateEvent, open_browser: bool) {
             ..
         } => {
             ui::say("");
-            ui::step("Somebody with an account has to accept this hub:");
+            ui::step("Somebody with an account has to accept it:");
             ui::say("");
             ui::say(&format!("      {}", ui::bold(&verification_uri_complete)));
             ui::say(&format!("      code  {}", ui::bold(&user_code)));
