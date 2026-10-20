@@ -38,9 +38,17 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
         (None, None) => bail!("name a service of the hub, or an image with --image"),
     };
 
-    let answer = contract::answer(&image).await.ok_or_else(|| {
-        anyhow!("`{image}` could not be run, or did not stop: it is not here and cannot be pulled, or it is not a service's image")
-    })?;
+    // The label when the image carries one — read without pulling it — and the image's own
+    // answer otherwise.
+    let (answer, how) = match contract::labelled(&image).await {
+        Some(label) => (label, "read from its label"),
+        None => (
+            contract::answer(&image).await.ok_or_else(|| {
+                anyhow!("`{image}` could not be run, or did not stop: it is not here and cannot be pulled, or it is not a service's image")
+            })?,
+            "asked by running it",
+        ),
+    };
     let Ok(said) = serde_json::from_str::<Description>(&answer) else {
         bail!(
             "`{image}` did not say what it is when run with no command: it is not a service's \
@@ -63,6 +71,7 @@ pub async fn run(args: InspectArgs, json: bool) -> Result<()> {
     };
     ui::say("");
     ui::say(&format!("  {}  {}", ui::bold(&said.name), ui::dim(&image)));
+    ui::say(&format!("  {}", ui::dim(how)));
     if !said.summary.is_empty() {
         ui::say(&format!("  {}", said.summary));
     }

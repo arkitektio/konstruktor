@@ -143,7 +143,7 @@ pub async fn remote_digest(image: &str) -> Result<String, String> {
 }
 
 /// Trades a `Bearer realm=…,service=…,scope=…` challenge for an anonymous pull token.
-async fn token(
+pub(crate) async fn token(
     client: &reqwest::Client,
     challenge: &str,
     reference: &Reference,

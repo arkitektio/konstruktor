@@ -24,6 +24,7 @@ pub mod hosts;
 pub mod hubhealth;
 pub mod lock;
 pub mod migrate;
+pub mod oci;
 pub mod overrides;
 pub mod owned;
 pub mod paths;

@@ -364,14 +364,32 @@ pub struct Description {
     pub source: Option<Source>,
 }
 
-/// Asks `image` what it is, by running it with no command: a service's image answers with
-/// its description and stops. Nothing of what is inside is assumed — not a language, not a
-/// module — so anything that prints the description as its own command is a service. `None`
-/// for an image that does not: every release before this was the convention, or one that
-/// speaks a contract this build does not.
+/// The image label a service's release build stamps its description into
+/// (`arkitekt-service label`): the same JSON the image prints when run with no command.
+pub const LABEL: &str = "live.arkitekt.service";
+
+/// What `image` is. Read from its label when it carries one — from the engine if the image is
+/// here, else from its registry, without pulling it (see [`crate::oci`]) — and otherwise asked
+/// by running it with no command: a service's image answers with its description and stops.
+/// Nothing of what is inside is assumed — not a language, not a module — so anything that
+/// prints the description as its own command is a service. `None` for an image that does
+/// not: every release before this was the convention, or one that speaks a contract this
+/// build does not.
 pub async fn describe(image: &str) -> Option<Description> {
-    let answer = answer(image).await?;
-    serde_json::from_str::<Description>(&answer)
+    if let Some(said) = labelled(image).await.as_deref().and_then(read) {
+        return Some(said);
+    }
+    read(&answer(image).await?)
+}
+
+/// The description `image` carries as its label, as it was stamped. `None` for an image
+/// without one, or one that can neither be found here nor read from its registry.
+pub async fn labelled(image: &str) -> Option<String> {
+    crate::oci::labels(image).await?.remove(LABEL)
+}
+
+fn read(text: &str) -> Option<Description> {
+    serde_json::from_str::<Description>(text)
         .ok()
         .filter(|said| said.contract == CONTRACT)
 }
