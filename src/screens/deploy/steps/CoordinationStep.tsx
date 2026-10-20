@@ -38,7 +38,7 @@ export const CoordinationStep = () => {
       icon={Server}
       title="Coordination"
       subtitle="Who does this hub answer to?"
-      lead="Accounts, organizations and permissions live on a coordination server. This hub runs the services and trusts that server to say who anyone is. You will be asked to accept it there, in a browser, before anything is written to disk."
+      lead="Accounts, organizations and permissions live on a coordination server. This hub runs the services and trusts that server to say who anyone is. Once the hub is written and running, somebody accepts it there into an organization, in a browser — or later, from its dashboard."
     >
       <div className="flex flex-col gap-6 max-w-xl">
         <StepField label="Coordination server">
@@ -48,7 +48,7 @@ export const CoordinationStep = () => {
 
         <StepField
           label="Hub identifier"
-          hint="How this hub is known inside the organization that accepts it. Unique there."
+          hint="What this hub is called where it is connected. Its identity is its own, so another hub of the same name is no trouble."
         >
           <UIField name="identifier" autoComplete="off" spellCheck="false" />
           <ErrorDisplay name="identifier" className="mt-1" />
@@ -65,7 +65,8 @@ export const CoordinationStep = () => {
 
         <Alert className="text-xs text-muted-foreground">
           Nothing is created on the coordination server yet — that happens at the end,
-          once you have chosen what this hub will run.
+          once the hub is written and running. Its services take nobody&apos;s tokens until
+          it is accepted.
         </Alert>
       </div>
     </StepFrame>

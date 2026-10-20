@@ -1,6 +1,6 @@
-mod authorize;
 mod compose_cmd;
 mod config_cmd;
+mod connect;
 mod coord;
 mod create;
 mod engine;
@@ -55,7 +55,7 @@ Create a deployment:
   hub create       A hub: rekuest, mikro, fluss and the rest behind a gateway
   hub templates    List the kinds of hub `hub create --template` makes
   engine create    A plugin engine: one container running an org's plugins
-  coord create     A coordination server: what the other two authorize against
+  coord create     A coordination server: what the other two connect to
 
 Run it (any deployment):
   up               Start it
@@ -70,8 +70,9 @@ Run it (any deployment):
   list             List the deployments this machine knows about
 
 Change a hub:
+  hub connect      Connect it to an organization, or again: addresses, mesh key
+  hub disconnect   Disconnect it from one of its organizations
   hub services     List, add or remove its services
-  authorize        Authorize it again: new addresses, or a mesh key
   update           Update the services whose images changed upstream
   rollback         Return to the images it ran before the last update
   freeze           Have `update` leave it on the builds it runs
@@ -206,8 +207,9 @@ enum Command {
     List,
 
     // --- change a hub ------------------------------------------------------------
-    /// Authorize a hub again: change the addresses it advertises, or get a mesh key.
-    Authorize(Box<authorize::AuthorizeArgs>),
+    /// The old name of `hub connect`.
+    #[command(hide = true)]
+    Authorize(Box<connect::ConnectArgs>),
     /// Update the services whose images have changed upstream.
     Update(manage::UpdateArgs),
     /// Return a hub to the images it was running before its last update.
@@ -303,8 +305,13 @@ async fn hub_report(args: HubReportArgs) -> anyhow::Result<()> {
 
 #[derive(Subcommand)]
 enum HubCommand {
-    /// Create a hub: generate it, authorize it, write it, start it.
+    /// Create a hub: write it and start it. With --server, connect it too.
     Create(Box<create::CreateArgs>),
+    /// Connect a hub to a coordination server, into one more organization: its users'
+    /// tokens are then taken by the hub's services. Again: new addresses, or a mesh key.
+    Connect(Box<connect::ConnectArgs>),
+    /// Disconnect a hub from one organization of its coordination server.
+    Disconnect(connect::DisconnectArgs),
     /// List the templates `hub create --template` takes.
     Templates,
     /// List a hub's services, add some, or take some out.
@@ -412,6 +419,8 @@ async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     match cli.command {
         Command::Hub(HubCommand::Create(args)) => create::run(*args, json).await,
+        Command::Hub(HubCommand::Connect(args)) => connect::run(*args).await,
+        Command::Hub(HubCommand::Disconnect(args)) => connect::disconnect(args).await,
         Command::Hub(HubCommand::Templates) => create::templates(json),
         Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
         Command::Hub(HubCommand::Regenerate(args)) => compose_cmd::regenerate_hub(args).await,
@@ -421,7 +430,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Engine(EngineCommand::Detach(args)) => engine::attach(args.engine, None).await,
         Command::Coord(CoordCommand::Create(args)) => coord::run(*args).await,
-        Command::Authorize(args) => authorize::run(*args).await,
+        Command::Authorize(args) => connect::run(*args).await,
         Command::Checkout(args) => manage::checkout(&args),
         Command::Doctor(args) => manage::doctor(json, args.fix, args.yes).await,
         Command::List => manage::list(json),

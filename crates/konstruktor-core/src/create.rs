@@ -12,8 +12,8 @@ use crate::config::hub::{
 use crate::config::mesh::{build_mesh_block, mesh_hostname, MeshOptions};
 use crate::connect::authorize::{self, HubAuthorizationError};
 use crate::connect::manifest::{build_hub_request, AdvertisedHost, HubManifestOptions};
-use crate::credentials::{write_credentials, HubCredentials};
-use crate::generate::generate_hub_files;
+use crate::credentials::{write_credentials, Grant, HubCredentials};
+use crate::generate::{generate_hub_files, IssuedIdentity};
 use crate::profile::{hub_profile, write_profile};
 use crate::{compose, docker, git, registry};
 
@@ -273,25 +273,19 @@ pub enum CreateError {
 pub struct CreatedHub {
     pub path: PathBuf,
     pub config: HubConfig,
-    /// The grant, on a hub a coordination server accepted. A self-contained hub has none:
-    /// it runs that server, and nobody was asked.
-    pub credentials: Option<HubCredentials>,
-    /// Whether a mesh key was actually granted.
-    pub mesh_granted: bool,
 }
 
-/// Build → authorize → write → start, in that order and only that order.
+/// Build → write → start. Nobody is asked anything: a hub names itself, mints its own keys
+/// and trusts its own services, so nothing in it needs a coordination server until somebody
+/// should log in. It is created unconnected — its services take no token — and connected
+/// afterwards, as often and into as many organizations as accept it ([`connect`]).
 ///
-/// The ordering is load-bearing. `build_hub_config` mints fresh secrets and a fresh
-/// Ed25519 pair, so it runs exactly once: calling it again to fold in a mesh key would
-/// describe a different hub than the one the coordination server accepted.
-///
-/// A self-contained hub (`coord_server: local`) skips the authorization, and with it the
-/// only step that needs a person or a network: it runs the coordination server itself, so
-/// there is nobody to ask. Everything else is the same path.
+/// What connecting will send is decided here and kept in the profile: what the hub is
+/// called, the addresses it is advertised at, and whether it wants the coordination
+/// server's mesh. A self-contained hub (`coord_server: local`) runs its own coordination
+/// server and is never connected anywhere.
 pub async fn create_hub(
     answers: &HubAnswers,
-    cancel: &CancellationToken,
     on: &(dyn Fn(CreateEvent) + Sync),
 ) -> Result<CreatedHub, CreateError> {
     validate_identifier(&answers.identifier)?;
@@ -372,7 +366,12 @@ pub async fn create_hub(
 
     let mut config = build_hub_config(&HubConfigOptions {
         device_id: store.device_id.clone(),
-        coord_server: answers.coord_server.trim().to_string(),
+        // Not connected anywhere yet, unless it runs its own: `connect` sets it.
+        coord_server: if self_contained {
+            LOCAL_COORD_SERVER.to_string()
+        } else {
+            String::new()
+        },
         rekuest_server: answers.rekuest_server.clone(),
         services: Some(answers.services.clone()),
         http_port,
@@ -442,43 +441,56 @@ pub async fn create_hub(
     // LiveKit announces one of the addresses the hub is about to advertise.
     config.place_livekit(&host_names(&hosts));
 
-    // --- authorize, unless there is nobody to ask ---------------------------
-    let (mut config, credentials, mesh_granted) = if self_contained {
-        (config, None, false)
-    } else {
-        let (config, credentials, mesh_granted) =
-            authorize_new_hub(answers, config, &said, &store.device_id, &hosts, cancel, on).await?;
-        (config, Some(credentials), mesh_granted)
-    };
+    // --- what connecting will send ------------------------------------------
+    config.identifier = Some(answers.identifier.trim().to_string());
+    config.description = answers
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    config.advertised_hosts = hosts.clone();
+    // The coordination server's mesh is joined with a key that comes with a grant: wanted
+    // now, joined when the hub is connected. Kept as a mesh that is not on yet, so that the
+    // name it takes there and whether it is reached over it alone survive until then.
+    if answers.mesh_mode == MeshMode::Coordination && config.mesh.is_none() {
+        let mut wanted = build_mesh_block(&MeshOptions {
+            hostname: mesh_hostname(&answers.identifier),
+            auth_key: String::new(),
+            coord_url: None,
+            login: None,
+        });
+        wanted.enabled = false;
+        config.mesh = Some(wanted);
+    }
+    if answers.mesh_only {
+        if let Some(mesh) = config.mesh.as_mut() {
+            mesh.mesh_only = true;
+        }
+    }
 
     // Now that the mesh name is known too: every address a browser may POST from.
     config.csrf_trusted_origins = Some(trusted_origins(&config, &host_names(&hosts)));
 
     // --- write --------------------------------------------------------------
-    let identity = credentials
-        .as_ref()
-        .map(HubCredentials::issued_identity)
-        .unwrap_or_default();
-    let files = generate_hub_files(&config, &identity, &said);
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &said);
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
     }
 
     write_profile(&dir, &hub_profile(config.clone()))
         .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
-    if let Some(credentials) = &credentials {
-        write_credentials(&dir, credentials)?;
-    }
     crate::migrate::write_hub(&dir, &config, &files)?;
     // So the first start does not ask them again.
     crate::contract::remember(&dir, &config, &said)?;
 
     // --- register, so the desktop app sees it -------------------------------
+    // With the coordination server it is connected to: none yet, unless it runs its own.
     registry::register(
         &mut store,
         &answers.name,
         &dir.to_string_lossy(),
-        Some(answers.coord_server.trim().to_string()),
+        self_contained.then(|| LOCAL_COORD_SERVER.to_string()),
         Some(answers.identifier.trim().to_string()),
         now_rfc3339(),
     );
@@ -488,10 +500,9 @@ pub async fn create_hub(
     //
     // Deliberately *after* the deployment is registered and before the stack is started.
     // Before `up`, because compose already declares the bind mounts and an empty
-    // `mounts/<service>` would hand the container an empty workspace. After `register`,
-    // because the device grant above is single-use: a clone that fails must leave a hub
-    // the app can still see and the user can fix by hand, not an authorized folder
-    // nothing knows about and no second run can reproduce.
+    // `mounts/<service>` would hand the container an empty workspace. After `register`, so
+    // that a clone that fails leaves a hub the app can still see and the user can fix by
+    // hand.
     {
         let fallback = answers
             .dev_branch
@@ -529,12 +540,7 @@ pub async fn create_hub(
         path: dir.to_string_lossy().to_string(),
     });
 
-    Ok(CreatedHub {
-        path: dir,
-        config,
-        credentials,
-        mesh_granted,
-    })
+    Ok(CreatedHub { path: dir, config })
 }
 
 /// The compose services this hub has an image to name for: everything in its stack, and
@@ -649,105 +655,6 @@ fn seeded_lok(answers: &HubAnswers, hosts: &[AdvertisedHost]) -> LokOptions {
         mandate_keys,
         key_pair: None,
     }
-}
-
-/// Asks the coordination server to accept the hub, waits for somebody to, and folds what
-/// came back into the profile. The one step of creating a hub that needs a person.
-#[allow(clippy::too_many_arguments)]
-async fn authorize_new_hub(
-    answers: &HubAnswers,
-    mut config: HubConfig,
-    said: &crate::contract::Said,
-    device_id: &str,
-    hosts: &[AdvertisedHost],
-    cancel: &CancellationToken,
-    on: &(dyn Fn(CreateEvent) + Sync),
-) -> Result<(HubConfig, HubCredentials, bool), CreateError> {
-    let request = build_hub_request(
-        &config,
-        &HubManifestOptions {
-            identifier: answers.identifier.trim().to_string(),
-            description: answers
-                .description
-                .as_deref()
-                .map(str::trim)
-                .filter(|d| !d.is_empty())
-                .map(str::to_string),
-            node_id: Some(device_id.to_string()),
-            hosts: hosts.to_vec(),
-            reachable_hosts: answers.reachable_hosts.clone(),
-            request_auth_key: answers.mesh_mode == MeshMode::Coordination,
-            // Declared up front even for a key that is only about to be minted: the
-            // server resolves it against whichever node registers with that key.
-            mesh_alias: answers.mesh_mode != MeshMode::None,
-            // Every hub: plugins an attached engine starts sit on the hub's network and
-            // reach it only as `gateway`. Scope local, so clients elsewhere skip it.
-            internal_host: Some(config.gateway.host.clone()),
-            expiration_seconds: None,
-            // What each service is registered as, and with which scopes and roles.
-            described: said.clone(),
-        },
-    );
-
-    let grant = authorize::start(&answers.coord_server, &request).await?;
-    on(CreateEvent::Staged {
-        user_code: grant.user_code.clone(),
-        verification_uri_complete: grant.verification_uri_complete.clone(),
-        expires_in: grant.expires_in,
-    });
-
-    let envelope = authorize::wait_for_hub(&grant, cancel, &|progress| {
-        on(CreateEvent::Waiting {
-            polls: progress.polls,
-            seconds_left: progress.seconds_left,
-        })
-    })
-    .await?;
-
-    let issued_key = envelope.mesh_grant().ionscale_auth_key.clone();
-    let mesh_granted = issued_key.is_some();
-    on(CreateEvent::Granted {
-        mesh_key: mesh_granted,
-    });
-
-    // Fold a minted key into the config that was *just* accepted, rather than rebuilding.
-    if answers.mesh_mode == MeshMode::Coordination {
-        if let Some(key) = issued_key {
-            config.mesh = Some(build_mesh_block(&MeshOptions {
-                hostname: mesh_hostname(&answers.identifier),
-                auth_key: key,
-                coord_url: envelope.mesh_grant().ionscale_coord_url.clone(),
-                login: envelope.login(),
-            }));
-        }
-    }
-
-    if let Some(warning) = confirm_plugin_engine(&mut config, &envelope) {
-        on(CreateEvent::Log { line: warning });
-    }
-
-    if answers.mesh_only {
-        match config.mesh.as_mut() {
-            Some(mesh) => mesh.mesh_only = true,
-            // Accepted, but without a key: written as it stands, this hub would publish
-            // no port and join no tailnet — reachable by nothing. Better to stop here,
-            // with nothing on disk, than to write that.
-            None => return Err(CreateError::NoMeshKey),
-        }
-    }
-
-    enable_reporter(&mut config, &envelope);
-
-    let credentials = HubCredentials {
-        version: 1,
-        server: answers.coord_server.trim().to_string(),
-        identifier: answers.identifier.trim().to_string(),
-        authorized_at: now_rfc3339(),
-        issuer: grant.issuer.clone(),
-        envelope: envelope.clone(),
-        advertised_hosts: hosts.to_vec(),
-    };
-    Ok((config, credentials, mesh_granted))
 }
 
 /// Gets the source of each of `services` that runs from source to where compose mounts it
@@ -1331,14 +1238,14 @@ fn host_names(hosts: &[AdvertisedHost]) -> Vec<String> {
 /// Re-authorizing a hub that already exists on disk.
 ///
 /// This is how a hub moves to a different network, joins the mesh it was created without,
-/// or — with [`ReauthorizeAnswers::services`] — gains or loses services. The profile is
+/// or — with [`ConnectAnswers::services`] — gains or loses services. The profile is
 /// reused verbatim — its secrets and provenance key are what the running services already
 /// trust — and only the manifest is sent again.
 ///
 /// The service configs are then regenerated, because the JWKS URL the coordination server
 /// returns is what they verify inbound tokens against, and it may have moved.
 #[derive(Debug, Clone)]
-pub struct ReauthorizeAnswers {
+pub struct ConnectAnswers {
     pub dir: PathBuf,
     pub coord_server: String,
     pub identifier: String,
@@ -1358,8 +1265,10 @@ pub struct ReauthorizeAnswers {
 
 /// What re-authorizing did, beyond the credentials it wrote.
 #[derive(Debug, Clone)]
-pub struct Reauthorized {
+pub struct Connected {
     pub credentials: HubCredentials,
+    /// The organization that accepted the hub this time, when the server says.
+    pub organization: Option<String>,
     /// A mesh key was asked for.
     pub mesh_requested: bool,
     /// And one came back. It expires fifteen minutes after it was issued.
@@ -1370,11 +1279,11 @@ pub struct Reauthorized {
     pub services: Option<crate::services::ServicePlan>,
 }
 
-pub async fn reauthorize(
-    answers: &ReauthorizeAnswers,
+pub async fn connect(
+    answers: &ConnectAnswers,
     cancel: &CancellationToken,
     on: &(dyn Fn(CreateEvent) + Sync),
-) -> Result<Reauthorized, CreateError> {
+) -> Result<Connected, CreateError> {
     let profile = crate::profile::read_profile(&answers.dir)
         .map_err(|e| CreateError::Folder(e.to_string()))?;
     let mut config = profile.config;
@@ -1390,6 +1299,18 @@ pub async fn reauthorize(
              them, create the hub again with the services you want."
                 .into(),
         ));
+    }
+    // One coordination server per hub: its grants all trust that server's keys. Another one
+    // is refused before anybody is sent to a browser.
+    if let Some(held) = crate::credentials::read_credentials(&answers.dir) {
+        if held.server.trim() != answers.coord_server.trim() {
+            return Err(CreateError::Answers(format!(
+                "This hub is connected to {} — disconnect it from every organization there \
+                 before connecting it to {}.",
+                held.server.trim(),
+                answers.coord_server.trim()
+            )));
+        }
     }
     // A service change is refused here, before anybody is sent to a browser, and applied
     // to this copy only: the profile on disk changes once the grant is accepted.
@@ -1557,15 +1478,31 @@ pub async fn reauthorize(
     config.csrf_trusted_origins = Some(origins);
     let reporter_enabled = config.reporter.as_ref().is_some_and(|r| r.enabled);
 
-    let credentials = HubCredentials {
-        version: 1,
-        server: answers.coord_server.trim().to_string(),
-        identifier: answers.identifier.trim().to_string(),
+    // The organization that accepted it replaces what it held, or joins the ones that
+    // accepted it before. Read again rather than at the top: the acceptance waited on a
+    // human, and nothing else may have been written meanwhile is to be dropped.
+    let accepted = Grant {
         authorized_at: now_rfc3339(),
-        issuer: grant.issuer.clone(),
         envelope,
-        advertised_hosts: hosts,
     };
+    let organization = accepted.organization().map(str::to_string);
+    let credentials = match crate::credentials::read_credentials(&answers.dir) {
+        Some(mut held) => {
+            held.identifier = answers.identifier.trim().to_string();
+            held.issuer = grant.issuer.clone();
+            held.advertised_hosts = hosts;
+            held.accept(accepted);
+            held
+        }
+        None => HubCredentials::first(
+            answers.coord_server.trim().to_string(),
+            answers.identifier.trim().to_string(),
+            grant.issuer.clone(),
+            hosts,
+            accepted,
+        ),
+    };
+    config.coord_server = credentials.server.clone();
 
     // Generation first: a profile this app did not write could fail here, and a
     // half-updated folder is worse than an unchanged one.
@@ -1602,12 +1539,78 @@ pub async fn reauthorize(
     on(CreateEvent::Done {
         path: answers.dir.to_string_lossy().to_string(),
     });
-    Ok(Reauthorized {
+    Ok(Connected {
         credentials,
+        organization,
         mesh_requested: request_auth_key,
         mesh_granted: request_auth_key && mesh_granted,
         reporter_enabled,
         services,
+    })
+}
+
+/// What disconnecting did.
+#[derive(Debug, Clone)]
+pub struct Disconnected {
+    /// What the coordination server made of it.
+    pub outcome: crate::deregister::ServerOutcome,
+    /// The organizations the hub is still connected to: none means it is not connected at
+    /// all, and its services take no token until it is connected again.
+    pub organizations: Vec<String>,
+}
+
+/// Disconnects the hub in `dir` from `organization`: the coordination server lets go of it
+/// there, and its services stop taking that organization's tokens once they are started
+/// again — the service configs are written anew here, the restart is the caller's.
+///
+/// Disconnected from the last one, the hub is what `hub create` leaves: not connected,
+/// trusting no issuer, reporting to nobody.
+pub async fn disconnect(dir: &Path, organization: &str) -> Result<Disconnected, CreateError> {
+    let profile =
+        crate::profile::read_profile(dir).map_err(|e| CreateError::Folder(e.to_string()))?;
+    let held = crate::credentials::read_credentials(dir).ok_or_else(|| {
+        CreateError::Answers("This hub is not connected to any organization.".into())
+    })?;
+    if !held.organizations().iter().any(|org| org == organization) {
+        return Err(CreateError::Answers(format!(
+            "This hub is not connected to organization {organization}; it is connected to {}.",
+            held.organizations().join(", ")
+        )));
+    }
+
+    let outcome = crate::deregister::disconnect(dir, organization)
+        .await
+        .map_err(|e| CreateError::Answers(e.to_string()))?;
+
+    let mut config = profile.config;
+    let remaining = crate::credentials::read_credentials(dir)
+        .map(|held| held.organizations())
+        .unwrap_or_default();
+    if crate::credentials::read_credentials(dir).is_none() {
+        // Nobody left to connect to, and no login to report with.
+        config.coord_server = String::new();
+        config.reporter = None;
+    }
+    crate::profile::rewrite(dir, config, &[])
+        .map_err(|e| CreateError::Write(std::io::Error::other(e.to_string())))?;
+
+    let mut store = registry::load();
+    if remaining.is_empty() {
+        registry::forget_coordination(&mut store, &dir.to_string_lossy(), now_rfc3339());
+    } else {
+        registry::record_regeneration(
+            &mut store,
+            &dir.to_string_lossy(),
+            None,
+            None,
+            now_rfc3339(),
+        );
+    }
+    let _ = registry::save(&store);
+
+    Ok(Disconnected {
+        outcome,
+        organizations: remaining,
     })
 }
 

@@ -359,6 +359,22 @@ pub fn record_regeneration(
     true
 }
 
+/// The hub at `path` is connected to no coordination server any more: what `hub create`
+/// leaves it as. Its identifier is its own and stays.
+pub fn forget_coordination(registry: &mut RegistryFile, path: &str, now: String) -> bool {
+    let wanted = normalize_path(path);
+    let Some(record) = registry
+        .deployments
+        .iter_mut()
+        .find(|d| normalize_path(&d.path) == wanted)
+    else {
+        return false;
+    };
+    record.last_generated_at = Some(now);
+    record.coord_server = None;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

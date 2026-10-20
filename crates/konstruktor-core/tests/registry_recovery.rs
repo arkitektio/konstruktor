@@ -2,7 +2,7 @@
 //!
 //! `load` is deliberately tolerant — a bad file must never stop either front end from
 //! starting. The danger is that almost every caller follows a `load` with a `save`
-//! (`create.rs`, `engine.rs`, `destroy.rs`, `create::reauthorize`), so a `load` that
+//! (`create.rs`, `engine.rs`, `destroy.rs`, `create::connect`), so a `load` that
 //! returned an empty registry meant the next write erased the record of every deployment
 //! on the machine. The folders stayed; nothing pointed at them.
 //!

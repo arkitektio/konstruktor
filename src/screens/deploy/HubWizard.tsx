@@ -59,11 +59,10 @@ import {
 /**
  * Creating a hub, end to end.
  *
- * The order is not cosmetic. The manifest sent to the coordination server declares every
- * service instance and the addresses it can be reached at, so the folder, the services,
- * the ports and the addresses all have to be answered before the hub can be authorized —
- * and the hub has to be authorized before anything is written, because the identity it
- * comes back with is what the generated service configs trust.
+ * The hub is written and started first — it names itself and trusts its own services,
+ * so nothing in it waits on anybody — and connected to the coordination server second,
+ * where somebody accepts it into an organization. What connecting sends is decided by
+ * the answers: the services, the addresses it is reached at, whether it wants the mesh.
  */
 
 const port = z.coerce
@@ -510,11 +509,11 @@ export const HubWizard = () => {
   const installing = creating.running || creating.done || creating.error !== null;
 
   /**
-   * Stop waiting for the code to be accepted.
+   * Stop waiting for the code to be accepted: connect later.
    *
    * Only the wait can be interrupted, so this is a request rather than a switch: the
-   * core notices at its next poll and the call comes back with "Cancelled.". Nothing has
-   * been written by then — the folder is written after the hub is accepted, never before.
+   * core notices at its next poll and the call comes back with "Cancelled.". The hub is
+   * written and running by then, connected nowhere — its dashboard connects it later.
    */
   const handleCancel = async () => {
     setCreating((previous) => ({ ...previous, cancelled: true }));
@@ -528,10 +527,11 @@ export const HubWizard = () => {
   };
 
   /**
-   * One call builds the profile, authorizes it, writes the folder and starts the stack.
-   * Progress, including the device code somebody has to accept, comes back through a
-   * channel and is rendered by {@link InstallPanel}; when it is done we go to the hub's
-   * dashboard.
+   * Two calls, one flow: the first builds the profile, writes the folder and starts the
+   * stack; the second connects it to the coordination server, which is where somebody has
+   * to accept it. Progress, including the device code, comes back through a channel and is
+   * rendered by {@link InstallPanel}; when it is done we go to the hub's dashboard. A hub
+   * that runs its own coordination server is not connected anywhere.
    */
   const handleSubmit = async (values: HubForm) => {
     setCreating({ ...emptyCreateState, running: true });
@@ -541,6 +541,24 @@ export const HubWizard = () => {
 
     try {
       await api.createHub(toAnswers(values), onEvent);
+      setCreating((previous) => ({ ...previous, written: true }));
+      const server = values.coordServer.trim();
+      if (server && server !== "local") {
+        await api.connectHub(
+          {
+            path: values.path,
+            coordServer: server,
+            identifier: values.identifier.trim(),
+            description: values.description?.trim() || null,
+            hosts: values.hosts ?? [],
+            reachableHosts: [],
+            // The coordination server's mesh is joined with the grant; any other way
+            // was settled when the hub was written.
+            meshKey: values.meshMode === "coordination" ? "auto" : "never",
+          },
+          onEvent
+        );
+      }
     } catch (error) {
       setCreating((previous) => ({
         ...previous,
@@ -630,7 +648,7 @@ export const HubWizard = () => {
                     disabled={creating.cancelled}
                     onClick={handleCancel}
                   >
-                    {creating.cancelled ? "Stopping…" : "Cancel"}
+                    {creating.cancelled ? "Stopping…" : "Connect later"}
                   </Button>
                 )
               ) : creating.done ? null : createdId ? (

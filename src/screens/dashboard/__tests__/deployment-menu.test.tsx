@@ -149,7 +149,7 @@ describe("the deployment menu", () => {
       "Open folder",
       "Logs",
       "Reload",
-      "Authorize",
+      "Connect…",
       "Remove containers",
       "Delete all data",
       "Forget deployment",

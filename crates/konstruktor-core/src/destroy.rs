@@ -209,11 +209,12 @@ pub fn plan(record: &DeploymentRecord) -> Result<(PathBuf, DeletionPlan), Delete
         folder_protected: !may_remove_folder(&dir, dirs::home_dir().as_deref()),
         name: record.name.clone(),
         checkouts: owned.checkouts(&dir),
-        // A self-contained hub also has an identifier, but it is registered in its own
-        // coordination server — which goes with the rest of it.
-        was_authorized: record.identifier.is_some()
-            && record.coord_server.as_deref().map(str::trim)
-                != Some(crate::config::hub::LOCAL_COORD_SERVER),
+        // Connected anywhere, by its credentials: a hub is created unconnected, and a
+        // self-contained one is registered in its own coordination server — which goes with
+        // the rest of it — and holds none.
+        was_authorized: kind == profile::DeploymentKind::Hub
+            && (crate::credentials::credentials_path(&dir).is_file()
+                || dir.join(crate::deregister::DEREGISTERED_FILENAME).is_file()),
         // By the credentials rather than the record: they are what the server is asked
         // with, and a delete that already removed the hub there has moved them aside.
         will_deregister: kind == profile::DeploymentKind::Hub
@@ -526,6 +527,8 @@ mod tests {
         // No service of this profile runs from a checkout, so this one is somebody's own.
         std::fs::create_dir_all(dir.join("mounts").join("rekuest")).unwrap();
 
+        // Connected: the coordination server's login is in the folder.
+        std::fs::write(dir.join(crate::credentials::CREDENTIALS_FILENAME), "{}").unwrap();
         let mut record = record_at(&dir);
         record.identifier = Some("mylab".into());
 

@@ -54,6 +54,11 @@ export type CreateState = {
    * the stack has to be started before then or the hub never joins the mesh.
    */
   meshKey: boolean;
+  /**
+   * The deployment is written already, and what runs now only connects it: stopping or
+   * failing leaves it in place, connected nowhere, rather than leaving nothing behind.
+   */
+  written?: boolean;
 };
 
 export const emptyCreateState: CreateState = {
@@ -123,14 +128,20 @@ export const heading = (state: CreateState, kind: string): string => {
 
 /** The line under the heading — what just happened, or what is being waited for. */
 export const explanation = (state: CreateState, kind: string): string => {
+  if (state.cancelled && !state.done && state.written)
+    return `The ${kind} is written and running, connected nowhere yet: its services take nobody's tokens until it is. Connect it from its dashboard whenever you are ready.`;
   if (state.cancelled && !state.done)
     return `Nothing was written. The ${kind} was never accepted, so the code you saw is now worthless — go back and create it again when you are ready.`;
+  if (state.error && state.written)
+    return `The ${kind} is written and running, but not connected — connect it from its dashboard.`;
   if (state.error) return "Nothing was written unless the step below says otherwise.";
   if (state.done)
     return kind === "hub"
       ? "The deployment is in your folder, registered here, and starting."
       : "The deployment is in your folder and registered here. Nothing is running yet — start it from the dashboard.";
-  return "Konstruktor is building, authorizing and writing your deployment.";
+  return state.written
+    ? "Konstruktor is connecting your deployment to the coordination server."
+    : "Konstruktor is building and writing your deployment.";
 };
 
 /** The icon beside the heading, in both the dialog and the wizard step. */

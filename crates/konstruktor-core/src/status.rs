@@ -219,9 +219,17 @@ pub fn channel_of(services: &[ServiceView]) -> ChannelView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubView {
     pub profile: crate::profile::Profile,
+    /// Connected to a coordination server, in at least one organization.
     pub authorized: bool,
     pub identifier: Option<String>,
+    /// When the first organization accepted it.
     pub authorized_at: Option<String>,
+    /// The coordination server it is connected to.
+    #[serde(default)]
+    pub coord_server: Option<String>,
+    /// Every organization that accepted it: the ones whose users' tokens its services take.
+    #[serde(default)]
+    pub connected: Vec<ConnectionView>,
     /// The gateway's own address, and the admin account for every service's admin panel.
     pub gateway_url: String,
     pub admin_user: String,
@@ -240,6 +248,16 @@ pub struct HubView {
     pub channel: ChannelView,
     /// Where the database and object storage live: the engine's volumes or the folder.
     pub storage: crate::config::hub::StorageMode,
+}
+
+/// One organization's acceptance of the hub.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionView {
+    /// The organization, as the coordination server names it (the token's `org`).
+    pub organization: Option<String>,
+    /// Who accepted it.
+    pub user: Option<String>,
+    pub authorized_at: String,
 }
 
 /// Read a hub folder and describe it.
@@ -277,8 +295,25 @@ pub fn hub_view(dir: &std::path::Path) -> Result<HubView, crate::profile::Profil
 
     Ok(HubView {
         authorized: creds.is_some(),
-        identifier: creds.as_ref().map(|c| c.identifier.clone()),
+        identifier: config
+            .identifier
+            .clone()
+            .or_else(|| creds.as_ref().map(|c| c.identifier.clone())),
         authorized_at: creds.as_ref().map(|c| c.authorized_at.clone()),
+        coord_server: creds.as_ref().map(|c| c.server.clone()),
+        connected: creds
+            .as_ref()
+            .map(|c| {
+                c.grants()
+                    .iter()
+                    .map(|grant| ConnectionView {
+                        organization: grant.organization().map(str::to_string),
+                        user: grant.envelope.self_.as_ref().and_then(|me| me.sub.clone()),
+                        authorized_at: grant.authorized_at.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         gateway_url,
         admin_user: config.global_admin.clone(),
         admin_password: config.global_admin_password.clone(),
@@ -291,11 +326,11 @@ pub fn hub_view(dir: &std::path::Path) -> Result<HubView, crate::profile::Profil
             .filter(|m| m.enabled)
             .map(|m| m.hostname.clone()),
         advertised_port: crate::connect::manifest::advertised_port(config),
-        // From the grant — or, on a hub that runs its own coordination server and so has
-        // no grant, from where that server was told the hub is.
-        advertised_hosts: creds
-            .as_ref()
-            .map(|c| c.advertised_hosts.clone())
+        // From the profile — or the grant of a hub created before the profile kept them, or,
+        // on a hub that runs its own coordination server, where that server was told it is.
+        advertised_hosts: Some(config.advertised_hosts.clone())
+            .filter(|hosts| !hosts.is_empty())
+            .or_else(|| creds.as_ref().map(|c| c.advertised_hosts.clone()))
             .or_else(|| config.running_lok().map(|lok| lok.advertised_hosts.clone()))
             .unwrap_or_default(),
         profile,

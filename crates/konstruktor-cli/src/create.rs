@@ -6,12 +6,12 @@ use konstruktor_core::config::hub::{
 };
 use konstruktor_core::connect::manifest::AdvertisedHost;
 use konstruktor_core::create::{
-    create_hub, identifier_from_folder, CreateEvent, HubAnswers, MeshMode, SeedAnswers,
+    create_hub, identifier_from_folder, CreateEvent, HubAnswers, MeshKeyRequest, MeshMode,
+    SeedAnswers,
 };
 use konstruktor_core::hosts;
 use konstruktor_core::profile;
 use konstruktor_core::templates;
-use tokio_util::sync::CancellationToken;
 
 use crate::ui;
 
@@ -22,15 +22,17 @@ pub struct CreateArgs {
     /// How this deployment is labelled. Defaults to the folder's name.
     #[arg(long)]
     pub name: Option<String>,
-    /// The coordination server this hub answers to. `local` runs one in this stack: a
-    /// self-contained hub, which nobody has to accept and which needs no network — see
-    /// `--org`, `--user` and `--mandate-keys` for what it starts out with.
+    /// The coordination server to connect the hub to once it is written (`hub connect`).
+    /// Left out, the hub is created connected nowhere, and a terminal is asked. `local` runs
+    /// one in this stack instead: a self-contained hub, which nobody has to accept and which
+    /// needs no network — see `--org`, `--user` and `--mandate-keys` for what it starts out
+    /// with.
     #[arg(long)]
     pub server: Option<String>,
-    /// The hub's name inside the organization that accepts it.
+    /// What the hub is called where it is connected.
     #[arg(long)]
     pub identifier: Option<String>,
-    /// A line about the hub, sent to the coordination server with the request.
+    /// A line about the hub, sent to the coordination server when it is connected.
     #[arg(long)]
     pub description: Option<String>,
     /// `local` runs Rekuest here; a host points at a remote provenance authority.
@@ -268,13 +270,26 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
     };
 
     // --- coordination server -----------------------------------------------
+    // Where to connect it once it is written — or nowhere yet. Only a terminal is asked: a
+    // script that says nothing gets a hub connected nowhere, which `hub connect` connects.
     let server = match &args.server {
         Some(server) => server.clone(),
-        None => ask.text(
-            "Coordination server",
-            "--server",
-            Some(konstruktor_core::defaults::COORDINATION_SERVER.to_string()),
-        )?,
+        None if ask.interactive => {
+            let now = inquire::Confirm::new("Connect it to a coordination server now?")
+                .with_default(true)
+                .with_help_message("Its services take nobody's tokens until it is connected")
+                .prompt()?;
+            if now {
+                ask.text(
+                    "Coordination server",
+                    "--server",
+                    Some(konstruktor_core::defaults::COORDINATION_SERVER.to_string()),
+                )?
+            } else {
+                String::new()
+            }
+        }
+        None => String::new(),
     };
 
     let identifier = match &args.identifier {
@@ -442,50 +457,52 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
     }
 
     // --- go -----------------------------------------------------------------
-    let cancel = CancellationToken::new();
-    let on_signal = cancel.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            on_signal.cancel();
-        }
-    });
-
-    let open_browser = !args.no_open && ui::is_interactive();
-    // Remembered from the event rather than the result: a start that fails still leaves a
-    // written hub whose key is ticking, and that is exactly when it has to be said.
-    let granted = std::sync::atomic::AtomicBool::new(false);
-    let result = create_hub(&answers, &cancel, &|event| {
-        if let CreateEvent::Granted { mesh_key } = &event {
-            granted.store(*mesh_key, std::sync::atomic::Ordering::Relaxed);
-        }
-        report(event, open_browser)
-    })
-    .await;
-    let requested = answers.mesh_mode == MeshMode::Coordination;
-    let granted = granted.load(std::sync::atomic::Ordering::Relaxed);
-
-    let created = match result {
-        Ok(created) => created,
-        Err(error @ konstruktor_core::create::CreateError::StartFailed) => {
-            let reporter = profile::read_profile(&dir).is_ok_and(|p| p.config.reporter.is_some());
-            ui::say("");
-            report_outcome(requested, granted, reporter, false);
-            return Err(error.into());
-        }
-        Err(error) => return Err(error.into()),
-    };
+    let created = create_hub(&answers, &|event| report(event, false)).await?;
 
     ui::say("");
     ui::ok(&format!(
         "Hub created at {}",
         created.path.to_string_lossy()
     ));
-    report_outcome(
-        requested,
-        created.mesh_granted,
-        created.config.reporter.is_some(),
-        answers.start,
-    );
+    // Connected now, when a server was named: the second step, as `hub connect` takes it.
+    let connect_to =
+        (!self_contained && !server.trim().is_empty()).then(|| server.trim().to_string());
+    match &connect_to {
+        Some(server) => {
+            crate::connect::connect(
+                &created.path,
+                &crate::connect::ConnectArgs {
+                    target: Default::default(),
+                    server: Some(server.clone()),
+                    identifier: None,
+                    description: None,
+                    hosts: Vec::new(),
+                    reach: None,
+                    // The coordination server's mesh is joined with the grant; any other
+                    // choice was made already.
+                    mesh_key: if answers.mesh_mode == MeshMode::Coordination {
+                        MeshKeyRequest::Auto
+                    } else {
+                        MeshKeyRequest::Never
+                    },
+                    request_auth_key: false,
+                    no_open: args.no_open,
+                    yes: true,
+                },
+            )
+            .await?;
+        }
+        None if !self_contained => {
+            ui::step(&format!(
+                "Connected nowhere yet: its services take nobody's tokens until it is. Connect it with {}",
+                ui::bold(&format!(
+                    "konstruktor hub connect --in {} --server <coordination server>",
+                    created.path.to_string_lossy()
+                ))
+            ));
+        }
+        None => {}
+    }
     if created.config.running_lok().is_some() {
         ui::step(&ui::dim(&format!(
             "Runs its own coordination server. How to reach it — the address, the account \

@@ -24,7 +24,9 @@ use tokio::io::AsyncWriteExt;
 use crate::compose;
 use crate::config::hub::ReporterBlock;
 use crate::connect::wellknown;
-use crate::credentials::{credentials_path, read_credentials, HubCredentials};
+use crate::credentials::{
+    credentials_path, read_credentials, write_credentials, Grant, HubCredentials,
+};
 use crate::hubhealth::{self, ReportError, ReporterState, STATE_FILENAME};
 
 /// Where the rotated login waits, inside the deployment folder, until the reporter's
@@ -174,7 +176,7 @@ pub async fn remove_hub(
 pub async fn fresh_access_token(
     client: &reqwest::Client,
     token_endpoint: &str,
-    seed: &HubCredentials,
+    seed: &Grant,
     stored: Option<ReporterState>,
     state_dir: &Path,
 ) -> Result<(String, ReporterState), DeregisterError> {
@@ -301,7 +303,7 @@ async fn hub_token(
     dir: &Path,
     client: &reqwest::Client,
     token_endpoint: &str,
-    seed: &HubCredentials,
+    seed: &Grant,
     reporter: Option<&ReporterBlock>,
 ) -> Result<String, DeregisterError> {
     // A grant without a refresh token has no chain to protect, and nothing to renew:
@@ -352,19 +354,81 @@ async fn hub_token(
     Ok(token)
 }
 
-/// Removes the hub in `dir` from the coordination server it was authorized against.
+/// Removes the hub in `dir` from the coordination server, in every organization that
+/// accepted it.
 ///
-/// Leaves the hub as it found it when the server does not delete it: the reporter is
-/// started again if it was running, with a login that works. The one exception is
-/// [`DeregisterError::WriteBack`], where starting it would do harm.
+/// One grant at a time, the reporter's last; each one the server let go of is dropped from
+/// the credentials at once, so a delete refused half-way can be run again and asks only
+/// about the rest. Leaves the hub as it found it when the server does not delete it: the
+/// reporter is started again if it was running, with a login that works. The one exception
+/// is [`DeregisterError::WriteBack`], where starting it would do harm.
 pub async fn deregister(dir: &Path) -> Result<ServerOutcome, DeregisterError> {
     let Some(seed) = read_credentials(dir) else {
         return Ok(ServerOutcome::NotRegistered);
     };
-    let reporter = crate::profile::read_profile(dir)
-        .ok()
-        .and_then(|profile| profile.config.reporter)
-        .filter(|reporter| reporter.enabled);
+    let mut outcome = ServerOutcome::AlreadyGone;
+    for (index, grant) in seed.grants().iter().enumerate().rev() {
+        if remove_grant(dir, &seed, grant, index == 0).await? == ServerOutcome::Removed {
+            outcome = ServerOutcome::Removed;
+        }
+        if index > 0 {
+            if let (Some(mut held), Some(organization)) =
+                (read_credentials(dir), grant.organization())
+            {
+                held.release(organization);
+                write_credentials(dir, &held)?;
+            }
+        }
+    }
+    // The login is void now. Moved aside rather than deleted: the folder is about to go
+    // anyway, and until it does this is the record of what the hub was.
+    let _ = std::fs::rename(credentials_path(dir), dir.join(DEREGISTERED_FILENAME));
+    Ok(outcome)
+}
+
+/// Removes the hub from one organization that accepted it, and lets go of that grant.
+///
+/// The hub stays connected to the others. Without another one it is not connected at all,
+/// and its credentials are moved aside as [`deregister`] leaves them. Regenerating the
+/// service configs, which still take that organization's tokens, is the caller's.
+pub async fn disconnect(dir: &Path, organization: &str) -> Result<ServerOutcome, DeregisterError> {
+    let Some(mut seed) = read_credentials(dir) else {
+        return Ok(ServerOutcome::NotRegistered);
+    };
+    let grants = seed.grants();
+    let Some(index) = grants
+        .iter()
+        .position(|grant| grant.organization() == Some(organization))
+    else {
+        return Ok(ServerOutcome::NotRegistered);
+    };
+    let outcome = remove_grant(dir, &seed, &grants[index], index == 0).await?;
+    if grants.len() == 1 {
+        let _ = std::fs::rename(credentials_path(dir), dir.join(DEREGISTERED_FILENAME));
+    } else {
+        seed.release(organization);
+        write_credentials(dir, &seed)?;
+    }
+    Ok(outcome)
+}
+
+/// Asks the server to let go of the hub in the organization of `grant`, logged in as that
+/// grant. The reporter's grant — the first — renews through the reporter's volume; any
+/// other has no reporter rotating its login, and renews on its own.
+async fn remove_grant(
+    dir: &Path,
+    seed: &HubCredentials,
+    grant: &Grant,
+    reported: bool,
+) -> Result<ServerOutcome, DeregisterError> {
+    let reporter = reported
+        .then(|| {
+            crate::profile::read_profile(dir)
+                .ok()
+                .and_then(|profile| profile.config.reporter)
+                .filter(|reporter| reporter.enabled)
+        })
+        .flatten();
 
     let client = reqwest::Client::builder().timeout(TIMEOUT).build()?;
 
@@ -390,23 +454,15 @@ pub async fn deregister(dir: &Path) -> Result<ServerOutcome, DeregisterError> {
     };
 
     let outcome = async {
-        let token = hub_token(dir, &client, &token_endpoint, &seed, reporter.as_ref()).await?;
+        let token = hub_token(dir, &client, &token_endpoint, grant, reporter.as_ref()).await?;
         remove_hub(&client, &endpoint, &token).await
     }
     .await;
 
-    match &outcome {
-        Ok(_) => {
-            // The login is void now. Moved aside rather than deleted: the folder is about
-            // to go anyway, and until it does this is the record of what the hub was.
-            let _ = std::fs::rename(credentials_path(dir), dir.join(DEREGISTERED_FILENAME));
-        }
-        Err(DeregisterError::WriteBack { .. }) => {}
-        Err(_) => {
-            if let (true, Some(reporter)) = (was_running, &reporter) {
-                // Best effort: the error being returned is the one that matters.
-                let _ = compose(dir, compose::up_service(&reporter.host), None).await;
-            }
+    if let (Err(error), true, Some(reporter)) = (&outcome, was_running, &reporter) {
+        if !matches!(error, DeregisterError::WriteBack { .. }) {
+            // Best effort: the error being returned is the one that matters.
+            let _ = compose(dir, compose::up_service(&reporter.host), None).await;
         }
     }
     outcome

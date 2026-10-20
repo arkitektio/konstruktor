@@ -264,21 +264,18 @@ mod authorized {
         assert!(auth.get("allowed_organizations").is_none());
     }
 
-    /// Without a grant, both fall back to the CLI's own derivation from `coord_server`.
+    /// A hub not connected anywhere yet trusts no issuer: its services run, and take no
+    /// token until it is connected. Not the coordination server it might be connected to.
     #[test]
-    fn falls_back_to_the_bare_host_when_there_is_no_grant() {
+    fn an_unconnected_hub_trusts_no_issuer() {
         let auth = auth_of(
             &config_of("hub_config.yaml"),
             ServiceId::Mikro,
             &IssuedIdentity::default(),
         );
 
-        let issuers = &auth["issuers"];
-        assert_eq!(issuers[0]["iss"].as_str(), Some("go.arkitekt.live"));
-        assert_eq!(
-            issuers[0]["jwks_uri"].as_str(),
-            Some("https://go.arkitekt.live/.well-known/jwks.json")
-        );
+        assert_eq!(auth["issuers"].as_sequence().map(Vec::len), Some(0));
+        assert!(auth.get("allowed_organizations").is_none());
     }
 }
 

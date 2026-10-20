@@ -220,11 +220,9 @@ async fn a_service_is_moved_to_another_build_and_prepared_for_it_once() {
     .expect("the answers");
 
     let _teardown = Teardown(dir.clone());
-    create_hub(&answers, &CancellationToken::new(), &|event| {
-        eprintln!("{event:?}")
-    })
-    .await
-    .expect("the hub is created and started");
+    create_hub(&answers, &|event| eprintln!("{event:?}"))
+        .await
+        .expect("the hub is created and started");
     let config = read_profile(&dir).expect("the profile").config;
     ready(&dir, &config, service, "After it was created").await;
 

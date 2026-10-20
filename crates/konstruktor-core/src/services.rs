@@ -30,9 +30,7 @@ use crate::catalog::{in_generation_order, ServiceId};
 use crate::compose::ComposeLine;
 use crate::config::hub::{HubConfig, DB_COMPOSE_SERVICE};
 use crate::contract::Said;
-use crate::create::{
-    reauthorize, CreateError, CreateEvent, MeshKeyRequest, ReauthorizeAnswers, Reauthorized,
-};
+use crate::create::{connect, ConnectAnswers, Connected, CreateError, CreateEvent, MeshKeyRequest};
 use crate::start::{StartError, StartReport};
 
 /// What somebody asked for: services to add, services to take out.
@@ -280,10 +278,7 @@ pub fn apply_plan(config: &mut HubConfig, plan: &ServicePlan) {
 ///
 /// A mesh key is asked for only by a hub already on a mesh (see [`MeshKeyRequest::Auto`]):
 /// changing services must not make a hub join one.
-pub fn answers_from_disk(
-    dir: &Path,
-    change: ServiceChange,
-) -> Result<ReauthorizeAnswers, CreateError> {
+pub fn answers_from_disk(dir: &Path, change: ServiceChange) -> Result<ConnectAnswers, CreateError> {
     let profile =
         crate::profile::read_profile(dir).map_err(|e| CreateError::Folder(e.to_string()))?;
     let config = &profile.config;
@@ -296,10 +291,17 @@ pub fn answers_from_disk(
     }
     let Some(credentials) = crate::credentials::read_credentials(dir) else {
         return Err(CreateError::Answers(
-            "this hub has never been authorized — authorize it first, then change its \
-             services"
+            "this hub is not connected to a coordination server — connect it first, then \
+             change its services"
                 .into(),
         ));
+    };
+    // What the hub sends: its profile says, since hubs were created unconnected; an older
+    // hub's credentials do.
+    let hosts = if config.advertised_hosts.is_empty() {
+        credentials.advertised_hosts.clone()
+    } else {
+        config.advertised_hosts.clone()
     };
     let on_mesh = config.mesh.as_ref().is_some_and(|m| m.enabled);
     let mesh_only = config
@@ -309,7 +311,7 @@ pub fn answers_from_disk(
     // Sent as it is, an empty list would replace what the coordination server has with
     // nothing. Only a mesh-only hub advertises nothing on purpose; any other was
     // authorized before its addresses were recorded, and has to say them once.
-    if credentials.advertised_hosts.is_empty() && !mesh_only {
+    if hosts.is_empty() && !mesh_only {
         return Err(CreateError::Answers(
             "this hub does not record the addresses it advertises, and changing its services \
              would send none — authorize it once with `konstruktor authorize --host/--reach` \
@@ -317,17 +319,20 @@ pub fn answers_from_disk(
                 .into(),
         ));
     }
-    Ok(ReauthorizeAnswers {
+    Ok(ConnectAnswers {
         dir: dir.to_path_buf(),
         coord_server: if credentials.server.trim().is_empty() {
             config.coord_server.clone()
         } else {
             credentials.server.clone()
         },
-        identifier: credentials.identifier.clone(),
-        description: None,
+        identifier: config
+            .identifier
+            .clone()
+            .unwrap_or_else(|| credentials.identifier.clone()),
+        description: config.description.clone(),
         // Empty for a mesh-only hub, which is what it should keep advertising.
-        hosts: credentials.advertised_hosts.clone(),
+        hosts,
         // Not recorded: which aliases a probe reached is only known at the time.
         reachable_hosts: Vec::new(),
         mesh_key: if on_mesh {
@@ -343,7 +348,10 @@ pub fn answers_from_disk(
 /// What changing the services did.
 #[derive(Debug, Clone)]
 pub struct ServicesChanged {
-    pub reauthorized: Reauthorized,
+    pub connected: Connected,
+    /// The organizations the hub is connected to that did not accept the change: each
+    /// still has the services from before, until the hub is connected there again.
+    pub stale_organizations: Vec<String>,
     pub plan: ServicePlan,
     /// The stack was brought to the new set of services.
     pub applied: bool,
@@ -355,7 +363,7 @@ pub struct ServicesChanged {
 ///
 /// `answers.services` has to be set; [`answers_from_disk`] builds answers that do.
 pub async fn change_services(
-    answers: &ReauthorizeAnswers,
+    answers: &ConnectAnswers,
     apply: bool,
     cancel: &CancellationToken,
     on: &(dyn Fn(CreateEvent) + Sync),
@@ -366,8 +374,8 @@ pub async fn change_services(
         ));
     }
     let before = snapshot_configs(&answers.dir);
-    let reauthorized = reauthorize(answers, cancel, on).await?;
-    let plan = reauthorized
+    let connected = connect(answers, cancel, on).await?;
+    let plan = connected
         .services
         .clone()
         .expect("a change was asked for, so a plan was made");
@@ -392,8 +400,15 @@ pub async fn change_services(
         }
     }
 
+    let stale_organizations = connected
+        .credentials
+        .organizations()
+        .into_iter()
+        .filter(|org| Some(org) != connected.organization.as_ref())
+        .collect();
     Ok(ServicesChanged {
-        reauthorized,
+        connected,
+        stale_organizations,
         plan,
         applied: apply,
     })

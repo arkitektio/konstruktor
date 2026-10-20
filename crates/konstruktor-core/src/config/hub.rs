@@ -972,6 +972,22 @@ pub struct HubConfig {
     /// A profile from before it existed is given one the first time it is read.
     #[serde(default)]
     pub uid: String,
+    /// What the hub is called where it is connected: the name a coordination server shows,
+    /// chosen when the hub was created and sent each time it is connected. A label, not an
+    /// identity — that is [`Self::uid`]. Absent from a profile written before hubs were
+    /// created unconnected, whose credentials hold it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
+    /// A line on what the hub is for, sent with the identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The addresses the hub's services are advertised at, chosen when it was created and
+    /// sent each time it is connected. Absent from an older profile, whose credentials hold
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advertised_hosts: Vec<AdvertisedHost>,
+    /// The coordination server the hub is connected to. Empty until it is connected;
+    /// `local` for a hub that runs its own.
     pub coord_server: String,
     pub csrf_trusted_origins: Option<Vec<String>>,
     pub db: DbBlock,
@@ -1951,6 +1967,9 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
 
     let mut config = HubConfig {
         uid: crate::secrets::generate_uuid(),
+        identifier: None,
+        description: None,
+        advertised_hosts: Vec::new(),
         services,
         // Minted once Lovekit is known to run: see `HubConfig::provide`.
         livekit: None,

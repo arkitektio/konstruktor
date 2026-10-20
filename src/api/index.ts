@@ -230,11 +230,9 @@ export const previewHubFiles = (answers: HubAnswers) =>
 export const cancelAuthorization = () => invoke<void>("cancel_authorization");
 
 /**
- * Build the profile, authorize it, write the folder, start the stack — one call, with
- * progress streamed back as it happens.
- *
- * Because authorization lives inside this call rather than in a wizard step, its result
- * cannot go stale against answers that changed afterwards.
+ * Build the profile, write the folder, start the stack — one call, with progress streamed
+ * back as it happens. Nobody is asked anything: the hub is created connected nowhere, and
+ * `connectHub` connects it — the wizard's last step, or later from the dashboard.
  */
 export const createHub = (
   answers: HubAnswers,
@@ -328,23 +326,32 @@ export const hubStatus = (path: string) => invoke<HubStatus>("hub_status", { pat
  */
 export type MeshKeyRequest = "auto" | "fresh" | "never";
 
-/** What re-authorizing did besides writing the credentials. */
-export type ReauthorizeOutcome = {
+/** What connecting did besides writing the credentials. */
+export type ConnectOutcome = {
+  /** The organization that accepted the hub this time. */
+  organization: string | null;
+  /** Every organization the hub is connected to now. */
+  organizations: string[];
   mesh_requested: boolean;
   /** A granted key is single-use and expires fifteen minutes after it was issued. */
   mesh_granted: boolean;
   reporter_enabled: boolean;
+  /** The hub was running, and was started again on its new configs. */
+  restarted: boolean;
 };
 
 /**
- * Re-authorize a hub that already exists: move it to another network, join a mesh it was
- * created without, or fetch a fresh mesh key. Services change through `changeServices`.
+ * Connect a hub to a coordination server: into an organization it is not connected to
+ * yet, or again into one it is — to move it to another network, join a mesh, or fetch a
+ * fresh mesh key. A hub is connected to one coordination server, in as many of its
+ * organizations as accept it; its services take exactly their users' tokens. Services
+ * change through `changeServices`.
  *
  * The profile is reused verbatim — its secrets are what the running services already
- * trust — and the service configs are regenerated afterwards, because the JWKS URL they
- * verify tokens against may have moved. A mesh-only hub's hosts are ignored by the core.
+ * trust — and the service configs are written again; a running hub is started again on
+ * them. A mesh-only hub's hosts are ignored by the core.
  */
-export const reauthorizeHub = (
+export const connectHub = (
   options: {
     path: string;
     coordServer: string;
@@ -359,7 +366,7 @@ export const reauthorizeHub = (
 ) => {
   const channel = new Channel<CreateEvent>();
   channel.onmessage = onEvent;
-  return invoke<ReauthorizeOutcome>("reauthorize_hub", {
+  return invoke<ConnectOutcome>("connect_hub", {
     path: options.path,
     coordServer: options.coordServer,
     identifier: options.identifier,
@@ -370,6 +377,14 @@ export const reauthorizeHub = (
     onEvent: channel,
   });
 };
+
+/**
+ * Disconnect a hub from one of its organizations: the coordination server lets go of it
+ * there, and its services stop taking that organization's tokens. Resolves to the
+ * organizations it is still connected to — none means connected nowhere.
+ */
+export const disconnectHub = (path: string, organization: string) =>
+  invoke<string[]>("disconnect_hub", { path, organization });
 
 // --- a hub's services, after creation ----------------------------------------
 

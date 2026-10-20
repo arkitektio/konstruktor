@@ -89,7 +89,7 @@ work the same for all three:
 |---|---|
 | `hub` | the services — rekuest, mikro, fluss and the rest — behind a gateway |
 | `engine` | a plugin engine on its own: the [plugin engine](https://github.com/arkitektio/plugin_engine) running an organization's plugins on a machine without a hub |
-| `coord` | a coordination server: where users, organizations and permissions live, and what a hub or an engine authorizes against |
+| `coord` | a coordination server: where users, organizations and permissions live, and what a hub or an engine connects to |
 
 A hub with Kabinet and Rekuest runs a plugin engine of its own, beside its services: the
 [plugin engine](https://github.com/arkitektio/plugin_engine) app, handed this machine's
@@ -115,8 +115,9 @@ konstruktor status [target]     # what a deployment is, and what is running
 konstruktor list                # what this machine knows about
 
 # change a hub
+konstruktor hub connect --server go.arkitekt.live [target]  # into an organization
+konstruktor hub disconnect --org <id> [target]  # out of one of them
 konstruktor hub services add|remove <ids…>  # change a hub's services
-konstruktor authorize [target]  # authorize again: new addresses, or a mesh key
 konstruktor update [target]     # only what has actually moved upstream
 konstruktor rollback [target]   # back onto the images it ran before that
 konstruktor freeze [target]     # have update leave it alone; --service for some
@@ -256,8 +257,8 @@ is touched: a hub made in a home directory is deleted without the home, and any 
 folder goes with it only if the hub was all it held. Each prints what it is about to take — including source
 checkouts that may hold commits pushed nowhere — before it asks.
 
-An authorized hub is also listed on its coordination server, and **`destroy` removes it
-there first**, logged in as the hub itself. If the server cannot be asked — it is down, it
+A connected hub is also listed on its coordination server, in every organization that
+accepted it, and **`destroy` removes it there first**, logged in as the hub itself. If the server cannot be asked — it is down, it
 refuses the hub's login, or it predates the endpoint — nothing is deleted, because the
 login that could ask later goes with the volumes. `destroy --local-only` deletes what is on
 the machine anyway and leaves the hub listed, for an administrator of that server to remove.
@@ -301,8 +302,10 @@ the flag that would have supplied it, so CI never hangs on a prompt. `[target]` 
 or the name of a registered deployment — the CLI and the desktop app share one registry,
 so a hub created in either shows up in the other.
 
-The one interactive step is the authorization itself: the CLI prints the URL and the short
-code, and waits while somebody with an account accepts the hub in a browser.
+The one interactive step is connecting: the CLI prints the URL and the short code, and
+waits while somebody with an account accepts the hub in a browser. `hub create --server …`
+connects the hub once it is written; without `--server` the hub is created connected nowhere,
+and `konstruktor hub connect` connects it whenever you are ready.
 
 ### A self-contained hub
 
@@ -377,13 +380,24 @@ repository. The installer is available for Windows, Mac and Linux. The installat
 Konstruktor creates and manages **hubs**: the data and compute services (rekuest, mikro, fluss, …)
 that make up an Arkitekt deployment. A hub manages no accounts of its own — users, organizations and
 permissions live on a *coordination server* such as [go.arkitekt.live](https://go.arkitekt.live), and
-the hub is authorized against one before it exists on disk.
+the hub is connected to one, in as many of its organizations as accept it.
 
-Creating a hub walks through a folder, the coordination server and the hub's name there, which
-services to run, which ports to publish, how far the hub should reach, and whether it joins a mesh.
-The last step is the authorization itself: Konstruktor sends the hub's manifest
-to the coordination server, shows you a short code, and opens the page where somebody with an account
-accepts the hub into an organization. Only once that comes back does anything get written.
+A hub names itself — a uuid it generates when it is created — and its services (their names in the
+hub, `mikro`), mints their keys and trusts them itself. So nothing in it needs a coordination server
+until somebody should log in, and creating a hub and connecting it are two steps:
+
+1. **Create.** A folder, the coordination server and the hub's name there, which services to run,
+   which ports to publish, how far the hub should reach, and whether it joins a mesh. The hub is
+   written and started — connected nowhere: its services run and take nobody's tokens.
+2. **Connect.** Konstruktor sends the hub's manifest to the coordination server, shows you a short
+   code, and opens the page where somebody with an account accepts the hub into an organization.
+   Its services then take the tokens of that organization's users, and of no other organization's.
+   The wizard runs this right after creating; "Connect later" leaves it for the dashboard.
+
+Connecting again is how a hub is accepted into another organization of the same coordination
+server, moves to new addresses, or claims a mesh key; accepted again into an organization it is
+connected to, it replaces what that organization knew of it. A hub is connected to one coordination
+server: to move to another, disconnect it from every organization there first.
 
 The wizard opens on answers that already work — Docker is checked before the first question, the
 folder defaults to `MyHub` in your home directory, the hub identifier is the folder's name slugified,
@@ -471,12 +485,13 @@ mesh alias per service (and for the S3 datalayer) and the coordination server fi
 name once it has registered. Nothing has to be done afterwards.
 
 The credential is a single-use pre-authorized key, and it can come from either end. "Join the
-organization's mesh" sets `request_auth_key` on the hub manifest, so the coordination server mints one
-while it is accepting the hub and returns it in the grant envelope — no second trip. Whoever approves
-the hub decides whether to grant it, so an approval can come back without a key. The key expires
-fifteen minutes after it was issued, which is why a new hub is started as soon as it is written; a hub
-whose key expired unused can fetch a fresh one by authorizing again (`konstruktor authorize --mesh-key
-fresh`, or the checkbox on the Authorize screen). Alternatively a key from a tailnet you run yourself
+organization's mesh" sets `request_auth_key` on the hub manifest when the hub is connected, so the
+coordination server mints one while it is accepting the hub and returns it in the grant envelope — no
+second trip. Whoever approves the hub decides whether to grant it, so an approval can come back
+without a key. A hub has one mesh: the one of the organization whose grant brought its key. The key
+expires fifteen minutes after it was issued, and a running hub is started again on it as soon as it
+comes; a hub whose key expired unused can fetch a fresh one by connecting again (`konstruktor hub
+connect --mesh-key fresh`, or the checkbox on the Connect screen). Alternatively a key from a tailnet you run yourself
 can be pasted, together with the control server it belongs to.
 
 *Mesh only* goes one step further: no port is opened on this machine and nothing on its networks is
@@ -487,12 +502,14 @@ A hub without a mesh generates exactly what it generated before the mesh existed
 `hub_config.yaml`, no sidecar, no extra volume.
 
 What lands in the folder is an ordinary Docker Compose project — `hub_config.yaml`,
-`docker-compose.yaml`, a `configs/` directory and `hub_credentials.json` — which you can start, stop
+`docker-compose.yaml`, a `configs/` directory and, once connected, `hub_credentials.json` — which you can start, stop
 and inspect from the app, or drive with `docker compose` yourself. Nothing about a deployment is
 locked to Konstruktor.
 
-A hub can be authorized again later — from its dashboard, or with `konstruktor authorize` — to
-advertise different addresses or to claim a mesh key.
+A hub is connected — again, or into another organization — from its dashboard's **Connect…**, or
+with `konstruktor hub connect`, and disconnected from an organization with **Disconnect from
+organization …** or `konstruktor hub disconnect --org <id>`. Disconnected from its last one, it is
+what `hub create` leaves: connected nowhere, its data untouched.
 
 Its services can change after creation too: **Manage services…** in the dashboard's menu, or
 
@@ -503,9 +520,10 @@ konstruktor hub services remove kraph [--in <hub>]
 konstruktor hub services apply [hub]   # what --no-apply leaves for later
 ```
 
-A change is a re-authorization: the new set of services goes to the coordination server (a new
-service needs its grant, and the coordination server learns its name and key), somebody accepts
-the device code, and only then are the profile and files rewritten. A hub names itself (a uuid
+A change is sent to the coordination server by connecting again: the new set of services goes to
+it, somebody accepts the device code into an organization, and only then are the profile and files
+rewritten. Every other organization the hub is connected to keeps the services it knew until the
+hub is connected there again, and Konstruktor says which. A hub names itself (a uuid
 it generates when it is created) and its services (their names in the hub, `mikro`): tokens for
 a service carry its name as `aud` and the hub's uuid as `hub`, and the hub's services trust each
 other through the bundle of their keys written into every config — nothing is negotiated. The stack is then brought to the new set — missing databases
@@ -524,8 +542,8 @@ against that generator's real output by golden-file tests
 result.
 
 The core is the whole product; the desktop app and the `konstruktor` command are two front ends
-over it. Creating a hub — build the profile, authorize it, write the folder, start the stack — is
-one function in the core that takes a progress callback, so the two front ends run the same code
+over it. Creating a hub — build the profile, write the folder, start the stack — and connecting it
+are functions in the core that take a progress callback, so the two front ends run the same code
 rather than merely equivalent code. The desktop app renders those progress events through a Tauri
 channel; the CLI prints them.
 
@@ -536,10 +554,18 @@ src-tauri/                 Tauri commands, and nothing else
 src/                       React
 ```
 
-Authorization is the canonical fakts device-code flow: the hub manifest is POSTed to the coordination
+Connecting is the canonical fakts device-code flow: the hub manifest is POSTed to the coordination
 server's `hub_authorization_endpoint` (discovered from `/.well-known/fakts`), a human accepts it in
-the browser, and Konstruktor polls the OAuth2 token endpoint until the grant comes back carrying the
-hub's identity — the JWKS URL the generated services verify inbound tokens against.
+the browser, and Konstruktor polls the OAuth2 token endpoint until the grant comes back — the JWKS
+URL the generated services verify inbound tokens against, and the organization that accepted the
+hub. Each grant is kept in `hub_credentials.json`; every service's config lists the grants'
+organizations as the only ones whose tokens it takes (`allowed_organizations`), so registering
+another hub under this hub's uuid in an organization of one's own gains nothing here.
+
+What a service is comes from its image: its release build stamps the description into the image as
+the `live.arkitekt.service` label, which Konstruktor reads from the registry — the image's config, a
+few kilobytes — before anybody has agreed to download the image. An image without the label is asked
+by running it with no command.
 
 ## Disclaimer
 

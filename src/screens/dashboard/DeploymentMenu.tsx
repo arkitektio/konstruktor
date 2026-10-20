@@ -16,6 +16,7 @@ import {
   RotateCw,
   ScrollText,
   ShieldCheck,
+  ShieldOff,
   Trash2,
   Undo2,
 } from "lucide-react";
@@ -102,6 +103,23 @@ export const DeploymentMenu = ({
   const navigate = useNavigate();
   const { forget, refresh } = useRegistry();
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  /** The organization a disconnect is being confirmed for. */
+  const [leaving, setLeaving] = useState<string | null>(null);
+  /** Why the last disconnect did not go through. */
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const organizations = (status?.connected ?? [])
+    .map((connection) => connection.organization)
+    .filter((organization): organization is string => Boolean(organization));
+
+  const disconnect = async (organization: string) => {
+    try {
+      await api.disconnectHub(deployment.path, organization);
+      await refresh();
+      onReload();
+    } catch (error) {
+      setLeaveError(typeof error === "string" ? error : String(error));
+    }
+  };
   /**
    * What a delete would take with it, asked for only once the dialog is open.
    *
@@ -250,10 +268,11 @@ export const DeploymentMenu = ({
               </DropdownMenuItem>
               <DropdownMenuItem
                 // The services running now come from the profile the dashboard read, and a
-                // change is a re-authorization — which a hub never authorized cannot do.
+                // change is sent to the coordination server — which a hub connected
+                // nowhere has none of.
                 disabled={!status?.authorized}
                 title={
-                  status && !status.authorized ? "Authorize this hub first" : undefined
+                  status && !status.authorized ? "Connect this hub first" : undefined
                 }
                 onSelect={() => setConfirm("services")}
               >
@@ -262,8 +281,18 @@ export const DeploymentMenu = ({
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => navigate(`/connect/${deployment.id}`)}>
                 <ShieldCheck />
-                Authorize
+                {organizations.length > 0 ? "Connect to an organization…" : "Connect…"}
               </DropdownMenuItem>
+              {organizations.map((organization) => (
+                <DropdownMenuItem
+                  key={organization}
+                  variant="destructive"
+                  onSelect={() => setLeaving(organization)}
+                >
+                  <ShieldOff />
+                  Disconnect from organization {organization}…
+                </DropdownMenuItem>
+              ))}
               {/*
                 The seeded admin account, without a card of its own on the page: needed
                 once when the hub is new, so it is one item that copies the password.
@@ -542,6 +571,30 @@ export const DeploymentMenu = ({
         />
       )}
 
+      {leaving && (
+        <ConfirmDialog
+          open
+          onOpenChange={(next) => !next && setLeaving(null)}
+          title={`Disconnect from organization ${leaving}?`}
+          description={
+            organizations.length > 1
+              ? `The coordination server lets go of this hub in organization ${leaving}, and its services stop taking that organization's tokens. It stays connected to its other organizations.`
+              : `The coordination server lets go of this hub in organization ${leaving}, its only one: afterwards its services take nobody's tokens until it is connected again. Its data stays.`
+          }
+          confirmTitle="Disconnect"
+          onConfirm={() => void disconnect(leaving)}
+        />
+      )}
+      {leaveError && (
+        <ConfirmDialog
+          open
+          onOpenChange={(next) => !next && setLeaveError(null)}
+          title="The hub was not disconnected"
+          description={leaveError}
+          confirmTitle="OK"
+          onConfirm={() => setLeaveError(null)}
+        />
+      )}
       {copy && (
         <ConfirmDialog
           open

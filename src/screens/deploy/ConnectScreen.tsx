@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../../api";
 import type { AdvertisedHost, CreateEvent, HubStatus } from "../../api";
 import { AppMenu } from "../../components/AppMenu";
+import { CoordinationPicker } from "../../coordination/CoordinationPicker";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -60,15 +61,24 @@ export const ConnectScreen: React.FC<{}> = () => {
 
   /** Ask for a new mesh key even though the hub is on a mesh — its last one expired. */
   const [freshKey, setFreshKey] = useState(false);
-  const [outcome, setOutcome] = useState<api.ReauthorizeOutcome | undefined>();
+  const [outcome, setOutcome] = useState<api.ConnectOutcome | undefined>();
+  /** The coordination server to connect a hub that is connected nowhere yet to. */
+  const [chosenServer, setChosenServer] = useState("");
 
-  const server = status?.profile.config.coord_server ?? "";
+  // One coordination server per hub: the one it is connected to, or — connected nowhere
+  // yet — the one picked here.
+  const connectedTo = status?.coord_server ?? "";
+  const server = connectedTo || chosenServer.trim();
+  const organizations = (status?.connected ?? [])
+    .map((connection) => connection.organization)
+    .filter((organization): organization is string => Boolean(organization));
   const ssl = status?.profile.config.gateway.ssl ?? false;
   const mesh = status?.profile.config.mesh;
   const onMesh = Boolean(mesh?.enabled);
   // A mesh-only hub advertises nothing on this machine's networks: the manifest carries
-  // its tailnet node and in-network gateway itself, so there are no addresses to pick.
-  const meshOnly = onMesh && Boolean(mesh?.mesh_only);
+  // its tailnet node and in-network gateway itself, so there are no addresses to pick. A
+  // hub not on its mesh yet is mesh-only by what it was created as.
+  const meshOnly = Boolean(mesh?.mesh_only);
   // From the core, which is where the manifest works it out — a probe has to aim at the
   // socket the coordination server will actually hand out, not a second guess at it.
   const port = status?.advertised_port ?? (ssl ? 443 : 80);
@@ -90,6 +100,7 @@ export const ConnectScreen: React.FC<{}> = () => {
         if (cancelled) return;
         setStatus(status);
         setIdentifier(status.identifier ?? deployment.identifier ?? deployment.name);
+        setChosenServer((chosen) => chosen || settings.coordinationServer || "");
         setCandidates(discovery.candidates);
         setPresets(discovery.presets);
 
@@ -190,7 +201,7 @@ export const ConnectScreen: React.FC<{}> = () => {
       setAuthorizing((previous) => reduceCreate(previous, event));
 
     try {
-      const result = await api.reauthorizeHub(
+      const result = await api.connectHub(
         {
           path: deployment.path,
           coordServer: server,
@@ -211,10 +222,11 @@ export const ConnectScreen: React.FC<{}> = () => {
       );
       setOutcome(result);
       setAuthorizing((previous) => ({ ...previous, running: false, done: true }));
-      // Re-authorizing rewrites the record — the identifier above is editable, and the
+      // Connecting rewrites the record — the identifier above is editable, and the
       // generation timestamp the dashboard's rail reads has just moved. Without this the
       // cached copy keeps describing the hub as it was until the app is remounted.
       await refresh();
+      setStatus(await api.hubStatus(deployment.path));
     } catch (error) {
       setAuthorizing((previous) => ({
         ...previous,
@@ -254,7 +266,7 @@ export const ConnectScreen: React.FC<{}> = () => {
         menu={
           <AppMenu
             back={`/dashboard/${deployment.id}`}
-            breadcrumb={`${deployment.name} · authorize`}
+            breadcrumb={`${deployment.name} · connect`}
           />
         }
         buttons={
@@ -268,7 +280,11 @@ export const ConnectScreen: React.FC<{}> = () => {
               }
               onClick={connect}
             >
-              {busy ? "Waiting for authorization…" : "Authorize this hub"}
+              {busy
+                ? "Waiting to be accepted…"
+                : organizations.length > 0
+                  ? "Connect to an organization"
+                  : "Connect this hub"}
             </Button>
             <Button
               variant="outline"
@@ -283,21 +299,37 @@ export const ConnectScreen: React.FC<{}> = () => {
           <div>
             <PageHeader
               icon={ShieldCheck}
-              title="Authorize"
-              subtitle={`Introduce ${deployment.name} to ${server || "its coordination server"}`}
+              title="Connect"
+              subtitle={`Introduce ${deployment.name} to ${server || "a coordination server"}`}
             />
             <p className="text-sm text-muted-foreground leading-relaxed mt-4 max-w-xl">
               The coordination server needs to know which services this hub runs and where
               they can be reached. Pick the addresses other machines will use, then accept
-              the hub in the browser.
+              the hub in the browser, into an organization: its services take that
+              organization&apos;s users&apos; tokens. Accepted into an organization it is
+              connected to already, it replaces what that organization knew of it.
             </p>
           </div>
 
+          {organizations.length > 0 ? (
+            <Alert className="max-w-2xl">
+              Connected to {connectedTo} — organization {organizations.join(", ")}. A hub is
+              connected to one coordination server; disconnect it from every organization
+              there, on its dashboard, to move it to another.
+            </Alert>
+          ) : (
+            <div className="max-w-xl">
+              <StepField label="Coordination server">
+                <CoordinationPicker value={chosenServer} onChange={setChosenServer} />
+              </StepField>
+            </div>
+          )}
+
           {forgotten && !authorizing.done && (
             <Alert className="max-w-2xl">
-              This hub was authorized before konstruktor started keeping a record of the
+              This hub was connected before konstruktor started keeping a record of the
               addresses it handed over, so what it currently advertises is not known here.
-              Everything reachable has been ticked — check it before authorizing, because
+              Everything reachable has been ticked — check it before connecting, because
               what you send now replaces what the coordination server has.
             </Alert>
           )}
@@ -306,8 +338,15 @@ export const ConnectScreen: React.FC<{}> = () => {
             <Alert className="max-w-2xl border-primary/50">
               <div className="flex flex-col gap-1">
                 <span>
-                  This hub is authorized and its service configuration has been rewritten.
-                  Restart the stack from the dashboard to pick it up.
+                  {outcome?.organization
+                    ? `Connected to organization ${outcome.organization}`
+                    : "Connected"}
+                  {outcome && outcome.organizations.length > 1
+                    ? ` — it serves organization ${outcome.organizations.join(", ")} now. `
+                    : ". "}
+                  {outcome?.restarted
+                    ? "The stack was started again on its new configuration."
+                    : "Its configuration was written again; the next start picks it up."}
                 </span>
                 {outcome?.mesh_requested && !outcome.mesh_granted && (
                   <span className="text-destructive">
@@ -317,7 +356,7 @@ export const ConnectScreen: React.FC<{}> = () => {
                 {outcome?.mesh_granted && (
                   <strong>
                     A mesh key was granted. It is single-use and expires 15 minutes after it
-                    was issued — restart the stack before then.
+                    was issued — start the stack before then.
                   </strong>
                 )}
                 {outcome?.reporter_enabled && (

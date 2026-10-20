@@ -294,20 +294,15 @@ pub async fn cancel_authorization(state: tauri::State<'_, AuthorizeState>) -> Re
     Ok(())
 }
 
-/// Create a hub, streaming progress back as it goes.
-///
-/// The device code appears in `CreateEvent::Staged`, so the progress step shows it —
-/// which is why this can be one call rather than a wizard step that can go stale.
+/// Create a hub, streaming progress back as it goes. Nobody is asked anything: the hub is
+/// created connected nowhere, and the wizard connects it next with [`connect_hub`].
 #[command]
 pub async fn create_hub(
     app: tauri::AppHandle,
     started: tauri::State<'_, StartedStacks>,
-    authorizing: tauri::State<'_, AuthorizeState>,
     answers: HubAnswers,
     on_event: Channel<CreateEvent>,
 ) -> Result<String, String> {
-    let cancel = authorizing.begin();
-
     // A new hub starts on the newest major each service's repository publishes; where a
     // registry does not answer, on the one this build names.
     let mut answers = answers;
@@ -315,15 +310,12 @@ pub async fn create_hub(
     seeds.append(&mut answers.default_images);
     answers.default_images = seeds;
 
-    let created = create::create_hub(&answers, &cancel, &move |event| {
+    let created = create::create_hub(&answers, &move |event| {
         // A closed channel means the window went away; the creation still finishes.
         let _ = on_event.send(event);
     })
-    .await;
-    // Before the `?`: an early return with the token still in the slot would leave the
-    // next attempt with a Cancel button wired to a call that is already over.
-    authorizing.end();
-    let created = created.map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| e.to_string())?;
 
     let path = created.path.to_string_lossy().to_string();
     // The wizard starts the stack as part of creating it, which counts the same as
@@ -917,9 +909,11 @@ pub async fn compose_command(
     }
 }
 
-/// Re-authorize a hub that already exists — what the connect screen does.
+/// Connect a hub to a coordination server, into one more organization — or again into one
+/// it is connected to, for new addresses or a mesh key. What the connect screen does, and
+/// the wizard's last step. A running hub is started again on the configs this writes.
 #[command]
-pub async fn reauthorize_hub(
+pub async fn connect_hub(
     authorizing: tauri::State<'_, AuthorizeState>,
     path: String,
     coord_server: String,
@@ -929,12 +923,13 @@ pub async fn reauthorize_hub(
     reachable_hosts: Vec<String>,
     mesh_key: create::MeshKeyRequest,
     on_event: Channel<CreateEvent>,
-) -> Result<ReauthorizeOutcome, String> {
+) -> Result<ConnectOutcome, String> {
     let cancel = authorizing.begin();
+    let dir = PathBuf::from(path);
 
-    let done = create::reauthorize(
-        &create::ReauthorizeAnswers {
-            dir: PathBuf::from(path),
+    let done = create::connect(
+        &create::ConnectAnswers {
+            dir: dir.clone(),
             coord_server,
             identifier,
             description,
@@ -951,20 +946,55 @@ pub async fn reauthorize_hub(
     )
     .await;
     authorizing.end();
-    done.map(|d| ReauthorizeOutcome {
-        mesh_requested: d.mesh_requested,
-        mesh_granted: d.mesh_granted,
-        reporter_enabled: d.reporter_enabled,
+    let done = done.map_err(|e| e.to_string())?;
+    let restarted = restart_if_running(&dir).await?;
+    Ok(ConnectOutcome {
+        organization: done.organization.clone(),
+        organizations: done.credentials.organizations(),
+        mesh_requested: done.mesh_requested,
+        mesh_granted: done.mesh_granted,
+        reporter_enabled: done.reporter_enabled,
+        restarted,
     })
-    .map_err(|e| e.to_string())
 }
 
-/// What the connect screen shows after re-authorizing, besides "done".
+/// What the connect screen shows after connecting, besides "done".
 #[derive(Serialize)]
-pub struct ReauthorizeOutcome {
+pub struct ConnectOutcome {
+    /// The organization that accepted the hub this time.
+    organization: Option<String>,
+    /// Every organization the hub is connected to now.
+    organizations: Vec<String>,
     mesh_requested: bool,
     mesh_granted: bool,
     reporter_enabled: bool,
+    /// The hub was running, and was started again on its new configs.
+    restarted: bool,
+}
+
+/// Disconnect a hub from one organization: the coordination server lets go of it there,
+/// and a running hub is started again on configs that no longer take that organization's
+/// tokens. Answers the organizations it is still connected to.
+#[command]
+pub async fn disconnect_hub(path: String, organization: String) -> Result<Vec<String>, String> {
+    let dir = PathBuf::from(path);
+    let done = create::disconnect(&dir, &organization)
+        .await
+        .map_err(|e| e.to_string())?;
+    restart_if_running(&dir).await?;
+    Ok(done.organizations)
+}
+
+/// Starts a running hub again, so its services read the configs just written; leaves a
+/// stopped one for its next start.
+async fn restart_if_running(dir: &std::path::Path) -> Result<bool, String> {
+    if !konstruktor_core::compose::is_up(dir).await {
+        return Ok(false);
+    }
+    konstruktor_core::start::start(dir, &|_| {})
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 // --- a hub's services, after creation ----------------------------------------
@@ -1035,8 +1065,8 @@ pub async fn change_services(
     Ok(ServicesOutcome {
         plan: done.plan,
         applied: done.applied,
-        mesh_requested: done.reauthorized.mesh_requested,
-        mesh_granted: done.reauthorized.mesh_granted,
+        mesh_requested: done.connected.mesh_requested,
+        mesh_granted: done.connected.mesh_granted,
     })
 }
 
@@ -1293,6 +1323,8 @@ mod wire_shape {
         "authorized",
         "identifier",
         "authorized_at",
+        "coord_server",
+        "connected",
         "gateway_url",
         "admin_user",
         "admin_password",
@@ -1333,6 +1365,8 @@ mod wire_shape {
             authorized: true,
             identifier: Some("lab-hub".into()),
             authorized_at: Some("2026-01-01T00:00:00Z".into()),
+            coord_server: Some("go.arkitekt.live".into()),
+            connected: Vec::new(),
             gateway_url: "http://localhost:7080".into(),
             admin_user: config.global_admin.clone(),
             admin_password: config.global_admin_password.clone(),

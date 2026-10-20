@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::connect::wellknown;
-use crate::credentials::{read_credentials, HubCredentials};
+use crate::credentials::{read_credentials, Grant, HubCredentials};
 
 /// Where the reporter keeps the refresh token it last received.
 pub const STATE_FILENAME: &str = "reporter.json";
@@ -75,9 +75,10 @@ pub enum ReportError {
 
 // --- state ---------------------------------------------------------------------------
 
-/// The state to use: the stored one, unless the seed is from a newer authorization.
+/// The state to use: the stored one, unless the grant is a newer authorization than the
+/// one it was seeded from.
 pub fn reconcile(
-    seed: &HubCredentials,
+    seed: &Grant,
     stored: Option<ReporterState>,
 ) -> Result<ReporterState, ReportError> {
     let seed_client = seed.envelope.client_id.clone();
@@ -483,7 +484,14 @@ async fn report_once(
         {
             Some(token) => token.token.clone(),
             None => {
-                let mut state = reconcile(seed, read_state(&config.state_dir))?;
+                // The first organization's grant: the one the top of the seed carries, as
+                // reporters before hubs held several read it.
+                let first = seed
+                    .grants()
+                    .into_iter()
+                    .next()
+                    .ok_or(ReportError::NoRefreshToken)?;
+                let mut state = reconcile(&first, read_state(&config.state_dir))?;
                 write_state(&config.state_dir, &state)?;
                 let fresh = refresh(client, &token_endpoint, &mut state, &config.state_dir).await?;
                 let token = fresh.token.clone();
@@ -530,20 +538,25 @@ mod tests {
             "refresh_token": refresh,
         }))
         .unwrap();
-        HubCredentials {
-            version: 1,
-            server: "coord.example.org".into(),
-            identifier: "lab-hub".into(),
-            authorized_at: "now".into(),
-            issuer: None,
-            envelope,
-            advertised_hosts: Vec::new(),
-        }
+        HubCredentials::first(
+            "coord.example.org".into(),
+            "lab-hub".into(),
+            None,
+            Vec::new(),
+            Grant {
+                authorized_at: "now".into(),
+                envelope,
+            },
+        )
+    }
+
+    fn first(seed: &HubCredentials) -> Grant {
+        seed.grants().remove(0)
     }
 
     #[test]
     fn a_first_run_seeds_from_the_grant() {
-        let state = reconcile(&seed("c1", Some("rt-0")), None).unwrap();
+        let state = reconcile(&first(&seed("c1", Some("rt-0"))), None).unwrap();
         assert_eq!(state.client_id, "c1");
         assert_eq!(state.refresh_token, "rt-0");
         assert_eq!(state.seeded_from, "c1");
@@ -558,7 +571,7 @@ mod tests {
             refresh_token: "rt-7".into(),
             seeded_from: "c1".into(),
         };
-        let state = reconcile(&seed("c1", Some("rt-0")), Some(stored.clone())).unwrap();
+        let state = reconcile(&first(&seed("c1", Some("rt-0"))), Some(stored.clone())).unwrap();
         assert_eq!(state, stored);
     }
 
@@ -570,7 +583,7 @@ mod tests {
             refresh_token: "rt-7".into(),
             seeded_from: "c1".into(),
         };
-        let state = reconcile(&seed("c2", Some("rt-new")), Some(stored)).unwrap();
+        let state = reconcile(&first(&seed("c2", Some("rt-new"))), Some(stored)).unwrap();
         assert_eq!(state.client_id, "c2");
         assert_eq!(state.refresh_token, "rt-new");
     }
@@ -578,7 +591,7 @@ mod tests {
     #[test]
     fn a_grant_without_a_refresh_token_cannot_report() {
         assert!(matches!(
-            reconcile(&seed("c1", None), None),
+            reconcile(&first(&seed("c1", None)), None),
             Err(ReportError::NoRefreshToken)
         ));
     }

@@ -293,11 +293,15 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
               {status?.authorized && (
                 <span
                   className="hidden md:flex items-center gap-1.5 text-sm text-muted-foreground"
-                  title={`Registered as ${status.identifier ?? "?"} on ${status.profile.config.coord_server}`}
+                  title={`Connected as ${status.identifier ?? "?"} to ${status.coord_server ?? status.profile.config.coord_server}, organization ${(status.connected ?? [])
+                    .map((connection) => connection.organization ?? "?")
+                    .join(", ")}`}
                 >
                   <ShieldCheck className="size-3.5 text-success" />
-                  <span className="font-medium text-foreground">{status.identifier ?? "authorized"}</span>
-                  on {status.profile.config.coord_server}
+                  <span className="font-medium text-foreground">{status.identifier ?? "connected"}</span>
+                  on {status.coord_server ?? status.profile.config.coord_server}
+                  {(status.connected ?? []).length > 1 &&
+                    ` · ${(status.connected ?? []).length} organizations`}
                 </span>
               )}
               <DeploymentMenu

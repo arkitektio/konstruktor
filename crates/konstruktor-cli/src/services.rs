@@ -274,9 +274,16 @@ async fn change_services(
     let mut rows = vec![
         ("folder".to_string(), dir.to_string_lossy().to_string()),
         (
-            "authorized as".to_string(),
+            "connected as".to_string(),
             credentials::read_credentials(&dir)
-                .map(|c| format!("{} at {}", c.identifier, c.server))
+                .map(|c| {
+                    format!(
+                        "{} at {}, organization {}",
+                        c.identifier,
+                        c.server,
+                        c.organizations().join(", ")
+                    )
+                })
                 .unwrap_or_default(),
         ),
     ];
@@ -321,7 +328,7 @@ async fn change_services(
     ui::say("");
     ui::ok(&format!(
         "{} now runs {}.",
-        done.reauthorized.credentials.identifier,
+        done.connected.credentials.identifier,
         done.plan
             .services
             .iter()
@@ -330,11 +337,21 @@ async fn change_services(
             .join(", ")
     ));
     crate::create::report_outcome(
-        done.reauthorized.mesh_requested,
-        done.reauthorized.mesh_granted,
-        done.reauthorized.reporter_enabled,
+        done.connected.mesh_requested,
+        done.connected.mesh_granted,
+        done.connected.reporter_enabled,
         done.applied,
     );
+    if !done.stale_organizations.is_empty() {
+        // Each organization keeps the services it was told of until the hub is connected
+        // there again: its apps are not handed what was added meanwhile.
+        ui::warn(&format!(
+            "Organization {} still knows the hub's services from before — connect it there \
+             again (`konstruktor hub connect`, accepting into that organization) so its apps \
+             see the change.",
+            done.stale_organizations.join(", ")
+        ));
+    }
     if !done.applied {
         ui::step(&ui::dim(
             "The files were rewritten, the stack left alone — `konstruktor hub services \

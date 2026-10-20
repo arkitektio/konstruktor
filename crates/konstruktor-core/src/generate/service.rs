@@ -120,8 +120,12 @@ pub fn build_authentikate(
     service: &ServiceBlock,
     issued: &IssuedIdentity,
 ) -> Value {
-    let issuer = match config.running_lok() {
-        Some(lok) => crate::generate::lok::rsa_issuer(lok),
+    let issuers = match config.running_lok() {
+        Some(lok) => vec![crate::generate::lok::rsa_issuer(lok)],
+        // Not connected to any coordination server yet: nobody's tokens are taken. The
+        // services run, and every request with a token is refused as from an untrusted
+        // issuer, until the hub is connected and its configs are written again.
+        None if issued.issuer.is_none() && issued.jwks_url.is_none() => Vec::new(),
         None => {
             let iss = issued
                 .issuer
@@ -132,7 +136,7 @@ pub fn build_authentikate(
                 .as_deref()
                 .map(jwks_at_base)
                 .unwrap_or_else(|| format!("https://{}/{JWKS_PATH}", config.coord_server));
-            jwks_issuer(&iss, &jwks)
+            vec![jwks_issuer(&iss, &jwks)]
         }
     };
 
@@ -145,7 +149,7 @@ pub fn build_authentikate(
     let mut pairs = vec![
         ("audience", s(audience)),
         ("hub", s(&config.uid)),
-        ("issuers", list(vec![issuer])),
+        ("issuers", list(issuers)),
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
 

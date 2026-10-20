@@ -226,11 +226,18 @@ export const stages = (
     },
     {
       key: "authorized",
-      label: "Authorized",
-      state: status?.authorized ? "done" : "attention",
+      label: "Connected",
+      state:
+        status?.authorized || status?.profile.config.coord_server === "local"
+          ? "done"
+          : "attention",
       detail: status?.authorized
-        ? (status.identifier ?? status.profile.config.coord_server)
-        : "Not authorized against a coordination server",
+        ? `${status.coord_server ?? status.profile.config.coord_server} · organization ${(status.connected ?? [])
+            .map((connection) => connection.organization ?? "?")
+            .join(", ")}`
+        : status?.profile.config.coord_server === "local"
+          ? "Runs its own coordination server"
+          : "Connected nowhere yet: its services take nobody's tokens",
     },
     {
       key: "generated",
@@ -239,7 +246,7 @@ export const stages = (
       detail: !generatedAt
         ? "No generation recorded"
         : stale
-          ? "Written before the last authorization — regenerate"
+          ? "Written before it was last connected — regenerate"
           : (formatDate(deployment.lastGeneratedAt) ?? ""),
     },
     {

@@ -426,12 +426,27 @@ export type UpstreamCheck = {
   major: string | null;
 };
 
+/** One organization's acceptance of a hub. */
+export type Connection = {
+  /** As the coordination server names it: its users' tokens carry it as `org`. */
+  organization: string | null;
+  /** Who accepted it. */
+  user: string | null;
+  authorized_at: string;
+};
+
 /** What the dashboard reads out of a deployment folder. */
 export type HubStatus = {
   profile: { version: string; kind: string; backend: string; config: HubConfigView };
+  /** Connected to a coordination server, in at least one organization. */
   authorized: boolean;
   identifier: string | null;
+  /** When the first organization accepted it. */
   authorized_at: string | null;
+  /** The coordination server it is connected to. */
+  coord_server: string | null;
+  /** Every organization that accepted it: the ones whose users' tokens its services take. */
+  connected: Connection[];
   gateway_url: string;
   admin_user: string;
   admin_password: string;

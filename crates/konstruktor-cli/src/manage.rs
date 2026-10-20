@@ -9,7 +9,7 @@ use crate::ui;
 
 /// A deployment to act on: a path, a registered name, or — when neither is given — the
 /// current directory, if it holds a deployment.
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct Target {
     /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.
     #[arg(value_name = "TARGET")]
@@ -808,17 +808,43 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
             .and_then(|c| c.state.clone())
             .map(|state| format!("reports health — container {state}"))
             .unwrap_or_else(|| "reports health once started".into()),
-        _ => "none — authorize the hub to report its health".into(),
+        _ => "none — connect the hub to report its health".into(),
     };
     rows.push(("reporter".into(), reporter));
 
     rows.push(("advertised".into(), advertised_aliases(&view).join(", ")));
 
-    match (&view.identifier, &view.authorized_at) {
-        (Some(identifier), Some(at)) => {
-            rows.push(("authorized".into(), format!("{at} as {identifier}")))
+    if view.connected.is_empty() {
+        rows.push((
+            "connected".into(),
+            if view.profile.config.running_lok().is_some() {
+                "to the coordination server it runs".into()
+            } else {
+                "nowhere yet — `konstruktor hub connect --server …`".into()
+            },
+        ));
+    } else {
+        rows.push((
+            "connected".into(),
+            format!(
+                "{} as {}",
+                view.coord_server.clone().unwrap_or_default(),
+                view.identifier.clone().unwrap_or_default()
+            ),
+        ));
+        for connection in &view.connected {
+            rows.push((
+                "organization".into(),
+                format!(
+                    "{} since {}",
+                    connection
+                        .organization
+                        .clone()
+                        .unwrap_or_else(|| "?".into()),
+                    connection.authorized_at
+                ),
+            ));
         }
-        _ => rows.push(("authorized".into(), "not yet".into())),
     }
 
     let frozen = konstruktor_core::freeze::frozen(&dir);
@@ -858,7 +884,7 @@ fn advertised_aliases(view: &status::HubView) -> Vec<String> {
         aliases.push(format!("{} inside Docker", config.gateway.host));
     }
     if aliases.is_empty() {
-        aliases.push("nothing yet — authorize the hub".into());
+        aliases.push("nothing yet — connect the hub".into());
     }
     aliases
 }
@@ -973,7 +999,7 @@ pub async fn gateway(target: &Target, json: bool) -> Result<()> {
             // Nothing to ask — and why depends on the hub.
             let authorized = konstruktor_core::credentials::read_credentials(&dir).is_some();
             ui::step(if !authorized {
-                "This hub advertises no address yet — authorize it first."
+                "This hub advertises no address yet — connect it first."
             } else if status::is_mesh_only(&profile.config) {
                 "This hub is reached over the mesh alone, and the sidecar is not running to \
                  say its name — start the hub, then check again."

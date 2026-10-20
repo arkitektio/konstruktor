@@ -1,4 +1,4 @@
-//! `create::reauthorize` against a stubbed coordination server.
+//! `create::connect` against a stubbed coordination server.
 //!
 //! `tests/authorize.rs` covers the device-code protocol itself — what `start` and
 //! `poll_once` make of each response. This covers the flow built on top of it: what ends
@@ -18,9 +18,7 @@ use konstruktor_core::catalog::ServiceId;
 use konstruktor_core::config::hub::HubConfigOptions;
 use konstruktor_core::connect::authorize::HubAuthorizationError;
 use konstruktor_core::connect::manifest::AdvertisedHost;
-use konstruktor_core::create::{
-    reauthorize, CreateError, CreateEvent, MeshKeyRequest, ReauthorizeAnswers,
-};
+use konstruktor_core::create::{connect, ConnectAnswers, CreateError, CreateEvent, MeshKeyRequest};
 use konstruktor_core::hosts::HostCategory;
 use konstruktor_core::profile::{self, hub_profile, write_profile};
 use konstruktor_core::services::{answers_from_disk, ServiceChange};
@@ -87,8 +85,8 @@ fn rand_suffix() -> String {
     format!("{nanos}{:p}", &nanos)
 }
 
-fn answers(dir: &Path, server: &MockServer) -> ReauthorizeAnswers {
-    ReauthorizeAnswers {
+fn answers(dir: &Path, server: &MockServer) -> ConnectAnswers {
+    ConnectAnswers {
         dir: dir.to_path_buf(),
         coord_server: server.uri(),
         identifier: "lab-hub".into(),
@@ -124,6 +122,8 @@ async fn coordination_server(token: ResponseTemplate) -> MockServer {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "issuer": "https://coord.example.org",
             "hub_authorization_endpoint": format!("{}/o/hub-authorization/", server.uri()),
+            "token_endpoint": format!("{}/o/token/", server.uri()),
+            "hub_deletion_endpoint": format!("{}/f/hubdelete/", server.uri()),
         })))
         .mount(&server)
         .await;
@@ -151,6 +151,34 @@ async fn coordination_server(token: ResponseTemplate) -> MockServer {
         .await;
 
     server
+}
+
+/// The same coordination server, answering the next acceptance — that one only — with
+/// `token` instead.
+async fn answer_next(server: &MockServer, token: ResponseTemplate) {
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .respond_with(token)
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+}
+
+/// Accepted into `organization`, as `client_id`: another organization's grant.
+fn accepted_into(organization: &str, client_id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "token_type": "Bearer",
+        "access_token": format!("eyJ-{organization}"),
+        "refresh_token": format!("rt-{organization}"),
+        "client_id": client_id,
+        "self": {
+            "jwks_url": "https://coord.example.org/.well-known/jwks.json",
+            "sub": "2",
+            "organization": organization,
+            "hub": "50"
+        },
+    }))
 }
 
 /// The person at the browser pressed Accept. The response is the current shape: the JWKS
@@ -205,7 +233,7 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
     let server = coordination_server(accepted(json!({}))).await;
     let events = std::sync::Mutex::new(Vec::new());
 
-    let done = reauthorize(
+    let done = connect(
         &answers(&dir, &server),
         &CancellationToken::new(),
         &collect(&events),
@@ -268,7 +296,7 @@ async fn a_hub_off_the_mesh_asks_for_a_key_and_keeps_it() {
     let mut wanted = answers(&dir, &server);
     wanted.mesh_key = MeshKeyRequest::Auto;
 
-    let done = reauthorize(&wanted, &CancellationToken::new(), &|_| {})
+    let done = connect(&wanted, &CancellationToken::new(), &|_| {})
         .await
         .expect("the hub is authorized");
     assert!(done.mesh_requested);
@@ -290,14 +318,17 @@ async fn a_hub_off_the_mesh_asks_for_a_key_and_keeps_it() {
     );
 
     // And asked again next time: which login that grant is only shows once accepted.
-    let server = coordination_server(accepted(json!({
-        "ionscale_auth_key": "tskey-auth-second",
-        "ionscale_coord_url": "https://mesh.example.org"
-    })))
+    answer_next(
+        &server,
+        accepted(json!({
+            "ionscale_auth_key": "tskey-auth-second",
+            "ionscale_coord_url": "https://mesh.example.org"
+        })),
+    )
     .await;
     let mut again = answers(&dir, &server);
     again.mesh_key = MeshKeyRequest::Auto;
-    let done = reauthorize(&again, &CancellationToken::new(), &|_| {})
+    let done = connect(&again, &CancellationToken::new(), &|_| {})
         .await
         .expect("the hub is authorized again");
     assert!(done.mesh_requested);
@@ -317,7 +348,7 @@ async fn a_mesh_key_that_was_not_requested_is_not_written() {
     })))
     .await;
 
-    reauthorize(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+    connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
         .await
         .expect("the hub is authorized");
 
@@ -353,7 +384,7 @@ async fn a_mesh_only_hub_advertises_no_host_and_stays_mesh_only() {
     let mut wanted = answers(&dir, &server);
     wanted.mesh_key = MeshKeyRequest::Fresh;
 
-    let done = reauthorize(&wanted, &CancellationToken::new(), &|_| {})
+    let done = connect(&wanted, &CancellationToken::new(), &|_| {})
         .await
         .expect("the hub is authorized");
 
@@ -389,7 +420,7 @@ async fn a_declined_hub_is_left_completely_untouched() {
     let server = coordination_server(declined()).await;
     let events = std::sync::Mutex::new(Vec::new());
 
-    let error = reauthorize(
+    let error = connect(
         &answers(&dir, &server),
         &CancellationToken::new(),
         &collect(&events),
@@ -442,7 +473,7 @@ async fn an_expired_authorization_writes_nothing_either() {
     )
     .await;
 
-    let error = reauthorize(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+    let error = connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
         .await
         .expect_err("an expired grant is an error");
 
@@ -473,7 +504,7 @@ async fn a_cancelled_authorization_writes_nothing() {
     let cancel = CancellationToken::new();
     cancel.cancel();
 
-    let error = reauthorize(&answers(&dir, &server), &cancel, &|_| {})
+    let error = connect(&answers(&dir, &server), &cancel, &|_| {})
         .await
         .expect_err("a cancelled authorization is an error");
 
@@ -514,7 +545,7 @@ async fn a_refused_manifest_writes_nothing() {
         .mount(&server)
         .await;
 
-    let error = reauthorize(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+    let error = connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
         .await
         .expect_err("a refused manifest is an error");
 
@@ -538,7 +569,7 @@ fn with_change(
     server: &MockServer,
     add: &[ServiceId],
     remove: &[ServiceId],
-) -> ReauthorizeAnswers {
+) -> ConnectAnswers {
     let mut wanted = answers(dir, server);
     wanted.services = Some(ServiceChange {
         add: add.to_vec(),
@@ -618,7 +649,7 @@ async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
     );
 
     let server = coordination_server(accepted(json!({}))).await;
-    let done = reauthorize(
+    let done = connect(
         &with_change(&dir, &server, &[ServiceId::Bank], &[]),
         &CancellationToken::new(),
         &|_| {},
@@ -690,7 +721,7 @@ async fn adding_bank_emits_it_and_keeps_every_existing_secret() {
 async fn removing_a_service_drops_its_container_but_keeps_its_data() {
     let dir = a_hub();
     let server = coordination_server(accepted(json!({}))).await;
-    reauthorize(
+    connect(
         &with_change(&dir, &server, &[], &[ServiceId::Kraph]),
         &CancellationToken::new(),
         &|_| {},
@@ -730,7 +761,7 @@ async fn rekuest_cannot_be_removed_while_hooked_services_run() {
     let profile_before = std::fs::read(profile::profile_path(&dir)).unwrap();
     let server = coordination_server(accepted(json!({}))).await;
 
-    let error = reauthorize(
+    let error = connect(
         &with_change(&dir, &server, &[], &[ServiceId::Rekuest]),
         &CancellationToken::new(),
         &|_| {},
@@ -763,7 +794,7 @@ async fn re_adding_kuvert_keeps_its_fernet_key() {
     let run = |add: &'static [ServiceId], remove: &'static [ServiceId]| {
         let answers = with_change(&dir, &server, add, remove);
         async move {
-            reauthorize(&answers, &CancellationToken::new(), &|_| {})
+            connect(&answers, &CancellationToken::new(), &|_| {})
                 .await
                 .expect("the change is accepted")
         }
@@ -821,7 +852,7 @@ async fn a_declined_service_change_writes_nothing() {
     let profile_before = std::fs::read(profile::profile_path(&dir)).unwrap();
     let server = coordination_server(declined()).await;
 
-    reauthorize(
+    connect(
         &with_change(&dir, &server, &[ServiceId::Bank], &[ServiceId::Kraph]),
         &CancellationToken::new(),
         &|_| {},
@@ -847,11 +878,11 @@ async fn service_change_answers_come_from_the_authorized_hub() {
         remove: vec![],
         ..Default::default()
     };
-    let error = answers_from_disk(&dir, change.clone()).expect_err("never authorized");
-    assert!(error.to_string().contains("authorize it first"), "{error}");
+    let error = answers_from_disk(&dir, change.clone()).expect_err("never connected");
+    assert!(error.to_string().contains("connect it first"), "{error}");
 
     let server = coordination_server(accepted(json!({}))).await;
-    reauthorize(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+    connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
         .await
         .expect("authorized");
 
@@ -887,4 +918,165 @@ fn listing(dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+// --- several organizations -------------------------------------------------------------
+
+/// Organizations of the hub's grants, as they are on disk.
+fn organizations(dir: &Path) -> Vec<String> {
+    konstruktor_core::credentials::read_credentials(dir)
+        .map(|held| held.organizations())
+        .unwrap_or_default()
+}
+
+/// A hub connected into organizations 3 and then 4 of one coordination server.
+async fn connected_twice() -> (PathBuf, MockServer) {
+    let dir = a_hub();
+    let server = coordination_server(accepted(json!({}))).await;
+    connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+        .await
+        .expect("accepted into 3");
+    answer_next(&server, accepted_into("4", "client-4")).await;
+    let second = connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+        .await
+        .expect("accepted into 4");
+    assert_eq!(second.organization.as_deref(), Some("4"));
+    (dir, server)
+}
+
+#[tokio::test]
+async fn a_hub_accepted_into_a_second_organization_serves_both() {
+    let (dir, _server) = connected_twice().await;
+
+    assert_eq!(organizations(&dir), ["3", "4"]);
+    let held = konstruktor_core::credentials::read_credentials(&dir).expect("connected");
+    // The services take the tokens of both, and of no other.
+    assert_eq!(held.issued_identity().organizations, ["3", "4"]);
+    // What a reporter of an older build reads is still the first organization's grant.
+    assert_eq!(held.envelope.client_id, "9c1d");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn accepted_again_an_organization_replaces_its_grant_alone() {
+    let (dir, server) = connected_twice().await;
+    answer_next(&server, accepted_into("3", "client-3-again")).await;
+    connect(&answers(&dir, &server), &CancellationToken::new(), &|_| {})
+        .await
+        .expect("accepted into 3 again");
+
+    let held = konstruktor_core::credentials::read_credentials(&dir).expect("connected");
+    let clients: Vec<(String, String)> = held
+        .grants()
+        .iter()
+        .map(|g| {
+            (
+                g.organization().unwrap_or_default().to_string(),
+                g.envelope.client_id.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        clients,
+        [
+            ("3".to_string(), "client-3-again".to_string()),
+            ("4".to_string(), "client-4".to_string())
+        ]
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn another_coordination_server_is_refused_before_anybody_is_asked() {
+    let (dir, _server) = connected_twice().await;
+    let before = listing(&dir);
+    let other = coordination_server(accepted_into("9", "elsewhere")).await;
+
+    let error = connect(&answers(&dir, &other), &CancellationToken::new(), &|_| {})
+        .await
+        .expect_err("one coordination server per hub");
+    assert!(error.to_string().contains("disconnect it"), "{error}");
+    assert_eq!(listing(&dir), before);
+    // Nobody was sent to a browser.
+    assert!(other
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .all(|r| r.url.path() != "/o/hub-authorization/"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The server lets go of the hub when asked as the hub, in the organization of the grant
+/// asked with.
+async fn deletes(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "renewed",
+            "refresh_token": "rt-renewed",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        })))
+        .with_priority(1)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/f/hubdelete/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "deleted" })))
+        .mount(server)
+        .await;
+}
+
+/// A reporter is reached through Docker; these hubs report nothing, so nothing is.
+fn without_reporter(dir: &Path) {
+    let mut config = profile::read_profile(dir).expect("a profile").config;
+    config.reporter = None;
+    profile::write_profile(dir, &profile::hub_profile(config)).expect("written");
+}
+
+#[tokio::test]
+async fn disconnected_from_one_organization_the_hub_keeps_the_others() {
+    let (dir, server) = connected_twice().await;
+    deletes(&server).await;
+    without_reporter(&dir);
+
+    let done = konstruktor_core::create::disconnect(&dir, "4")
+        .await
+        .expect("disconnected from 4");
+    assert_eq!(done.organizations, ["3"]);
+    assert_eq!(organizations(&dir), ["3"]);
+    assert!(!profile::read_profile(&dir)
+        .unwrap()
+        .config
+        .coord_server
+        .is_empty());
+
+    let error = konstruktor_core::create::disconnect(&dir, "4")
+        .await
+        .expect_err("not connected to 4 any more");
+    assert!(
+        error
+            .to_string()
+            .contains("not connected to organization 4"),
+        "{error}"
+    );
+
+    // The last one: the hub is what `hub create` leaves, connected nowhere.
+    let done = konstruktor_core::create::disconnect(&dir, "3")
+        .await
+        .expect("disconnected from 3");
+    assert!(done.organizations.is_empty());
+    assert!(konstruktor_core::credentials::read_credentials(&dir).is_none());
+    let config = profile::read_profile(&dir).unwrap().config;
+    assert!(config.coord_server.is_empty());
+    assert!(config.reporter.is_none());
+
+    std::fs::remove_dir_all(&dir).ok();
 }
