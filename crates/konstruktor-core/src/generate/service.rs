@@ -149,6 +149,18 @@ pub fn build_authentikate(
         ("static_tokens", Value::Mapping(Mapping::new())),
     ];
 
+    // The organizations the hub was accepted into, and no other: the hub's uid is its own to
+    // claim, so an organization that registered a hub of the same uid at the coordination
+    // server must not get its tokens taken here. A self-contained hub's Lok is its own, and
+    // a grant that names no organization (a server from before it said) narrows nothing —
+    // an empty list would refuse every token.
+    if config.running_lok().is_none() && !issued.organizations.is_empty() {
+        pairs.push((
+            "allowed_organizations",
+            list(issued.organizations.iter().map(|org| s(org)).collect()),
+        ));
+    }
+
     let rekuest = config.rekuest();
     let remote = config.rekuest_server.trim();
 

@@ -27,6 +27,11 @@ pub struct IssuedIdentity {
     pub issuer: Option<String>,
     /// Where that issuer's verification keys live, from the grant envelope.
     pub jwks_url: Option<String>,
+    /// The organizations the hub was accepted into (each grant's `org`): the only ones its
+    /// services take tokens of. A hub names itself, and anyone can claim its name at the
+    /// coordination server in an organization of their own; what the hub serves is decided
+    /// here, by the grants it holds. Empty when no grant says — then nothing is narrowed.
+    pub organizations: Vec<String>,
 }
 
 /// Python's `yaml.dump(..., default_flow_style=False)`: block style, sorted keys.

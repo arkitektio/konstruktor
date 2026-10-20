@@ -175,6 +175,22 @@ fn a_self_contained_hubs_services_are_named_by_it() {
     assert!(!config.uid.is_empty());
 }
 
+/// A self-contained hub's Lok is its own: every organization in it is the hub's to serve.
+#[test]
+fn a_self_contained_hub_narrows_no_organization() {
+    let auth = konstruktor_core::contract::facts(
+        &default_hub(),
+        ServiceId::Mikro,
+        &IssuedIdentity {
+            organizations: vec!["3".into()],
+            ..Default::default()
+        },
+        &Default::default(),
+    )["hub"]["auth"]
+        .clone();
+    assert!(auth.get("allowed_organizations").is_none());
+}
+
 #[test]
 fn lok_signs_with_the_private_half_and_advertises_the_public_one() {
     let config = yaml(&files_of(&default_hub()), "configs/lok.yaml");

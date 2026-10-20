@@ -229,6 +229,11 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
         konstruktor_core::credentials::read_credentials(&dir).expect("the credentials are on disk");
     assert_eq!(written.identifier, "lab-hub");
     assert_eq!(written.issuer.as_deref(), Some("https://coord.example.org"));
+    // The organization it was accepted into is the one its services take tokens of.
+    assert_eq!(
+        written.issued_identity().organizations,
+        vec!["3".to_string()]
+    );
 
     // The service configs are regenerated because the JWKS URL they verify tokens
     // against may have moved.

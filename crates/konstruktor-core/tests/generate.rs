@@ -235,6 +235,35 @@ mod authorized {
         assert_eq!(kabinet["audience"].as_str(), Some("kabinet"));
     }
 
+    /// A hub serves the organizations it was accepted into, and no other: anyone can register
+    /// a hub of the same uid at the coordination server in an organization of their own.
+    #[test]
+    fn a_service_takes_tokens_of_the_organizations_the_hub_was_accepted_into_only() {
+        let config = config_of("hub_config.yaml");
+        let granted = IssuedIdentity {
+            organizations: vec!["3".into(), "4".into()],
+            ..issued()
+        };
+        for id in config.enabled_services() {
+            let auth = auth_of(&config, id, &granted);
+            let allowed: Vec<&str> = auth["allowed_organizations"]
+                .as_sequence()
+                .expect("a list")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            assert_eq!(allowed, ["3", "4"], "{id:?}");
+        }
+    }
+
+    /// An empty list would refuse every token: a grant that names no organization narrows
+    /// nothing.
+    #[test]
+    fn a_grant_that_names_no_organization_narrows_nothing() {
+        let auth = auth_of(&config_of("hub_config.yaml"), ServiceId::Mikro, &issued());
+        assert!(auth.get("allowed_organizations").is_none());
+    }
+
     /// Without a grant, both fall back to the CLI's own derivation from `coord_server`.
     #[test]
     fn falls_back_to_the_bare_host_when_there_is_no_grant() {
