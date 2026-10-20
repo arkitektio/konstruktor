@@ -189,6 +189,11 @@ async fn an_app_accepted_into_the_hubs_organization_is_written_with_what_it_was_
         app["environment"]["DOCKER_HOST"].as_str(),
         Some("unix:///var/run/docker.sock")
     );
+    // The stand-in is plain HTTP, which fakts sends a credential to only when told it may.
+    assert_eq!(
+        app["environment"]["FAKTS_ALLOW_INSECURE_TRANSPORT"].as_str(),
+        Some("1")
+    );
     let secrets = std::fs::read_to_string(dir.join(apps::SECRETS_FILE)).unwrap();
     assert_eq!(secrets.trim(), "FAKTS_TOKEN=engine-client:rt-app");
     assert_eq!(

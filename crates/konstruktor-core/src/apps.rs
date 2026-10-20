@@ -574,6 +574,11 @@ pub fn build_app_compose(compose: &AppCompose<'_>) -> Value {
     if let Some(device_id) = compose.device_id {
         environment.push(("ARKITEKT_DEVICE_ID", s(device_id)));
     }
+    // fakts sends a credential over plain HTTP only when told it may: a coordination server
+    // somebody named as `http://` was named so on purpose.
+    if fakts_url.starts_with("http://") {
+        environment.push(("FAKTS_ALLOW_INSECURE_TRANSPORT", s("1")));
+    }
     if let Some(mesh) = compose.mesh {
         environment.push((
             "ARKITEKT_NETWORK_MODE",
