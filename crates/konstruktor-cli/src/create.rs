@@ -136,7 +136,7 @@ pub struct CreateArgs {
     /// there, where here it is an error.
     #[arg(long = "image", value_name = "SERVICE=IMAGE")]
     pub images: Vec<String>,
-    /// A hub of exactly the services these images are: `--service-image jhnnsrs/mikro:7`.
+    /// A hub of exactly the services these images are: `--service-image jhnnsrs/mikro:9`.
     /// Repeatable. Each image is asked which service it is, so nothing but the image has
     /// to be named — which is how a client library says what it needs hosted. Rekuest
     /// runs here only when one of the images is Rekuest's.

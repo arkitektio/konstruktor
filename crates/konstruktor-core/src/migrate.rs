@@ -54,10 +54,14 @@ use crate::lock;
 ///    Dokuments 2.
 /// 7. Bank 5 and Kuvert 5: their providers and logins are set up in the client, not in
 ///    the config.
+/// 8. A hub names itself and its services: tokens for a service carry its name in the hub
+///    and the hub's uid, which every service's config now says (`authentikate.hub`), on the
+///    majors that read it: Rekuest 9, Mikro 9, Kabinet 7, Elektro 6, Alpaka 6, Fluss 6,
+///    Bank 6, Kuvert 6, Lovekit 5, Lokate 4, Kraph 3, Dokuments 3.
 ///
 /// A service's next major is no layout: its repository is asked for it
 /// ([`crate::updates::majors`]). A layout is for what changes in the files themselves.
-pub const CURRENT_LAYOUT: u32 = 7;
+pub const CURRENT_LAYOUT: u32 = 8;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
 /// taken for unless its files say otherwise.
@@ -135,6 +139,10 @@ pub fn steps() -> Vec<Step> {
         Step::new(
             7,
             "Bank and Kuvert follow their 5 releases: providers and logins are set up in the client",
+        ),
+        Step::new(
+            8,
+            "a hub names itself and its services, and every service takes tokens for its own hub alone",
         ),
     ]
 }
@@ -373,7 +381,7 @@ mod tests {
 
         write("services:\n  rekuest: {}\n  rekuest-reaper: {}\n");
         assert_eq!(layout(&dir, &config), 1);
-        assert_eq!(pending(&dir, &config).len(), 6);
+        assert_eq!(pending(&dir, &config).len(), 7);
         assert!(behind(&dir, &config)
             .unwrap()
             .contains("konstruktor update"));
@@ -385,7 +393,7 @@ mod tests {
             "services:\n  rekuest: {}\n  rekuest-takt:\n    environment:\n      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock\n",
         );
         assert_eq!(layout(&dir, &config), 3);
-        assert_eq!(pending(&dir, &config).len(), 4);
+        assert_eq!(pending(&dir, &config).len(), 5);
         std::fs::remove_dir_all(&dir).ok();
     }
 

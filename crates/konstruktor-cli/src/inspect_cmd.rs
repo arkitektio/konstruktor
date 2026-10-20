@@ -18,7 +18,7 @@ use crate::ui;
 pub struct InspectArgs {
     /// A service of the hub, as `konstruktor ps` names it — or, with `--image`, left out.
     pub service: Option<String>,
-    /// Ask this image instead of a hub's service: `--image jhnnsrs/mikro:7`. Needs no hub.
+    /// Ask this image instead of a hub's service: `--image jhnnsrs/mikro:9`. Needs no hub.
     #[arg(long, value_name = "IMAGE", conflicts_with = "service")]
     pub image: Option<String>,
     /// The deployment: a path, or a name from `konstruktor list`. Defaults to here.

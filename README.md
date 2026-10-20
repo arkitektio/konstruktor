@@ -212,7 +212,7 @@ written: the compose file is written from the answers, and an image that does no
 refused with nothing on disk. (`--dry-run` asks nobody, and fetches nothing.)
 
 `konstruktor inspect <service>` shows what a hub's service said, and `konstruktor inspect
---image jhnnsrs/mikro:7` asks any image, without a hub — which is how to find out whether
+--image jhnnsrs/mikro:9` asks any image, without a hub — which is how to find out whether
 an image is one a hub could run. `--json` prints the description whole.
 
 What an image offers beside its start are its **jobs**. `konstruktor job list` shows them for

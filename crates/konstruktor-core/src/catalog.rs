@@ -191,7 +191,7 @@ const KNOWN: [Known; 12] = [
                   person that produced it.",
         default: true,
         experimental: false,
-        image: "jhnnsrs/rekuest:7",
+        image: "jhnnsrs/rekuest:9",
     },
     Known {
         id: ServiceId::Mikro,
@@ -202,7 +202,7 @@ const KNOWN: [Known; 12] = [
                   they can be found again by what they are rather than by filename.",
         default: true,
         experimental: false,
-        image: "jhnnsrs/mikro:7",
+        image: "jhnnsrs/mikro:9",
     },
     Known {
         id: ServiceId::Fluss,
@@ -213,7 +213,7 @@ const KNOWN: [Known; 12] = [
                   something that can be run again and shared.",
         default: true,
         experimental: false,
-        image: "jhnnsrs/fluss:4",
+        image: "jhnnsrs/fluss:6",
     },
     Known {
         id: ServiceId::Kabinet,
@@ -224,7 +224,7 @@ const KNOWN: [Known; 12] = [
                   anybody touching a compose file.",
         default: true,
         experimental: false,
-        image: "jhnnsrs/kabinet:6",
+        image: "jhnnsrs/kabinet:7",
     },
     Known {
         id: ServiceId::Kraph,
@@ -235,7 +235,7 @@ const KNOWN: [Known; 12] = [
                   asking questions that span more than one dataset.",
         default: true,
         experimental: false,
-        image: "jhnnsrs/kraph:2",
+        image: "jhnnsrs/kraph:3",
     },
     Known {
         id: ServiceId::Elektro,
@@ -248,7 +248,7 @@ const KNOWN: [Known; 12] = [
                   that will not gains a container and a database for nothing.",
         default: false,
         experimental: false,
-        image: "jhnnsrs/elektro:5",
+        image: "jhnnsrs/elektro:6",
     },
     Known {
         id: ServiceId::Alpaka,
@@ -260,7 +260,7 @@ const KNOWN: [Known; 12] = [
                   alongside this hub, or point at one that already exists.",
         default: true,
         experimental: false,
-        image: "jhnnsrs/alpaka:5",
+        image: "jhnnsrs/alpaka:6",
     },
     Known {
         id: ServiceId::Lovekit,
@@ -273,7 +273,7 @@ const KNOWN: [Known; 12] = [
                   internet or the mesh. Experimental.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/lovekit:3",
+        image: "jhnnsrs/lovekit:5",
     },
     Known {
         id: ServiceId::Bank,
@@ -285,7 +285,7 @@ const KNOWN: [Known; 12] = [
                   config. Experimental, meant for personal use.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/bank:5",
+        image: "jhnnsrs/bank:6",
     },
     Known {
         id: ServiceId::Kuvert,
@@ -296,7 +296,7 @@ const KNOWN: [Known; 12] = [
                   Experimental.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/kuvert:5",
+        image: "jhnnsrs/kuvert:6",
     },
     Known {
         id: ServiceId::Dokuments,
@@ -307,7 +307,7 @@ const KNOWN: [Known; 12] = [
                   document can be found by what it says. Experimental.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/dokuments:2",
+        image: "jhnnsrs/dokuments:3",
     },
     Known {
         id: ServiceId::Lokate,
@@ -319,7 +319,7 @@ const KNOWN: [Known; 12] = [
                   data. Experimental, meant for personal use.",
         default: false,
         experimental: true,
-        image: "jhnnsrs/lokate:3",
+        image: "jhnnsrs/lokate:4",
     },
 ];
 
