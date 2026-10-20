@@ -503,6 +503,19 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         }
         None => {}
     }
+    // A plugin engine beside it, when it runs what an engine serves: an app approved on its
+    // own, so a step of its own too.
+    let serves_apps = created.config.service(ServiceId::Kabinet).enabled
+        && created.config.service(ServiceId::Rekuest).enabled;
+    if !self_contained && serves_apps && !args.no_plugin_engine {
+        ui::step(&format!(
+            "Kabinet installs apps through a plugin engine beside the hub: {}",
+            ui::bold(&format!(
+                "konstruktor engine create --hub {}",
+                created.path.to_string_lossy()
+            ))
+        ));
+    }
     if created.config.running_lok().is_some() {
         ui::step(&ui::dim(&format!(
             "Runs its own coordination server. How to reach it — the address, the account \

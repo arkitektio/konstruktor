@@ -216,6 +216,8 @@ pub enum DeploymentKind {
     Engine,
     /// A coordination server — the thing the other two authorize against.
     Coord,
+    /// An app attached beside a hub, from its release ([`crate::apps`]).
+    App,
 }
 
 impl DeploymentKind {
@@ -224,6 +226,7 @@ impl DeploymentKind {
             DeploymentKind::Hub => "hub",
             DeploymentKind::Engine => "plugin engine",
             DeploymentKind::Coord => "coordination server",
+            DeploymentKind::App => "app",
         }
     }
 
@@ -233,6 +236,7 @@ impl DeploymentKind {
             DeploymentKind::Hub => "hub",
             DeploymentKind::Engine => "engine",
             DeploymentKind::Coord => crate::coord::COORD_KIND,
+            DeploymentKind::App => crate::apps::KIND,
         }
     }
 }
@@ -253,6 +257,9 @@ pub fn holds_a_deployment(dir: &Path) -> Option<DeploymentKind> {
     }
     if crate::coord::holds_a_coord(dir) {
         return Some(DeploymentKind::Coord);
+    }
+    if crate::apps::holds_an_app(dir) {
+        return Some(DeploymentKind::App);
     }
     if dir.join(crate::engine::CONFIG_FILE).is_file()
         || dir.join(crate::compose_file::COMPOSE_FILENAME).is_file()

@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useWatch } from "react-hook-form";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 
 import * as api from "../../api";
@@ -101,6 +101,9 @@ export const EngineWizard = () => {
   const { settings, setSettings } = useSettings();
 
   const [creating, setCreating] = useState<CreateState>(emptyCreateState);
+  // Opened from a hub's dashboard: beside that hub, and — where the hub ran an engine of
+  // its own — under the id its apps are marked with.
+  const [search] = useSearchParams();
 
   const initialValues: EngineForm = {
     dockerOk: false,
@@ -108,9 +111,9 @@ export const EngineWizard = () => {
     name: "",
     folderOk: false,
     coordServer: settings.coordinationServer,
-    identifier: "",
+    identifier: search.get("identifier") ?? "",
     description: "",
-    hub: null,
+    hub: search.get("hub"),
     // Off by default, as `--mesh` is on the command line: plugins only land in the
     // sidecar's network with a deployer that reads `ARKITEKT_NETWORK_MODE`.
     mesh: false,

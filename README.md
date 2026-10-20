@@ -88,15 +88,29 @@ work the same for all three:
 | | what it is |
 |---|---|
 | `hub` | the services — rekuest, mikro, fluss and the rest — behind a gateway |
-| `engine` | a plugin engine on its own: the [plugin engine](https://github.com/arkitektio/plugin_engine) running an organization's plugins on a machine without a hub |
+| `engine` | a plugin engine: the [plugin engine](https://github.com/arkitektio/plugin_engine) running an organization's plugins, beside a hub or on a machine without one |
+| `app` | any Arkitekt app beside a hub, attached from its release and granted what it asks for |
 | `coord` | a coordination server: where users, organizations and permissions live, and what a hub or an engine connects to |
 
-A hub with Kabinet and Rekuest runs a plugin engine of its own, beside its services: the
-[plugin engine](https://github.com/arkitektio/plugin_engine) app, handed this machine's
-container engine socket, which starts the apps the organization installs through Kabinet on
-the hub's network. It is approved with the hub, with no second login: the hub's manifest asks
-for it with a mandate key Konstruktor writes into `secrets/plugin_engine.env`.
-`hub create --no-plugin-engine` leaves it out. `down` and `destroy` remove the apps it started.
+Apps run beside a hub as deployments of their own: `konstruktor app attach <release>`. An
+app's release — a small document its release build pushes to the app's registry repository,
+read from there without pulling an image — says what it is, the services it asks for, and per
+flavour what it must be granted on this machine: the container engine's socket, a device, a
+folder, the host's network. Konstruktor shows that in words, picks the flavour that runs here
+(a GPU flavour only where there is a GPU), and asks for what was not given: a device or folder
+by `--device NAME=…` / `--folder NAME=…`, and anything that gives root-level access — the
+container engine, a writable folder, the host's network — only by name, `--allow NAME`. Then
+somebody accepts the app into an organization the hub is connected to, and it joins the hub's
+network. Every attached app is told the same few things about where it runs:
+`ARKITEKT_INSTANCE_ID`, `ARKITEKT_GATEWAY`, `ARKITEKT_NETWORK` (or `ARKITEKT_NETWORK_MODE` on
+the mesh) and `ARKITEKT_DEVICE_ID`.
+
+The [plugin engine](https://github.com/arkitektio/plugin_engine), which starts the apps an
+organization installs through Kabinet, is one such app: `konstruktor engine create --hub
+<hub>` attaches its release, granted the container engine. Only a self-contained hub runs an
+engine of its own, which its own coordination server is told of as it is set up. A hub that
+ran one before engines were apps has it taken out by its next `konstruktor update` (layout 9);
+the update says how to attach one under the id its apps are marked with, so they stay its own.
 
 ```
 # create a deployment
@@ -104,7 +118,8 @@ konstruktor hub create          # asks you what you want, here
 konstruktor hub create /mnt/data/lab-hub
 konstruktor hub create --template personal   # a ready-made kind of hub
 konstruktor hub templates       # the kinds there are
-konstruktor engine create ~/plugins
+konstruktor engine create ~/plugins --hub ~/MyHub
+konstruktor app attach ghcr.io/org/some-app --hub ~/MyHub --dir ~/some-app
 konstruktor coord create ~/lab-coord
 
 # run it — any of the three

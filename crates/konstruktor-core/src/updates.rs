@@ -1339,6 +1339,20 @@ async fn apply_on(
     for moved in &pending {
         step(format!("Moving this hub's files: {}", moved.title));
     }
+    // Layout 9: a hub connected to a coordination server runs its plugin engine beside it,
+    // as an app approved on its own. The one it ran goes with the orphans the update
+    // removes; the apps it started are containers of their own, and keep running.
+    if pending.iter().any(|moved| moved.to == 9) {
+        if let Some(deployer_id) = crate::migrate::move_plugin_engine_out(&mut config) {
+            warn(format!(
+                "The plugin engine is not part of the hub any more: Kabinet installs nothing \
+                 here until one is attached beside it, under the id its apps are marked with \
+                 — konstruktor engine create --hub {} --identifier {}",
+                dir.to_string_lossy(),
+                deployer_id
+            ));
+        }
+    }
     if !pending.is_empty() {
         // Every service reads the new files, so every service is of the release they
         // were written for. The infrastructure is not: its images are held back as ever.

@@ -141,6 +141,11 @@ pub fn of(dir: &Path, kind: DeploymentKind, config: Option<&HubConfig>) -> Owned
         DeploymentKind::Coord => {
             files.insert(crate::coord::COORD_CONFIG_FILE.to_string());
         }
+        DeploymentKind::App => {
+            files.insert(crate::apps::CONFIG_FILE.to_string());
+            files.insert(crate::apps::SECRETS_FILE.to_string());
+            files.insert(crate::engine::MESH_FILE.to_string());
+        }
         DeploymentKind::Hub => {
             let lock = crate::lock::LOCK_FILENAME;
             let state = crate::hubhealth::STATE_FILENAME;

@@ -344,7 +344,26 @@ pub async fn create_engine(
 ) -> Result<String, String> {
     let start = answers.start;
     let cancel = authorizing.begin();
-    let created = konstruktor_core::engine::create_engine(&answers, &cancel, &move |event| {
+    // The engine is an app like any other, attached from its release: asking for an engine
+    // is asking to grant it this machine's container engine.
+    let hub = answers.hub.clone().filter(|h| !h.trim().is_empty());
+    let attach = konstruktor_core::apps::AttachAnswers {
+        dir: answers.dir.clone(),
+        name: answers.name.clone(),
+        release: konstruktor_core::apps::PLUGIN_ENGINE_RELEASE.to_string(),
+        // Beside a hub, accepted where the hub is connected; on its own, where it was asked.
+        coord_server: (hub.is_none() || !answers.coord_server.trim().is_empty())
+            .then(|| answers.coord_server.clone())
+            .filter(|server| !server.trim().is_empty()),
+        hub,
+        mesh: answers.mesh,
+        instance_id: Some(answers.identifier.clone()),
+        allow: vec!["engine".into()],
+        description: answers.description.clone(),
+        start: answers.start,
+        ..Default::default()
+    };
+    let created = konstruktor_core::apps::attach_app(&attach, &cancel, &move |event| {
         let _ = on_event.send(event);
     })
     .await;

@@ -97,8 +97,9 @@ export const Home: React.FC<{}> = () => {
   const [setup, setSetup] = useState(false);
 
   const warning = DOCKER_WARNING[state]?.(engineName(probe?.engine));
-  const engines = deployments.filter((d) => d.kind === "engine");
-  const hubs = deployments.filter((d) => d.kind !== "engine");
+  // An attached app is shown with the engines: one container beside a hub, no profile.
+  const engines = deployments.filter((d) => d.kind === "engine" || d.kind === "app");
+  const hubs = deployments.filter((d) => d.kind !== "engine" && d.kind !== "app");
 
   return (
     <Page

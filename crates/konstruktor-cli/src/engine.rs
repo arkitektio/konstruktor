@@ -1,9 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::Args;
 use konstruktor_core::create::identifier_from_folder;
-use konstruktor_core::engine::{create_engine, EngineAnswers, ENGINE_IMAGE};
-
-use tokio_util::sync::CancellationToken;
 
 use crate::ui;
 
@@ -46,92 +43,47 @@ pub struct EngineCreateArgs {
 }
 
 pub async fn run(args: EngineCreateArgs) -> Result<()> {
-    ui::say("");
-    ui::say(&format!("  {}", ui::bold("Creating a plugin engine")));
-    ui::say("");
-
-    let requested = args.dir.as_deref().unwrap_or(".");
-    std::fs::create_dir_all(requested).with_context(|| format!("creating {requested}"))?;
-    let dir = konstruktor_core::paths::canonical(requested)
-        .with_context(|| format!("resolving {requested}"))?;
-
-    // The shared discriminator, not a raw file check — so this names what is actually
-    // there rather than calling a hub or a coordination server "a compose project".
-    if let Some(kind) = konstruktor_core::profile::holds_a_deployment(&dir) {
-        bail!(
-            "{} already holds a {}. Create the engine in an empty folder.",
-            dir.display(),
-            kind.label()
-        );
-    }
-
-    let name = args
-        .name
-        .clone()
-        .unwrap_or_else(|| konstruktor_core::compose::basename(&dir.to_string_lossy()));
-
-    let server = args
-        .server
-        .clone()
-        .unwrap_or_else(|| konstruktor_core::defaults::COORDINATION_SERVER.to_string());
-
-    let identifier = args
-        .identifier
-        .clone()
-        .unwrap_or_else(|| identifier_from_folder(&dir));
-
-    let hub = args.hub.as_deref().map(resolve_hub).transpose()?;
-
-    let answers = EngineAnswers {
-        dir: dir.to_string_lossy().to_string(),
-        name,
-        coord_server: server,
-        identifier,
-        description: args.description.clone(),
-        start: !args.no_start,
-        hub: hub.as_ref().map(|h| h.to_string_lossy().to_string()),
-        mesh: args.mesh,
+    // The engine is an app like any other: its release says what it is, and that it needs
+    // this machine's container engine — which asking for an engine is asking to grant it.
+    let dir = args.dir.clone().unwrap_or_else(|| ".".into());
+    let server = match (&args.server, &args.hub) {
+        (Some(server), _) => Some(server.clone()),
+        // Beside a hub: accepted at the coordination server the hub is connected to.
+        (None, Some(_)) => None,
+        (None, None) => Some(konstruktor_core::defaults::COORDINATION_SERVER.to_string()),
     };
-
-    let mut rows = vec![
-        ("folder".into(), answers.dir.clone()),
-        ("coordination".into(), answers.coord_server.clone()),
-        ("identifier".into(), answers.identifier.clone()),
-        ("runs".into(), ENGINE_IMAGE.to_string()),
-    ];
-    if let Some(hub) = &answers.hub {
-        rows.push(("attached to".into(), hub.clone()));
-    }
-    if answers.mesh {
-        rows.push((
-            "mesh".into(),
-            "joins as the app it is authorized as; plugins run in its namespace".into(),
-        ));
-    }
-    ui::table(&rows);
-    ui::say("");
-
-    // Ctrl-C during the wait cancels the poll rather than leaving it running.
-    let cancel = CancellationToken::new();
-    let on_signal = cancel.clone();
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        on_signal.cancel();
+    let instance_id = args.identifier.clone().or_else(|| {
+        konstruktor_core::paths::canonical(&dir)
+            .ok()
+            .map(|dir| identifier_from_folder(&dir))
     });
-
-    let open_browser = !args.no_open && ui::is_interactive();
-    let created = create_engine(&answers, &cancel, &|event| {
-        crate::create::report(event, open_browser)
-    })
-    .await?;
-
     ui::say("");
-    ui::ok(&format!(
-        "The engine is at {}.",
-        ui::bold(&created.path.to_string_lossy())
+    ui::step(&ui::dim(
+        "A plugin engine starts the apps the organization installs as containers on this \
+         machine, so it is granted this machine's container engine.",
     ));
-    ui::say("");
-    Ok(())
+    crate::apps::attach(
+        crate::apps::AttachArgs {
+            release: konstruktor_core::apps::PLUGIN_ENGINE_RELEASE.to_string(),
+            dir: Some(dir),
+            name: args.name.clone(),
+            hub: args.hub.clone(),
+            server,
+            flavour: None,
+            mesh: args.mesh,
+            instance_id,
+            allow: vec!["engine".into()],
+            decline: Vec::new(),
+            devices: Vec::new(),
+            folders: Vec::new(),
+            description: args.description.clone(),
+            no_start: args.no_start,
+            no_open: args.no_open,
+            yes: false,
+        },
+        "Creating a plugin engine",
+    )
+    .await
 }
 
 #[derive(Args, Debug, Clone)]

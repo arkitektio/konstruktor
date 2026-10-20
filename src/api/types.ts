@@ -551,6 +551,11 @@ export type HubConfigView = {
   };
   /** Absent on a hub that never joined a mesh. */
   mesh?: { enabled: boolean; hostname: string; mesh_only?: boolean } | null;
+  /**
+   * What marked the containers of the plugin engine this hub ran itself, before engines
+   * became apps beside a hub: the id an engine attached in its place takes.
+   */
+  former_plugin_engine?: string | null;
 };
 
 /**

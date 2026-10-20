@@ -58,10 +58,13 @@ use crate::lock;
 ///    and the hub's uid, which every service's config now says (`authentikate.hub`), on the
 ///    majors that read it: Rekuest 9, Mikro 9, Kabinet 7, Elektro 6, Alpaka 6, Fluss 6,
 ///    Bank 6, Kuvert 6, Lovekit 5, Lokate 4, Kraph 3, Dokuments 3.
+/// 9. A hub connected to a coordination server runs no plugin engine of its own: the engine
+///    is an app beside it ([`crate::apps`]), approved on its own. The one a hub ran is taken
+///    out, and what marked its containers is kept for the app that takes over.
 ///
 /// A service's next major is no layout: its repository is asked for it
 /// ([`crate::updates::majors`]). A layout is for what changes in the files themselves.
-pub const CURRENT_LAYOUT: u32 = 8;
+pub const CURRENT_LAYOUT: u32 = 9;
 
 /// The newest layout written before layouts were recorded: what a hub with no record is
 /// taken for unless its files say otherwise.
@@ -144,7 +147,24 @@ pub fn steps() -> Vec<Step> {
             8,
             "a hub names itself and its services, and every service takes tokens for its own hub alone",
         ),
+        Step::new(
+            9,
+            "the plugin engine runs beside the hub as an app of its own, approved on its own",
+        ),
     ]
+}
+
+/// Layout 9, on a hub's profile: the plugin engine of a hub connected to a coordination
+/// server goes, and what marked its containers is kept, for the engine attached beside the
+/// hub in its place. Answers that id. A self-contained hub keeps its engine: its own
+/// coordination server is told of it as it is set up.
+pub fn move_plugin_engine_out(config: &mut HubConfig) -> Option<String> {
+    if config.running_lok().is_some() {
+        return None;
+    }
+    let engine = config.plugin_engine.take()?;
+    config.former_plugin_engine = Some(engine.deployer_id.clone());
+    Some(engine.deployer_id)
 }
 
 /// The layout of the files in `dir`: what the lock recorded, or — for a hub written before
@@ -381,7 +401,7 @@ mod tests {
 
         write("services:\n  rekuest: {}\n  rekuest-reaper: {}\n");
         assert_eq!(layout(&dir, &config), 1);
-        assert_eq!(pending(&dir, &config).len(), 7);
+        assert_eq!(pending(&dir, &config).len(), 8);
         assert!(behind(&dir, &config)
             .unwrap()
             .contains("konstruktor update"));
@@ -393,8 +413,27 @@ mod tests {
             "services:\n  rekuest: {}\n  rekuest-takt:\n    environment:\n      TAKT_INTERNAL_BIND: unix:/run/takt/internal.sock\n",
         );
         assert_eq!(layout(&dir, &config), 3);
-        assert_eq!(pending(&dir, &config).len(), 5);
+        assert_eq!(pending(&dir, &config).len(), 6);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A hub's own plugin engine goes at layout 9, unless it runs its own coordination
+    /// server; what marked its containers is kept.
+    #[test]
+    fn a_connected_hubs_plugin_engine_moves_out_and_its_id_is_kept() {
+        let mut config = config();
+        config.plugin_engine = Some(crate::config::hub::PluginEngineBlock::new(
+            "lab-hub",
+            "/var/run/docker.sock",
+            None,
+        ));
+        assert_eq!(
+            move_plugin_engine_out(&mut config).as_deref(),
+            Some("lab-hub")
+        );
+        assert!(config.plugin_engine.is_none());
+        assert_eq!(config.former_plugin_engine.as_deref(), Some("lab-hub"));
+        assert_eq!(move_plugin_engine_out(&mut config), None);
     }
 
     /// Once written by this build, the record answers — whatever the files look like.

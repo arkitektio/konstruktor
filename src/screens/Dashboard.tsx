@@ -76,7 +76,7 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
    * a red alert on every engine dashboard. Everything that reads `status` is guarded on
    * it already; this just stops the question being asked.
    */
-  const isHub = deployment.kind !== "engine";
+  const isHub = deployment.kind !== "engine" && deployment.kind !== "app";
 
   const loadProfile = useCallback(async () => {
     if (!isHub) {
@@ -513,7 +513,7 @@ export const DashboardScreen = () => {
 
   // Two dashboards, because the two deployments have nothing in common past the folder:
   // an engine has no profile, no services, no channels and no admin account.
-  if (deployment?.kind === "engine") {
+  if (deployment?.kind === "engine" || deployment?.kind === "app") {
     return <EngineDashboard deployment={deployment} />;
   }
 

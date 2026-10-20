@@ -989,6 +989,11 @@ pub struct HubConfig {
     /// The coordination server the hub is connected to. Empty until it is connected;
     /// `local` for a hub that runs its own.
     pub coord_server: String,
+    /// What marked the containers of the plugin engine this hub ran itself, before engines
+    /// became apps beside a hub (layout 9): the instance id an engine attached in its place
+    /// takes, so that the apps it started stay its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub former_plugin_engine: Option<String>,
     pub csrf_trusted_origins: Option<Vec<String>>,
     pub db: DbBlock,
     pub default_service_grace_period_seconds: u32,
@@ -1975,6 +1980,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         identifier: None,
         description: None,
         advertised_hosts: Vec::new(),
+        former_plugin_engine: None,
         services,
         // Minted once Lovekit is known to run: see `HubConfig::provide`.
         livekit: None,

@@ -391,18 +391,16 @@ pub async fn create_hub(
     // The plugin engine, with the socket of the engine on this machine. Before the images,
     // so `--image plugin_engine=…` reaches it; connecting asks for its client.
     let engine = crate::engine_probe::engine();
-    add_plugin_engine(
-        &mut config,
-        answers,
-        engine.kind.container_socket(),
-        docker::host_socket(&engine).await,
-    );
-    // Run once the coordination server approved it with the hub, which connecting asks: a
-    // self-contained hub's own coordination server is told of it as it is set up.
-    if !self_contained {
-        if let Some(engine) = config.plugin_engine.as_mut() {
-            engine.enabled = false;
-        }
+    // Only a self-contained hub runs a plugin engine of its own, which its own coordination
+    // server is told of as it is set up. Beside any other hub the engine is an app, attached
+    // and approved on its own ([`crate::apps`]).
+    if self_contained {
+        add_plugin_engine(
+            &mut config,
+            answers,
+            engine.kind.container_socket(),
+            docker::host_socket(&engine).await,
+        );
     }
 
     // Before the authorization and before anything is generated: the images are part of

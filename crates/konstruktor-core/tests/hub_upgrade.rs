@@ -42,7 +42,6 @@ use konstruktor_core::create::{create_hub, HubAnswers};
 use konstruktor_core::profile::read_profile;
 use konstruktor_core::updates::{self, Advance, UpdateEvent, UpdateRequest};
 use konstruktor_core::{contract, lock, ready};
-use tokio_util::sync::CancellationToken;
 
 fn compose(dir: &Path, args: &[&str]) -> std::process::Output {
     konstruktor_core::docker::command()

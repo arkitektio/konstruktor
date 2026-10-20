@@ -1,3 +1,4 @@
+mod apps;
 mod compose_cmd;
 mod config_cmd;
 mod connect;
@@ -55,6 +56,7 @@ Create a deployment:
   hub create       A hub: rekuest, mikro, fluss and the rest behind a gateway
   hub templates    List the kinds of hub `hub create --template` makes
   engine create    A plugin engine: one container running an org's plugins
+  app attach       Any app beside a hub, from its release, granted what it asks
   coord create     A coordination server: what the other two connect to
 
 Run it (any deployment):
@@ -180,6 +182,9 @@ enum Command {
     /// Create a plugin engine, or attach one to a hub's network.
     #[command(subcommand)]
     Engine(EngineCommand),
+    /// Attach an Arkitekt app beside a hub, from its release.
+    #[command(subcommand)]
+    App(AppCommand),
     /// Create a coordination server.
     #[command(subcommand)]
     Coord(CoordCommand),
@@ -332,6 +337,12 @@ enum CoordCommand {
 }
 
 #[derive(Subcommand)]
+enum AppCommand {
+    /// Attach an app: read its release, grant what it asks for, have it accepted.
+    Attach(Box<apps::AttachArgs>),
+}
+
+#[derive(Subcommand)]
 enum EngineCommand {
     /// Create a plugin engine.
     Create(Box<engine::EngineCreateArgs>),
@@ -424,6 +435,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Hub(HubCommand::Templates) => create::templates(json),
         Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
         Command::Hub(HubCommand::Regenerate(args)) => compose_cmd::regenerate_hub(args).await,
+        Command::App(AppCommand::Attach(args)) => apps::run(*args).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
         Command::Engine(EngineCommand::Attach(args)) => {
             engine::attach(args.engine, Some(args.hub)).await

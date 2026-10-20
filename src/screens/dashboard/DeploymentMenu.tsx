@@ -283,6 +283,17 @@ export const DeploymentMenu = ({
                 <ShieldCheck />
                 {organizations.length > 0 ? "Connect to an organization…" : "Connect…"}
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  const params = new URLSearchParams({ hub: deployment.path });
+                  const former = status?.profile.config.former_plugin_engine;
+                  if (former) params.set("identifier", former);
+                  navigate(`/new/engine?${params.toString()}`);
+                }}
+              >
+                <Boxes />
+                Attach a plugin engine…
+              </DropdownMenuItem>
               {organizations.map((organization) => (
                 <DropdownMenuItem
                   key={organization}

@@ -130,6 +130,8 @@ pub(crate) struct Platform {
 #[derive(Debug, Deserialize)]
 pub(crate) struct Descriptor {
     pub digest: String,
+    #[serde(default, rename = "mediaType")]
+    pub media_type: Option<String>,
 }
 
 /// One repository of a registry, asked anonymously: the first answer that wants a token

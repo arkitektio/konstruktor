@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod backup;
 pub mod catalog;
 pub mod compose;

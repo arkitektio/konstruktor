@@ -87,8 +87,9 @@ pub struct DeploymentStatus {
 }
 
 impl DeploymentStatus {
+    /// An engine, or any other app beside a hub: one container, no profile.
     pub fn is_engine(&self) -> bool {
-        self.record.kind == "engine"
+        self.record.kind == "engine" || self.record.kind == crate::apps::KIND
     }
 }
 

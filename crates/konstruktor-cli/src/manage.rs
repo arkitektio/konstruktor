@@ -621,7 +621,10 @@ async fn other_status(resolved: &Resolved) -> Result<()> {
             rows.push(("identifier".into(), identifier.clone()));
         }
     }
-    if resolved.kind == profile::DeploymentKind::Engine {
+    if matches!(
+        resolved.kind,
+        profile::DeploymentKind::Engine | profile::DeploymentKind::App
+    ) {
         let attached = match (
             konstruktor_core::engine::attached_hub(&resolved.dir),
             konstruktor_core::engine::attached_network(&resolved.dir),
@@ -814,6 +817,18 @@ pub async fn status(target: &Target, json: bool) -> Result<()> {
 
     rows.push(("advertised".into(), advertised_aliases(&view).join(", ")));
 
+    if let Some(former) = &view.profile.config.former_plugin_engine {
+        if konstruktor_core::engine::attached_to(&dir).is_empty() {
+            rows.push((
+                "plugin engine".into(),
+                format!(
+                    "none beside it since the engine left the hub — konstruktor engine create \
+                     --hub {} --identifier {former}",
+                    dir.to_string_lossy()
+                ),
+            ));
+        }
+    }
     if view.connected.is_empty() {
         rows.push((
             "connected".into(),

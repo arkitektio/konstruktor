@@ -18,14 +18,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_norway::Value;
 
-use crate::config::hub::{
-    image_version, PLUGIN_ENGINE_IDENTIFIER, PLUGIN_ENGINE_REQUIREMENTS, PLUGIN_ENGINE_SCOPES,
-};
-use crate::config::mesh::{
-    build_mesh_block, mesh_hostname, MeshBlock, MeshOptions, MESH_STATE_DIR,
-};
-use crate::connect::app::{self, AppEnvelope, AppManifest};
-use crate::create::{now_rfc3339, CreateError, CreateEvent};
+use crate::config::hub::{image_version, PLUGIN_ENGINE_IDENTIFIER};
+use crate::config::mesh::{MeshBlock, MESH_STATE_DIR};
+use crate::connect::app::AppEnvelope;
+use crate::create::CreateError;
 use crate::docker;
 use crate::engine_probe::EngineKind;
 use crate::generate::service::{list, map, s};
@@ -57,8 +53,8 @@ pub const SECRETS_FILE: &str = "secrets/plugin_engine.env";
 /// Where the engine keeps its session, so a restart does not fall back on the spent
 /// token. arkitekt keeps it under the user's state directory, which `XDG_STATE_HOME`
 /// moves here.
-const STATE_VOLUME: &str = "plugin_engine_state";
-const STATE_DIR: &str = "/state";
+pub(crate) const STATE_VOLUME: &str = "plugin_engine_state";
+pub(crate) const STATE_DIR: &str = "/state";
 
 /// Everything a front end has to collect for an engine. Flat and serde-friendly, like
 /// [`crate::create::HubAnswers`].
@@ -112,7 +108,7 @@ pub struct EngineCompose<'a> {
 }
 
 /// The compose key the attached hub's network goes under.
-const HUB_NETWORK_KEY: &str = "hub";
+pub(crate) const HUB_NETWORK_KEY: &str = "hub";
 
 /// Where an engine on the mesh keeps its mesh block. Engines have no profile, and the
 /// compose file is rewritten on every attach, so the block needs a file of its own.
@@ -235,7 +231,7 @@ pub fn build_engine_compose(compose: &EngineCompose<'_>) -> Value {
 /// they resolve through the `resolv.conf` tailscale writes here, which Docker gives every
 /// container in the namespace. Names outside the tailnet are forwarded on, Docker's own
 /// included.
-fn sidecar_service(mesh: &MeshBlock, networks: Option<(&'static str, Value)>) -> Value {
+pub(crate) fn sidecar_service(mesh: &MeshBlock, networks: Option<(&'static str, Value)>) -> Value {
     // The key stays inline here: an engine keeps its whole mesh block, key included, in
     // `configs/mesh.yaml` anyway, so a separate env file would hide nothing.
     let mut environment: Vec<(&str, Value)> = std::iter::once(mesh.auth_key_env())
@@ -264,7 +260,7 @@ fn sidecar_service(mesh: &MeshBlock, networks: Option<(&'static str, Value)>) ->
 }
 
 /// The sidecar's container, as compose names it: plugins join its namespace by name.
-fn sidecar_container(project: &str, mesh: &MeshBlock) -> String {
+pub(crate) fn sidecar_container(project: &str, mesh: &MeshBlock) -> String {
     format!("{project}-{}-1", mesh.host)
 }
 
@@ -307,7 +303,7 @@ pub fn generate_engine_files(
 /// [`SECRETS_FILE`]: `FAKTS_TOKEN`, the `client_id:refresh_token` pair arkitekt logs in with.
 /// None without both halves: the token endpoint authenticates the client before it reads
 /// the token.
-fn engine_secrets(client_id: &str, refresh_token: Option<&str>) -> Option<String> {
+pub(crate) fn engine_secrets(client_id: &str, refresh_token: Option<&str>) -> Option<String> {
     let refresh_token = refresh_token.map(str::trim).filter(|t| !t.is_empty())?;
     let client_id = client_id.trim();
     (!client_id.is_empty()).then(|| format!("FAKTS_TOKEN={client_id}:{refresh_token}\n"))
@@ -358,188 +354,8 @@ fn build_engine_config(
     ])
 }
 
-/// What an engine says about itself when it asks to be let in.
-fn build_engine_manifest(answers: &EngineAnswers, node_id: Option<String>) -> AppManifest {
-    AppManifest {
-        identifier: PLUGIN_ENGINE_IDENTIFIER.to_string(),
-        version: image_version(ENGINE_IMAGE),
-        description: answers
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-            .map(str::to_string),
-        logo: None,
-        scopes: PLUGIN_ENGINE_SCOPES.iter().map(|s| s.to_string()).collect(),
-        // What the engine's own manifest requires: the coordination server hands the
-        // client the instances of these, and the engine finds Kabinet and Rekuest by them.
-        requirements: PLUGIN_ENGINE_REQUIREMENTS
-            .iter()
-            .map(
-                |(key, service)| crate::connect::manifest::ClientRequirement {
-                    key: key.to_string(),
-                    service: service.to_string(),
-                },
-            )
-            .collect(),
-        // One engine per machine per name: the identifier the wizard collects is what
-        // tells two engines on the same coordination server apart.
-        instance_id: answers.identifier.trim().to_string(),
-        node_id,
-    }
-}
-
-/// Check Docker → authorize → write → register → start, in that order.
-///
-/// Authorization comes before anything is written for the same reason it does for a hub:
-/// what comes back is what the container is configured with. An engine is an *app*, so it
-/// goes through the app device-code flow — a manifest describing itself, a code somebody
-/// accepts in a browser, and an OAuth2 client in return — rather than the hub manifest
-/// endpoint. The `client_id` and `refresh_token` from that grant are written into
-/// `configs/deployer.yaml`, and handed to the container as `FAKTS_TOKEN`.
-pub async fn create_engine(
-    answers: &EngineAnswers,
-    cancel: &tokio_util::sync::CancellationToken,
-    on: &(dyn Fn(CreateEvent) + Sync),
-) -> Result<CreatedEngine, CreateError> {
-    on(CreateEvent::CheckingDocker);
-    let probe = docker::probe().await;
-    if !probe.is_ready() {
-        return Err(CreateError::Docker(crate::create::describe_docker(&probe)));
-    }
-
-    let dir = PathBuf::from(&answers.dir);
-    std::fs::create_dir_all(&dir)?;
-
-    let mut store = registry::load();
-    let verdict = registry::inspect_folder(&store, &dir);
-    if !verdict.can_create() {
-        return Err(CreateError::Folder(verdict.describe()));
-    }
-
-    // Before anything is asked of the coordination server: a hub that is not there is a
-    // mistake in the answers, and finding out after somebody accepted a code is late.
-    let hub_network = match answers
-        .hub
-        .as_deref()
-        .map(str::trim)
-        .filter(|h| !h.is_empty())
-    {
-        Some(hub) => Some(hub_network_of(Path::new(hub))?),
-        None => None,
-    };
-
-    on(CreateEvent::Building);
-
-    // --- authorize ----------------------------------------------------------
-    let manifest = build_engine_manifest(answers, Some(store.device_id.clone()));
-    let grant = app::start(&answers.coord_server, &manifest, answers.mesh).await?;
-    on(CreateEvent::Staged {
-        user_code: grant.user_code.clone(),
-        verification_uri_complete: grant.verification_uri_complete.clone(),
-        expires_in: grant.expires_in,
-    });
-
-    let granted = app::wait_for_app(&grant, cancel, &|progress| {
-        on(CreateEvent::Waiting {
-            polls: progress.polls,
-            seconds_left: progress.seconds_left,
-        })
-    })
-    .await?;
-
-    // The two values the container lives on. A grant that carries no refresh token
-    // produces an engine that can never renew its access — and, because it is written
-    // and started anyway, one that looks created and simply does not work. Refused here
-    // instead, with what the server did send, since that names the key it used.
-    if granted
-        .refresh_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .is_none()
-    {
-        return Err(CreateError::AppAuthorization(
-            app::AppAuthorizationError::NoRefreshToken {
-                fields: granted.declared_fields(),
-            },
-        ));
-    }
-
-    on(CreateEvent::Granted {
-        mesh_key: granted.mesh_key().is_some(),
-    });
-
-    // Asked for and not granted: written anyway, this engine would be one that cannot
-    // do the one thing it was created for. Nothing is on disk yet, so stop here.
-    let mesh = if answers.mesh {
-        let (key, coord_url) = granted.mesh_key().ok_or(CreateError::EngineNoMeshKey)?;
-        Some(build_mesh_block(&MeshOptions {
-            hostname: mesh_hostname(&answers.identifier),
-            auth_key: key.to_string(),
-            coord_url: coord_url.map(str::to_string),
-            login: granted.login(),
-        }))
-    } else {
-        None
-    };
-
-    // --- write --------------------------------------------------------------
-    let engine = crate::engine_probe::engine();
-    let host_socket = docker::host_socket(&engine).await;
-    let project = crate::compose::project_name(&dir.to_string_lossy());
-    let files = generate_engine_files(
-        answers,
-        &granted,
-        &EngineCompose {
-            engine: engine.kind,
-            deployer_id: answers.identifier.trim(),
-            device_id: Some(&store.device_id),
-            host_socket: host_socket.as_deref(),
-            coord_server: &answers.coord_server,
-            project: &project,
-            hub_network: hub_network.as_deref(),
-            mesh: mesh.as_ref(),
-        },
-    );
-    for name in files.keys() {
-        on(CreateEvent::Writing { file: name.clone() });
-    }
-    write_generated_files(&dir, &files)?;
-
-    let record = registry::register_kind(
-        &mut store,
-        "engine",
-        &answers.name,
-        &dir.to_string_lossy(),
-        Some(answers.coord_server.trim().to_string()),
-        Some(answers.identifier.trim().to_string()),
-        now_rfc3339(),
-    );
-    let _ = registry::save(&store);
-
-    if answers.start {
-        on(CreateEvent::Starting);
-        // The same start every deployment gets — including the refusal to start an engine
-        // attached to a hub whose network does not exist yet.
-        let log = |line: crate::compose::ComposeLine| on(CreateEvent::Log { line: line.line });
-        if let Err(error) = crate::start::start(&dir, &log).await {
-            on(CreateEvent::Log {
-                line: error.to_string(),
-            });
-            return Err(CreateError::StartFailed);
-        }
-    }
-
-    on(CreateEvent::Done {
-        path: dir.to_string_lossy().to_string(),
-    });
-
-    Ok(CreatedEngine { path: dir, record })
-}
-
 /// The internal network of the hub in `dir` — what an engine attaches to.
-fn hub_network_of(dir: &Path) -> Result<String, CreateError> {
+pub(crate) fn hub_network_of(dir: &Path) -> Result<String, CreateError> {
     crate::profile::read_profile(dir)
         .map(|profile| profile.config.internal_network)
         .map_err(|_| {
@@ -628,6 +444,23 @@ pub fn attached_hub(dir: &Path) -> Option<registry::DeploymentRecord> {
     })
 }
 
+/// The engines and other apps on this machine attached to the hub in `hub`: whose compose
+/// file joins its network.
+pub fn attached_to(hub: &Path) -> Vec<registry::DeploymentRecord> {
+    let Ok(profile) = crate::profile::read_profile(hub) else {
+        return Vec::new();
+    };
+    let network = profile.config.internal_network;
+    registry::load()
+        .deployments
+        .into_iter()
+        .filter(|record| record.kind == "engine" || record.kind == crate::apps::KIND)
+        .filter(|record| {
+            attached_network(Path::new(&record.path)).as_deref() == Some(network.as_str())
+        })
+        .collect()
+}
+
 /// The external network an engine's compose file joins, if any.
 pub fn attached_network(dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join("docker-compose.yaml")).ok()?;
@@ -642,6 +475,7 @@ pub fn attached_network(dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::mesh::{build_mesh_block, MeshOptions};
 
     fn answers() -> EngineAnswers {
         EngineAnswers {
@@ -944,24 +778,6 @@ mod tests {
     }
 
     /// It asks for what it needs: the client is handed the instances of these.
-    #[test]
-    fn the_engine_asks_for_the_services_it_needs() {
-        let manifest = build_engine_manifest(&answers(), None);
-        assert_eq!(manifest.identifier, "plugin_engine");
-        let services: Vec<&str> = manifest
-            .requirements
-            .iter()
-            .map(|r| r.service.as_str())
-            .collect();
-        assert_eq!(
-            services,
-            [
-                "live.arkitekt.kabinet",
-                "live.arkitekt.rekuest",
-                "live.arkitekt.s3"
-            ]
-        );
-    }
 
     /// An engine from before keeps its credential only in its record; attaching it writes
     /// the file the new compose file names.
