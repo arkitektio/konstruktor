@@ -24,19 +24,9 @@ application/vnd.docker.distribution.manifest.list.v2+json, \
 application/vnd.oci.image.manifest.v1+json, \
 application/vnd.docker.distribution.manifest.v2+json";
 
-/// The labels of `image`: from the engine when the image is on this machine, else from its
-/// registry. `None` when neither can say — the image is not here and the registry cannot be
-/// reached, or does not have it.
-pub async fn labels(image: &str) -> Option<BTreeMap<String, String>> {
-    if let Some(local) = local_labels(image).await {
-        return Some(local);
-    }
-    remote_labels(image).await.ok()
-}
-
 /// The labels of an image on this machine, as the engine reads them. `None` when it is not
 /// here.
-async fn local_labels(image: &str) -> Option<BTreeMap<String, String>> {
+pub async fn local_labels(image: &str) -> Option<BTreeMap<String, String>> {
     let output = crate::engine_probe::engine()
         .async_command()
         .args([

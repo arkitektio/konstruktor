@@ -379,8 +379,18 @@ pub async fn describe(image: &str) -> Option<Description> {
 
 /// The description `image` carries as its label, as it was stamped. `None` for an image
 /// without one, or one that can neither be found here nor read from its registry.
+///
+/// A copy on this machine answers first. One without the label is asked past: a floating
+/// tag (`rekuest:9`) pulled before its releases were stamped is older than what the
+/// registry holds under it now, and what is published there says what the tag is.
 pub async fn labelled(image: &str) -> Option<String> {
-    crate::oci::labels(image).await?.remove(LABEL)
+    if let Some(said) = crate::oci::local_labels(image)
+        .await
+        .and_then(|mut labels| labels.remove(LABEL))
+    {
+        return Some(said);
+    }
+    crate::oci::remote_labels(image).await.ok()?.remove(LABEL)
 }
 
 fn read(text: &str) -> Option<Description> {

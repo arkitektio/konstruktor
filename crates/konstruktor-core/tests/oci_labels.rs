@@ -216,3 +216,43 @@ async fn docker_hub_answers_the_way_the_stand_in_does() {
         "{labels:?}"
     );
 }
+
+/// A copy here pulled before its release was stamped — `rekuest:9` from the day before the
+/// labels — does not hide what the registry now holds under the same tag.
+#[tokio::test]
+async fn a_local_copy_without_the_label_is_asked_past() {
+    isolate_data_dir();
+    let engine = konstruktor_core::engine_probe::engine();
+    let docker_here = engine
+        .command()
+        .args(["version"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !docker_here {
+        eprintln!("skipping: no container engine here");
+        return;
+    }
+    let labels = json!({"live.arkitekt.service": description().to_string()});
+    let server = registry("arkitektio/stale", "9", &digest('7'), labels, 1).await;
+    let image = image(&server, "arkitektio/stale", "9");
+
+    // An empty image under that very name, with no labels at all: an empty tar is two
+    // blocks of zeros.
+    let mut import = engine
+        .command()
+        .args(["import", "-", &image])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("the engine imports");
+    std::io::Write::write_all(&mut import.stdin.take().expect("its stdin"), &[0u8; 1024])
+        .expect("the empty tar is written");
+    assert!(import.wait().expect("the import ends").success());
+    let said = konstruktor_core::contract::describe(&image).await;
+    let _ = engine.command().args(["rmi", "--force", &image]).output();
+
+    assert_eq!(
+        said.expect("the registry's label describes it").name,
+        "mikro"
+    );
+}
