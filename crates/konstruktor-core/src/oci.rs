@@ -233,6 +233,22 @@ impl Registry {
         .map_err(|e| e.to_string())
     }
 
+    /// The repository's tags.
+    pub async fn tags(&mut self) -> Result<Vec<String>, String> {
+        #[derive(Deserialize)]
+        struct Tags {
+            #[serde(default)]
+            tags: Option<Vec<String>>,
+        }
+        let listed: Tags = self
+            .send(reqwest::Method::GET, "tags/list", None)
+            .await?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(listed.tags.unwrap_or_default())
+    }
+
     /// A blob, by digest: an image's config, or a document published as one.
     pub async fn blob(&mut self, digest: &str) -> Result<Vec<u8>, String> {
         let bytes = self

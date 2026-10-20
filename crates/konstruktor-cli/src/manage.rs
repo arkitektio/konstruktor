@@ -654,6 +654,24 @@ async fn other_status(resolved: &Resolved) -> Result<()> {
         };
         rows.push(("mesh".into(), mesh));
     }
+    if resolved.kind == profile::DeploymentKind::App {
+        if let Ok(record) = konstruktor_core::apps::read_app_record(&resolved.dir) {
+            rows.push((
+                "release".into(),
+                format!("{} {}", record.app.identifier, record.app.version),
+            ));
+            if let Some(organization) = record.app.organization {
+                rows.push(("organization".into(), organization));
+            }
+            // Asked of the registry; a machine offline just does not say.
+            if let Some(newer) = konstruktor_core::apps::available_update(&resolved.dir).await {
+                rows.push((
+                    "update".into(),
+                    format!("{newer} is out — konstruktor app update"),
+                ));
+            }
+        }
+    }
     ui::table(&rows);
     report_containers(&resolved.dir).await;
     ui::say("");

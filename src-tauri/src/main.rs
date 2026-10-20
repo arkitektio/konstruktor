@@ -92,6 +92,8 @@ fn main() {
             cmd::engine_attachment,
             cmd::attach_engine,
             cmd::engine_mesh,
+            cmd::plan_app_update,
+            cmd::update_app,
             cmd::connect_hub,
             cmd::disconnect_hub,
             cmd::plan_service_change,

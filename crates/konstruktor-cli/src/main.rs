@@ -89,9 +89,10 @@ Change a hub:
   hub regenerate   Rewrite its generated files from its profile
   check            Check that every service answers on every advertised address
 
-Change an engine:
+Change an engine or an app:
   engine attach    Join a hub's network, so its plugins reach the hub in Docker
   engine detach    Leave the hub's network
+  app update       Move an attached app to a newer release, accepted again
 
 Back up a hub:
   backup           Back up its database and object storage into a folder
@@ -340,6 +341,9 @@ enum CoordCommand {
 enum AppCommand {
     /// Attach an app: read its release, grant what it asks for, have it accepted.
     Attach(Box<apps::AttachArgs>),
+    /// Move an attached app to a newer release, in place: accepted again, its installation
+    /// and what it was granted kept.
+    Update(Box<apps::UpdateArgs>),
 }
 
 #[derive(Subcommand)]
@@ -436,6 +440,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
         Command::Hub(HubCommand::Regenerate(args)) => compose_cmd::regenerate_hub(args).await,
         Command::App(AppCommand::Attach(args)) => apps::run(*args).await,
+        Command::App(AppCommand::Update(args)) => apps::update(*args).await,
         Command::Engine(EngineCommand::Create(args)) => engine::run(*args).await,
         Command::Engine(EngineCommand::Attach(args)) => {
             engine::attach(args.engine, Some(args.hub)).await

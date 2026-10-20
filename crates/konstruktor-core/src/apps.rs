@@ -224,7 +224,7 @@ pub async fn release(reference: &str) -> Result<(String, Release), CreateError> 
     let (repository, tag) = match split_reference(reference) {
         (repository, Some(tag)) => (repository, tag),
         (repository, None) => {
-            let tags = crate::updates::tags(&repository).await.map_err(|error| {
+            let tags = tags(&repository).await.map_err(|error| {
                 CreateError::Answers(format!("{repository} could not be read: {error}"))
             })?;
             let newest = newest_release(&tags)
@@ -249,6 +249,11 @@ pub async fn release(reference: &str) -> Result<(String, Release), CreateError> 
     let release: Release = serde_json::from_slice(&blob)
         .map_err(|error| unreadable(format!("its release cannot be read ({error})")))?;
     Ok((resolved, release))
+}
+
+/// The tags of `repository`, from its registry.
+async fn tags(repository: &str) -> Result<Vec<String>, String> {
+    crate::oci::Registry::new(repository)?.tags().await
 }
 
 /// `registry/repository[:release]`, apart. A colon before the last slash is a port.
@@ -513,7 +518,7 @@ pub fn grant(flavour: &Flavour, answers: &AttachAnswers) -> Result<Vec<Granted>,
     }
     if !missing.is_empty() {
         return Err(CreateError::Answers(format!(
-            "Not attached, nothing written: {}.",
+            "Nothing was written: {}.",
             missing.join("; ")
         )));
     }
@@ -699,47 +704,55 @@ pub fn build_app_compose(compose: &AppCompose<'_>) -> Value {
     map(document)
 }
 
-/// The app's record ([`CONFIG_FILE`]): its login, what it is, and what it was granted.
-fn build_app_record(
-    coord_server: &str,
-    reference: &str,
-    release: &Release,
-    flavour: &Flavour,
-    instance_id: &str,
-    granted: &AppEnvelope,
-    grants: &[Granted],
-) -> Value {
-    let mut fakts = vec![
-        (
-            "endpoint_url",
-            s(&crate::connect::wellknown::base_url(coord_server)),
-        ),
-        ("client_id", s(&granted.client_id)),
-    ];
-    if let Some(secret) = granted.client_secret.as_deref().filter(|v| !v.is_empty()) {
-        fakts.push(("client_secret", s(secret)));
-    }
-    if let Some(refresh) = granted.refresh_token.as_deref().filter(|v| !v.is_empty()) {
-        fakts.push(("refresh_token", s(refresh)));
-    }
-    map(vec![
-        ("fakts", map(fakts)),
-        (
-            "app",
-            map(vec![
-                ("identifier", s(&release.manifest.identifier)),
-                ("version", s(&release.manifest.version)),
-                ("instance_id", s(instance_id)),
-                ("release", s(reference)),
-                ("flavour", s(&flavour.name)),
-                ("image", s(&flavour.image)),
-            ]),
-        ),
-        (
-            "granted",
-            serde_norway::to_value(grants).expect("grants serialize"),
-        ),
-    ])
+/// The app's record ([`CONFIG_FILE`]): its login, what it is, and what it was granted. What
+/// an update reads back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppRecord {
+    pub fakts: RecordedLogin,
+    pub app: RecordedApp,
+    #[serde(default)]
+    pub granted: Vec<Granted>,
+}
+
+/// The client the app was accepted as, and the refresh token it was handed then — spent on
+/// its first login, from which it lives on the chain it keeps in its state volume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordedLogin {
+    pub endpoint_url: String,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordedApp {
+    pub identifier: String,
+    pub version: String,
+    pub instance_id: String,
+    /// The release it runs, as resolved: `registry/repository:X.Y.Z`.
+    pub release: String,
+    pub flavour: String,
+    pub image: String,
+    /// The organization that accepted it. Left out by records from before updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+}
+
+/// The record in `dir`.
+pub fn read_app_record(dir: &Path) -> Result<AppRecord, CreateError> {
+    let path = dir.join(CONFIG_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|_| {
+        CreateError::Answers(format!(
+            "{} holds no attached app ({CONFIG_FILE} is missing). A plugin engine created \
+             before apps could be attached is attached anew: `konstruktor engine create`.",
+            dir.display()
+        ))
+    })?;
+    serde_norway::from_str(&text).map_err(|error| {
+        CreateError::Answers(format!("{} cannot be read: {error}", path.display()))
+    })
 }
 
 /// What the app says of itself when it asks to be let in: what its release says.
@@ -793,11 +806,7 @@ pub async fn attach_app(
     cancel: &tokio_util::sync::CancellationToken,
     on: &(dyn Fn(CreateEvent) + Sync),
 ) -> Result<AttachedApp, CreateError> {
-    on(CreateEvent::CheckingDocker);
-    let probe = docker::probe().await;
-    if !probe.is_ready() {
-        return Err(CreateError::Docker(crate::create::describe_docker(&probe)));
-    }
+    docker_ready(on).await?;
 
     let dir = PathBuf::from(&answers.dir);
     std::fs::create_dir_all(&dir)?;
@@ -866,104 +875,28 @@ pub async fn attach_app(
         Some(store.device_id.clone()),
     );
 
-    // --- accepted ---------------------------------------------------------------
-    let grant = app::start(&coord_server, &manifest, answers.mesh).await?;
-    on(CreateEvent::Staged {
-        user_code: grant.user_code.clone(),
-        verification_uri_complete: grant.verification_uri_complete.clone(),
-        expires_in: grant.expires_in,
-    });
-    let granted = app::wait_for_app(&grant, cancel, &|progress| {
-        on(CreateEvent::Waiting {
-            polls: progress.polls,
-            seconds_left: progress.seconds_left,
-        })
-    })
+    let accepted = accept(
+        &coord_server,
+        &manifest,
+        answers.mesh,
+        hub_grants.as_ref(),
+        cancel,
+        on,
+    )
     .await?;
-    if granted
-        .refresh_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .is_none()
-    {
-        return Err(CreateError::AppAuthorization(
-            app::AppAuthorizationError::NoRefreshToken {
-                fields: granted.declared_fields(),
-            },
-        ));
-    }
-    let organization = granted
-        .self_
-        .as_ref()
-        .and_then(|me| me.organization.clone());
-    if let (Some(held), Some(organization)) = (&hub_grants, &organization) {
-        let served = held.organizations();
-        if !served.is_empty() && !served.contains(organization) {
-            return Err(CreateError::Answers(format!(
-                "The app was accepted into organization {organization}, which the hub is not \
-                 connected to (it serves {}): nothing was written. Remove the app there, and \
-                 accept it into one of the hub's organizations.",
-                served.join(", ")
-            )));
-        }
-    }
-    on(CreateEvent::Granted {
-        mesh_key: granted.mesh_key().is_some(),
-    });
-    let mesh = if answers.mesh {
-        let (key, coord_url) = granted.mesh_key().ok_or(CreateError::EngineNoMeshKey)?;
-        Some(build_mesh_block(&MeshOptions {
-            hostname: mesh_hostname(&instance_id),
-            auth_key: key.to_string(),
-            coord_url: coord_url.map(str::to_string),
-            login: granted.login(),
-        }))
-    } else {
-        None
-    };
-
-    // --- write ------------------------------------------------------------------
-    let engine = crate::engine_probe::engine();
-    let host_socket = docker::host_socket(&engine).await;
-    let project = crate::compose::project_name(&dir.to_string_lossy());
-    let mut files = GeneratedFiles::new();
-    files.insert(
-        "docker-compose.yaml".to_string(),
-        crate::generate::dump(&build_app_compose(&AppCompose {
-            flavour,
-            granted: &grants,
-            instance_id: &instance_id,
-            device_id: Some(&store.device_id),
-            coord_server: &coord_server,
-            project: &project,
-            hub_network: hub_network.as_deref(),
-            mesh: mesh.as_ref(),
-            engine: engine.kind,
-            host_socket: host_socket.as_deref(),
-        })),
-    );
-    files.insert(
-        CONFIG_FILE.to_string(),
-        crate::generate::dump(&build_app_record(
-            &coord_server,
-            &reference,
-            &release,
-            flavour,
-            &instance_id,
-            &granted,
-            &grants,
-        )),
-    );
-    if let Some(secrets) = engine_secrets(&granted.client_id, granted.refresh_token.as_deref()) {
-        files.insert(SECRETS_FILE.to_string(), secrets);
-    }
-    if let Some(mesh) = &mesh {
-        files.insert(
-            MESH_FILE.to_string(),
-            serde_norway::to_string(mesh).expect("a mesh block serializes"),
-        );
-    }
+    let files = app_files(&Placement {
+        dir: &dir,
+        coord_server: &coord_server,
+        reference: &reference,
+        release: &release,
+        flavour,
+        instance_id: &instance_id,
+        grants: &grants,
+        accepted: &accepted,
+        hub_network: hub_network.as_deref(),
+        device_id: &store.device_id,
+    })
+    .await;
     for name in files.keys() {
         on(CreateEvent::Writing { file: name.clone() });
     }
@@ -1000,8 +933,474 @@ pub async fn attach_app(
         release: reference,
         flavour: flavour.name.clone(),
         granted: grants,
-        organization,
+        organization: accepted.organization,
     })
+}
+
+async fn docker_ready(on: &(dyn Fn(CreateEvent) + Sync)) -> Result<(), CreateError> {
+    on(CreateEvent::CheckingDocker);
+    let probe = docker::probe().await;
+    if probe.is_ready() {
+        Ok(())
+    } else {
+        Err(CreateError::Docker(crate::create::describe_docker(&probe)))
+    }
+}
+
+/// What accepting the app handed back.
+struct Accepted {
+    granted: AppEnvelope,
+    organization: Option<String>,
+    /// On the mesh: the sidecar it shares a network with, keyed by what came with the grant.
+    mesh: Option<MeshBlock>,
+}
+
+/// The app device-code flow: somebody accepts `manifest` into an organization — one the hub
+/// is connected to, when the app runs beside one.
+async fn accept(
+    coord_server: &str,
+    manifest: &AppManifest,
+    mesh: bool,
+    hub_grants: Option<&crate::credentials::HubCredentials>,
+    cancel: &tokio_util::sync::CancellationToken,
+    on: &(dyn Fn(CreateEvent) + Sync),
+) -> Result<Accepted, CreateError> {
+    let grant = app::start(coord_server, manifest, mesh).await?;
+    on(CreateEvent::Staged {
+        user_code: grant.user_code.clone(),
+        verification_uri_complete: grant.verification_uri_complete.clone(),
+        expires_in: grant.expires_in,
+    });
+    let granted = app::wait_for_app(&grant, cancel, &|progress| {
+        on(CreateEvent::Waiting {
+            polls: progress.polls,
+            seconds_left: progress.seconds_left,
+        })
+    })
+    .await?;
+    if granted
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .is_none()
+    {
+        return Err(CreateError::AppAuthorization(
+            app::AppAuthorizationError::NoRefreshToken {
+                fields: granted.declared_fields(),
+            },
+        ));
+    }
+    let organization = granted
+        .self_
+        .as_ref()
+        .and_then(|me| me.organization.clone());
+    if let (Some(held), Some(organization)) = (hub_grants, &organization) {
+        let served = held.organizations();
+        if !served.is_empty() && !served.contains(organization) {
+            return Err(CreateError::Answers(format!(
+                "The app was accepted into organization {organization}, which the hub is not \
+                 connected to (it serves {}): nothing was written. Remove the app there, and \
+                 accept it into one of the hub's organizations.",
+                served.join(", ")
+            )));
+        }
+    }
+    on(CreateEvent::Granted {
+        mesh_key: granted.mesh_key().is_some(),
+    });
+    let mesh = if mesh {
+        let (key, coord_url) = granted.mesh_key().ok_or(CreateError::EngineNoMeshKey)?;
+        Some(build_mesh_block(&MeshOptions {
+            hostname: mesh_hostname(&manifest.instance_id),
+            auth_key: key.to_string(),
+            coord_url: coord_url.map(str::to_string),
+            login: granted.login(),
+        }))
+    } else {
+        None
+    };
+    Ok(Accepted {
+        granted,
+        organization,
+        mesh,
+    })
+}
+
+/// Where and as what an accepted app is placed.
+struct Placement<'a> {
+    dir: &'a Path,
+    coord_server: &'a str,
+    reference: &'a str,
+    release: &'a Release,
+    flavour: &'a Flavour,
+    instance_id: &'a str,
+    grants: &'a [Granted],
+    accepted: &'a Accepted,
+    hub_network: Option<&'a str>,
+    device_id: &'a str,
+}
+
+/// The files an accepted app's folder consists of — the same whether it was just attached
+/// or updated in place.
+async fn app_files(placement: &Placement<'_>) -> GeneratedFiles {
+    let engine = crate::engine_probe::engine();
+    let host_socket = docker::host_socket(&engine).await;
+    let project = crate::compose::project_name(&placement.dir.to_string_lossy());
+    let granted = &placement.accepted.granted;
+    let mut files = GeneratedFiles::new();
+    files.insert(
+        "docker-compose.yaml".to_string(),
+        crate::generate::dump(&build_app_compose(&AppCompose {
+            flavour: placement.flavour,
+            granted: placement.grants,
+            instance_id: placement.instance_id,
+            device_id: Some(placement.device_id),
+            coord_server: placement.coord_server,
+            project: &project,
+            hub_network: placement.hub_network,
+            mesh: placement.accepted.mesh.as_ref(),
+            engine: engine.kind,
+            host_socket: host_socket.as_deref(),
+        })),
+    );
+    let record = AppRecord {
+        fakts: RecordedLogin {
+            endpoint_url: crate::connect::wellknown::base_url(placement.coord_server),
+            client_id: granted.client_id.clone(),
+            client_secret: granted.client_secret.clone().filter(|v| !v.is_empty()),
+            refresh_token: granted.refresh_token.clone().filter(|v| !v.is_empty()),
+        },
+        app: RecordedApp {
+            identifier: placement.release.manifest.identifier.clone(),
+            version: placement.release.manifest.version.clone(),
+            instance_id: placement.instance_id.to_string(),
+            release: placement.reference.to_string(),
+            flavour: placement.flavour.name.clone(),
+            image: placement.flavour.image.clone(),
+            organization: placement.accepted.organization.clone(),
+        },
+        granted: placement.grants.to_vec(),
+    };
+    files.insert(
+        CONFIG_FILE.to_string(),
+        serde_norway::to_string(&record).expect("an app record serializes"),
+    );
+    if let Some(secrets) = engine_secrets(&granted.client_id, granted.refresh_token.as_deref()) {
+        files.insert(SECRETS_FILE.to_string(), secrets);
+    }
+    if let Some(mesh) = &placement.accepted.mesh {
+        files.insert(
+            MESH_FILE.to_string(),
+            serde_norway::to_string(mesh).expect("a mesh block serializes"),
+        );
+    }
+    files
+}
+
+// --- updating ----------------------------------------------------------------------------
+
+/// What a front end collects to update an attached app.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateAnswers {
+    pub dir: String,
+    /// The release to move to, `X.Y.Z`. Left out, the newest.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Capabilities the new release asks for anew that give root-level access, by name.
+    /// Those it was granted before, unchanged, are kept without asking.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub decline: Vec<String>,
+    #[serde(default)]
+    pub devices: BTreeMap<String, String>,
+    #[serde(default)]
+    pub folders: BTreeMap<String, String>,
+}
+
+/// The release an app would move to, and what changes in what it is granted.
+#[derive(Debug, Clone)]
+pub struct UpdatePlan {
+    pub record: AppRecord,
+    pub reference: String,
+    pub release: Release,
+    /// The flavour it moves to: its own, when the release still has it and it runs here.
+    pub flavour: String,
+    /// Granted before and asked for unchanged: kept.
+    pub kept: Vec<String>,
+    /// Asked for anew, or changed: granted only as the answers say.
+    pub asked: Vec<Capability>,
+    /// Granted before, no longer asked for: dropped.
+    pub dropped: Vec<String>,
+}
+
+impl UpdatePlan {
+    /// Whether the release is one the app does not run yet.
+    pub fn is_newer(&self) -> bool {
+        newer(&self.release.manifest.version, &self.record.app.version)
+    }
+
+    fn flavour(&self) -> &Flavour {
+        self.release
+            .flavours
+            .iter()
+            .find(|f| f.name == self.flavour)
+            .expect("the plan's flavour is the release's")
+    }
+}
+
+/// Whether version `a` comes after `b`, both `X.Y.Z`. Anything else is never newer.
+pub fn newer(a: &str, b: &str) -> bool {
+    match (release_number(a), release_number(b)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
+}
+
+fn release_number(version: &str) -> Option<Vec<u64>> {
+    let parts: Vec<u64> = version
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse().ok())
+        .collect::<Option<_>>()?;
+    (parts.len() == 3).then_some(parts)
+}
+
+/// What updating the app in `dir` would do: the release, and what it asks for that it was
+/// not granted. Reads the registry, writes nothing.
+pub async fn plan_update(dir: &Path, to: Option<&str>) -> Result<UpdatePlan, CreateError> {
+    let record = read_app_record(dir)?;
+    let (repository, _) = split_reference(&record.app.release);
+    let wanted = match to.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(version) => format!("{repository}:{}", version.trim_start_matches('v')),
+        None => repository,
+    };
+    let (reference, release) = release(&wanted).await?;
+    if release.manifest.identifier != record.app.identifier {
+        return Err(CreateError::Answers(format!(
+            "{reference} is {}, not {}: an update stays the same app.",
+            release.manifest.identifier, record.app.identifier
+        )));
+    }
+    let host = host().await;
+    let flavour = match choose(&release, Some(&record.app.flavour), &host) {
+        Ok(flavour) => flavour,
+        Err(_) => choose(&release, None, &host)?,
+    };
+
+    let mut kept = Vec::new();
+    let mut asked = Vec::new();
+    for capability in &flavour.capabilities {
+        if record.granted.iter().any(|g| &g.capability == capability) {
+            kept.push(capability.name.clone());
+        } else {
+            asked.push(capability.clone());
+        }
+    }
+    let dropped = record
+        .granted
+        .iter()
+        .map(|g| g.capability.name.clone())
+        .filter(|name| !kept.contains(name))
+        .collect();
+    let flavour = flavour.name.clone();
+    Ok(UpdatePlan {
+        record,
+        reference,
+        release,
+        flavour,
+        kept,
+        asked,
+        dropped,
+    })
+}
+
+/// The grants for `plan`'s flavour: what was granted before and is asked for unchanged, as
+/// it was granted — its host side too — and the rest as `answers` say.
+pub fn regrant(plan: &UpdatePlan, answers: &UpdateAnswers) -> Result<Vec<Granted>, CreateError> {
+    let mut attach = AttachAnswers {
+        allow: answers.allow.clone(),
+        decline: answers.decline.clone(),
+        devices: answers.devices.clone(),
+        folders: answers.folders.clone(),
+        ..Default::default()
+    };
+    for previous in &plan.record.granted {
+        if !plan.kept.contains(&previous.capability.name) {
+            continue;
+        }
+        let name = previous.capability.name.clone();
+        match (&previous.capability.kind, &previous.host) {
+            (CapabilityKind::Device { .. }, Some(host)) => {
+                attach.devices.entry(name.clone()).or_insert(host.clone());
+            }
+            (CapabilityKind::Folder { .. }, Some(host)) => {
+                attach.folders.entry(name.clone()).or_insert(host.clone());
+            }
+            _ => {}
+        }
+        if previous.capability.gives_root() {
+            attach.allow.push(name);
+        }
+    }
+    let mesh = Path::new(&answers.dir).join(MESH_FILE).is_file();
+    attach.mesh = mesh;
+    attach.hub = crate::engine::attached_network(Path::new(&answers.dir));
+    grant(plan.flavour(), &attach)
+}
+
+/// What updating did.
+pub struct UpdatedApp {
+    pub path: PathBuf,
+    pub from: String,
+    pub to: String,
+    pub release: String,
+    pub flavour: String,
+    pub granted: Vec<Granted>,
+    pub organization: Option<String>,
+}
+
+/// Move the app in `dir` to `plan`'s release, in place: accepted again — the new release is
+/// a new client at the coordination server, and the session the app keeps is its old
+/// version's — then the files rewritten and the container recreated. The instance id, the
+/// state volume and the mesh node stay; so what the app started stays its own.
+///
+/// Nothing changes until the new release is accepted. If it does not come up, the previous
+/// files are put back and the previous release started again.
+pub async fn update_app(
+    plan: &UpdatePlan,
+    answers: &UpdateAnswers,
+    cancel: &tokio_util::sync::CancellationToken,
+    on: &(dyn Fn(CreateEvent) + Sync),
+) -> Result<UpdatedApp, CreateError> {
+    docker_ready(on).await?;
+    let dir = PathBuf::from(&answers.dir);
+    let grants = regrant(plan, answers)?;
+    let flavour = plan.flavour();
+    let mut store = registry::load();
+    let coord_server = registry::find_by_path(&store, &dir.to_string_lossy())
+        .and_then(|record| record.coord_server.clone())
+        .unwrap_or_else(|| plan.record.fakts.endpoint_url.clone());
+    let hub = crate::engine::attached_hub(&dir).map(|record| PathBuf::from(record.path));
+    let hub_grants = hub
+        .as_deref()
+        .and_then(crate::credentials::read_credentials);
+    let hub_network = crate::engine::attached_network(&dir);
+    let instance_id = plan.record.app.instance_id.clone();
+    let manifest = app_manifest(
+        &plan.release,
+        flavour,
+        &instance_id,
+        None,
+        Some(store.device_id.clone()),
+    );
+
+    on(CreateEvent::Log {
+        line: format!(
+            "{} {} → {}: accept it again.",
+            plan.record.app.identifier, plan.record.app.version, plan.release.manifest.version
+        ),
+    });
+    let mesh = dir.join(MESH_FILE).is_file();
+    let accepted = accept(
+        &coord_server,
+        &manifest,
+        mesh,
+        hub_grants.as_ref(),
+        cancel,
+        on,
+    )
+    .await?;
+    if let (Some(before), Some(now)) = (&plan.record.app.organization, &accepted.organization) {
+        if before != now {
+            return Err(CreateError::Answers(format!(
+                "The update was accepted into organization {now}, but the app runs for \
+                 {before}: nothing was changed. Remove it there, and accept it into {before}."
+            )));
+        }
+    }
+
+    let files = app_files(&Placement {
+        dir: &dir,
+        coord_server: &coord_server,
+        reference: &plan.reference,
+        release: &plan.release,
+        flavour,
+        instance_id: &instance_id,
+        grants: &grants,
+        accepted: &accepted,
+        hub_network: hub_network.as_deref(),
+        device_id: &store.device_id,
+    })
+    .await;
+    // Started again only if it ran: an app somebody stopped stays stopped.
+    let running = crate::compose::is_up(&dir).await;
+    // What is put back if the new release does not come up.
+    let previous: GeneratedFiles = files
+        .keys()
+        .filter_map(|name| {
+            std::fs::read_to_string(dir.join(name))
+                .ok()
+                .map(|text| (name.clone(), text))
+        })
+        .collect();
+    for name in files.keys() {
+        on(CreateEvent::Writing { file: name.clone() });
+    }
+    write_generated_files(&dir, &files)?;
+
+    let log = |line: crate::compose::ComposeLine| on(CreateEvent::Log { line: line.line });
+    if running {
+        on(CreateEvent::Starting);
+    }
+    if let Err(error) = match running {
+        true => crate::start::start(&dir, &log).await.map(|_| ()),
+        false => Ok(()),
+    } {
+        on(CreateEvent::Log {
+            line: format!(
+                "{error} — putting {} {} back.",
+                plan.record.app.identifier, plan.record.app.version
+            ),
+        });
+        write_generated_files(&dir, &previous)?;
+        for name in files.keys().filter(|name| !previous.contains_key(*name)) {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+        let _ = crate::start::start(&dir, &log).await;
+        return Err(CreateError::StartFailed);
+    }
+
+    registry::record_regeneration(
+        &mut store,
+        &dir.to_string_lossy(),
+        Some(coord_server.clone()),
+        Some(instance_id),
+        now_rfc3339(),
+    );
+    let _ = registry::save(&store);
+    on(CreateEvent::Done {
+        path: dir.to_string_lossy().to_string(),
+    });
+    Ok(UpdatedApp {
+        path: dir,
+        from: plan.record.app.version.clone(),
+        to: plan.release.manifest.version.clone(),
+        release: plan.reference.clone(),
+        flavour: flavour.name.clone(),
+        granted: grants,
+        organization: accepted.organization,
+    })
+}
+
+/// The newest release of the app in `dir` when it is newer than the one it runs: what
+/// `status` shows as an update. `None` when it is up to date, or that cannot be told.
+pub async fn available_update(dir: &Path) -> Option<String> {
+    let record = read_app_record(dir).ok()?;
+    let (repository, _) = split_reference(&record.app.release);
+    let tags = tags(&repository).await.ok()?;
+    newest_release(&tags).filter(|newest| newer(newest, &record.app.version))
 }
 
 /// Whether `dir` holds an attached app.

@@ -1,11 +1,18 @@
 import { open } from "@tauri-apps/plugin-shell";
-import { ExternalLink, Puzzle, ScrollText, Server } from "lucide-react";
+import { ArrowUpCircle, ExternalLink, Puzzle, ScrollText, Server } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { TbReload } from "react-icons/tb";
 
 import * as api from "../api";
-import type { Container, DeploymentRecord, EngineAttachment, EngineMesh } from "../api";
+import type {
+  AppUpdateView,
+  Container,
+  CreateEvent,
+  DeploymentRecord,
+  EngineAttachment,
+  EngineMesh,
+} from "../api";
 import { HubPicker, useRegisteredHubs } from "../components/engine/HubPicker";
 import { AppMenu } from "../components/AppMenu";
 import { CommandButton, DangerousCommandButton } from "../CommandButton";
@@ -21,6 +28,12 @@ import { RUN_STATE_DOT } from "./dashboard/tone";
 import { RUN_STATE_LABEL, runSummary } from "./dashboard/lifecycle";
 import { cn } from "../utils";
 import { baseUrl } from "./deploy/hub-form";
+import {
+  InstallProgress,
+  CreateState,
+  emptyCreateState,
+  reduceCreate,
+} from "./deploy/InstallProgress";
 
 /**
  * A plugin engine's dashboard, which is not the hub's.
@@ -56,8 +69,11 @@ export const EngineDashboard = ({ deployment }: { deployment: DeploymentRecord }
   }, [load]);
 
   const run = useMemo(() => runSummary(containers), [containers]);
-  // Not `containers[0]`: an engine on the mesh has its sidecar beside it.
-  const deployer = containers.find((c) => c.service === "deployer") ?? containers[0];
+  // Not `containers[0]`: an engine on the mesh has its sidecar beside it. An engine
+  // attached as an app runs as `app`, one created before that as `deployer`.
+  const deployer =
+    containers.find((c) => c.service === "app" || c.service === "deployer") ??
+    containers[0];
 
   const restart = async () => {
     if (!deployer?.id) return;
@@ -162,6 +178,10 @@ export const EngineDashboard = ({ deployment }: { deployment: DeploymentRecord }
             </div>
           </Card>
         </div>
+
+        {deployment.kind === "app" && (
+          <ReleaseCard deployment={deployment} onUpdated={load} />
+        )}
 
         <MeshCard deployment={deployment} />
 
@@ -335,6 +355,169 @@ const HubAttachmentCard = ({
           </div>
         )}
         {error && <div className="text-xs text-destructive">{error}</div>}
+      </Card>
+    </div>
+  );
+};
+
+/**
+ * The release an attached app runs, and the newer one when there is one. Updating accepts
+ * the new release again — it logs in as a client of its own — so it streams the device
+ * code like attaching did. What it was granted, unchanged, is kept; what it asks for anew
+ * is granted here, root-level access by ticking it.
+ */
+const ReleaseCard = ({
+  deployment,
+  onUpdated,
+}: {
+  deployment: DeploymentRecord;
+  onUpdated: () => Promise<void>;
+}) => {
+  const [view, setView] = useState<AppUpdateView | null>(null);
+  const [allow, setAllow] = useState<string[]>([]);
+  const [hostSides, setHostSides] = useState<Record<string, string>>({});
+  const [updating, setUpdating] = useState<CreateState>(emptyCreateState);
+
+  const read = useCallback(async () => {
+    setView(await api.planAppUpdate(deployment.path));
+  }, [deployment.path]);
+
+  useEffect(() => {
+    read().catch(() => undefined);
+  }, [read]);
+
+  if (!view) return null;
+  const newest = view.newest;
+  const missing = view.asked.filter(
+    (capability) =>
+      capability.required &&
+      ((capability.host_side && !hostSides[capability.name]?.trim()) ||
+        (capability.gives_root && !allow.includes(capability.name)))
+  );
+
+  const update = async () => {
+    if (!newest) return;
+    setUpdating({ ...emptyCreateState, running: true });
+    const onEvent = (event: CreateEvent) =>
+      setUpdating((previous) => reduceCreate(previous, event));
+    const side = (kind: "device" | "folder") =>
+      Object.fromEntries(
+        view.asked
+          .filter((c) => c.host_side === kind && hostSides[c.name]?.trim())
+          .map((c) => [c.name, hostSides[c.name].trim()])
+      );
+    try {
+      await api.updateApp(
+        {
+          dir: deployment.path,
+          to: newest,
+          allow,
+          decline: [],
+          devices: side("device"),
+          folders: side("folder"),
+        },
+        onEvent
+      );
+      setUpdating((previous) => ({ ...previous, running: false, done: true }));
+      await read();
+      await onUpdated();
+    } catch (error) {
+      setUpdating((previous) => ({
+        ...previous,
+        running: false,
+        error: typeof error === "string" ? error : String(error),
+      }));
+    }
+  };
+
+  return (
+    <div>
+      <InstallProgress
+        open={updating.running || updating.done || updating.error !== null}
+        state={updating}
+        onClose={() => setUpdating(emptyCreateState)}
+        onCancel={async () => {
+          setUpdating((previous) => ({ ...previous, cancelled: true }));
+          await api.cancelAuthorization();
+        }}
+      />
+      <SectionHeading hint="The release of the app this deployment runs. An update is accepted again, into the same organization; the installation — its id, its state, what it started — stays.">
+        Release
+      </SectionHeading>
+      <Card className="gap-3 py-4 px-4 border-border max-w-2xl">
+        <div className="text-sm">
+          <span className="font-medium">{view.identifier}</span> {view.current}
+          {view.organization && (
+            <span className="text-muted-foreground"> · organization {view.organization}</span>
+          )}
+        </div>
+        {newest ? (
+          <>
+            <div className="flex items-center gap-2 text-sm">
+              <ArrowUpCircle className="size-4 text-primary" />
+              {newest} is out.
+              {view.kept.length > 0 && (
+                <span className="text-muted-foreground">
+                  Keeps {view.kept.join(", ")}.
+                </span>
+              )}
+              {view.dropped.length > 0 && (
+                <span className="text-muted-foreground">
+                  No longer asks for {view.dropped.join(", ")}.
+                </span>
+              )}
+            </div>
+            {view.asked.map((capability) => (
+              <div key={capability.name} className="flex flex-col gap-1.5 text-sm">
+                <div>
+                  It asks anew for <span className="font-medium">{capability.name}</span>:{" "}
+                  {capability.sentence}
+                  {capability.required ? "" : " (optional)"}
+                </div>
+                {capability.host_side && (
+                  <input
+                    className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                    placeholder={capability.host_side === "device" ? "/dev/…" : "/a/folder"}
+                    value={hostSides[capability.name] ?? ""}
+                    onChange={(event) =>
+                      setHostSides((current) => ({
+                        ...current,
+                        [capability.name]: event.target.value,
+                      }))
+                    }
+                  />
+                )}
+                {capability.gives_root && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={allow.includes(capability.name)}
+                      onChange={(event) =>
+                        setAllow((current) =>
+                          event.target.checked
+                            ? [...current, capability.name]
+                            : current.filter((name) => name !== capability.name)
+                        )
+                      }
+                    />
+                    Grant it — this gives the app root-level access to this machine.
+                  </label>
+                )}
+              </div>
+            ))}
+            <Button
+              variant="outline"
+              size="sm"
+              className="self-start"
+              disabled={updating.running || missing.length > 0}
+              onClick={() => void update()}
+            >
+              {updating.running ? "Waiting to be accepted…" : `Update to ${newest}`}
+            </Button>
+          </>
+        ) : (
+          <div className="text-xs text-muted-foreground">The newest release.</div>
+        )}
       </Card>
     </div>
   );

@@ -2,6 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
   AdvertisedHost,
+  AppUpdateView,
+  UpdateAnswers,
   AliasProbe,
   Defaults,
   InfrastructureUpdates,
@@ -255,6 +257,20 @@ export const createEngine = (
   const channel = new Channel<CreateEvent>();
   channel.onmessage = onEvent;
   return invoke<string>("create_engine", { answers, onEvent: channel });
+};
+
+/** An attached app's release and the newer one, or `null` for what is not an app. */
+export const planAppUpdate = (path: string) =>
+  invoke<AppUpdateView | null>("plan_app_update", { path });
+
+/**
+ * Move an attached app to a newer release, in place. It is accepted again, so this streams
+ * the device code like attaching does. Resolves to the release it runs now.
+ */
+export const updateApp = (answers: UpdateAnswers, onEvent: (event: CreateEvent) => void) => {
+  const channel = new Channel<CreateEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("update_app", { answers, onEvent: channel });
 };
 
 /** The hub network an engine joins, or `null` when it runs plugins on its own. */

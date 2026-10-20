@@ -378,6 +378,104 @@ pub async fn create_engine(
     Ok(path)
 }
 
+/// An attached app's release, and the newer one it could move to.
+#[derive(Serialize)]
+pub struct AppUpdateView {
+    pub identifier: String,
+    pub current: String,
+    pub organization: Option<String>,
+    /// The newest release, when it is newer than the one it runs.
+    pub newest: Option<String>,
+    /// Granted before and asked for unchanged by the newest: kept.
+    pub kept: Vec<String>,
+    /// Asked for anew by the newest.
+    pub asked: Vec<AskedCapability>,
+    /// No longer asked for.
+    pub dropped: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct AskedCapability {
+    pub name: String,
+    pub sentence: String,
+    pub description: Option<String>,
+    pub gives_root: bool,
+    pub required: bool,
+    /// `device` or `folder`: what of this machine has to be named for it.
+    pub host_side: Option<&'static str>,
+}
+
+/// What updating the app in `path` would do — `None` for a deployment that is not an
+/// attached app. Reads the registry; changes nothing.
+#[command]
+pub async fn plan_app_update(path: String) -> Result<Option<AppUpdateView>, String> {
+    let dir = std::path::Path::new(&path);
+    let Ok(record) = konstruktor_core::apps::read_app_record(dir) else {
+        return Ok(None);
+    };
+    let mut view = AppUpdateView {
+        identifier: record.app.identifier.clone(),
+        current: record.app.version.clone(),
+        organization: record.app.organization.clone(),
+        newest: None,
+        kept: Vec::new(),
+        asked: Vec::new(),
+        dropped: Vec::new(),
+    };
+    let plan = match konstruktor_core::apps::plan_update(dir, None).await {
+        Ok(plan) => plan,
+        // Offline, or the registry says nothing: the release it runs is still worth showing.
+        Err(_) => return Ok(Some(view)),
+    };
+    if !plan.is_newer() {
+        return Ok(Some(view));
+    }
+    view.newest = Some(plan.release.manifest.version.clone());
+    view.kept = plan.kept.clone();
+    view.dropped = plan.dropped.clone();
+    view.asked = plan
+        .asked
+        .iter()
+        .map(|capability| AskedCapability {
+            name: capability.name.clone(),
+            sentence: capability.sentence(),
+            description: capability.description.clone(),
+            gives_root: capability.gives_root(),
+            required: capability.required,
+            host_side: match capability.kind {
+                konstruktor_core::apps::CapabilityKind::Device { .. } => Some("device"),
+                konstruktor_core::apps::CapabilityKind::Folder { .. } => Some("folder"),
+                _ => None,
+            },
+        })
+        .collect();
+    Ok(Some(view))
+}
+
+/// Move an attached app to a newer release, in place. Streams the same events attaching
+/// does: the new release is accepted again, by device code.
+#[command]
+pub async fn update_app(
+    app: tauri::AppHandle,
+    authorizing: tauri::State<'_, AuthorizeState>,
+    answers: konstruktor_core::apps::UpdateAnswers,
+    on_event: Channel<CreateEvent>,
+) -> Result<String, String> {
+    let dir = std::path::PathBuf::from(&answers.dir);
+    let plan = konstruktor_core::apps::plan_update(&dir, answers.to.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let cancel = authorizing.begin();
+    let updated = konstruktor_core::apps::update_app(&plan, &answers, &cancel, &move |event| {
+        let _ = on_event.send(event);
+    })
+    .await;
+    authorizing.end();
+    let updated = updated.map_err(|e| e.to_string())?;
+    crate::tray::poke(&app);
+    Ok(updated.to)
+}
+
 /// Which hub's network an engine joins, if any.
 #[derive(Serialize)]
 pub struct EngineAttachment {

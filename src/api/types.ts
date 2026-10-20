@@ -319,6 +319,38 @@ export type EngineMesh = {
   live: { connected: boolean; hostname?: string; ipv4?: string } | null;
 };
 
+/** A capability a newer release of an app asks for that it was not granted. */
+export type AskedCapability = {
+  name: string;
+  sentence: string;
+  description: string | null;
+  gives_root: boolean;
+  required: boolean;
+  /** What of this machine has to be named for it. */
+  host_side: "device" | "folder" | null;
+};
+
+/** An attached app's release, and the newer one it could move to. */
+export type AppUpdateView = {
+  identifier: string;
+  current: string;
+  organization: string | null;
+  /** The newest release, when it is newer than the one it runs. */
+  newest: string | null;
+  kept: string[];
+  asked: AskedCapability[];
+  dropped: string[];
+};
+
+export type UpdateAnswers = {
+  dir: string;
+  to?: string | null;
+  allow: string[];
+  decline: string[];
+  devices: Record<string, string>;
+  folders: Record<string, string>;
+};
+
 /** Which hub's network an engine joins; `null` from the backend when it joins none. */
 export type EngineAttachment = {
   network: string;

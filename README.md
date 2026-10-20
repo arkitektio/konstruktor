@@ -105,6 +105,13 @@ network. Every attached app is told the same few things about where it runs:
 `ARKITEKT_INSTANCE_ID`, `ARKITEKT_GATEWAY`, `ARKITEKT_NETWORK` (or `ARKITEKT_NETWORK_MODE` on
 the mesh) and `ARKITEKT_DEVICE_ID`.
 
+`konstruktor app update [target]` moves an attached app to its newest release (`--to X.Y.Z`
+for another), in place: the same folder, instance id and state, so what the app started stays
+its own. A new release logs in as a client of its own, so it is accepted again, into the same
+organization. What it was granted and asks for unchanged is kept; what it asks for anew is
+granted the way attaching grants it. If the new release does not come up, the previous one is
+put back. `konstruktor status` on an app says when a newer release is out.
+
 The [plugin engine](https://github.com/arkitektio/plugin_engine), which starts the apps an
 organization installs through Kabinet, is one such app: `konstruktor engine create --hub
 <hub>` attaches its release, granted the container engine. Only a self-contained hub runs an
@@ -120,6 +127,7 @@ konstruktor hub create --template personal   # a ready-made kind of hub
 konstruktor hub templates       # the kinds there are
 konstruktor engine create ~/plugins --hub ~/MyHub
 konstruktor app attach ghcr.io/org/some-app --hub ~/MyHub --dir ~/some-app
+konstruktor app update ~/some-app   # to its newest release, accepted again
 konstruktor coord create ~/lab-coord
 
 # run it — any of the three

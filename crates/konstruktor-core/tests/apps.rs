@@ -253,3 +253,272 @@ async fn the_container_engine_is_not_granted_without_being_named() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&hub).ok();
 }
+
+// --- updating, against the same stand-ins ------------------------------------------------
+
+const DESCRIPTOR_2_2: &str =
+    "sha256:6666666666666666666666666666666666666666666666666666666666666666";
+const DESCRIPTOR_2_3: &str =
+    "sha256:7777777777777777777777777777777777777777777777777777777777777777";
+
+/// The releases after 2.1.0: 2.2.0 asks for what 2.1.0 did, 2.3.0 also for a folder it may
+/// write to. And the second acceptance: into `organization`, with a new refresh token.
+async fn later_releases(server: &MockServer, organization: &str) {
+    Mock::given(method("GET"))
+        .and(path("/v2/org/engine/tags/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "org/engine",
+            "tags": ["2.1.0", "2.2.0", "latest", "next"],
+        })))
+        .mount(server)
+        .await;
+    for (version, digest, image, extra) in [
+        (
+            "2.2.0",
+            DESCRIPTOR_2_2,
+            "ghcr.io/org/engine@sha256:bbbb",
+            json!(null),
+        ),
+        (
+            "2.3.0",
+            DESCRIPTOR_2_3,
+            "ghcr.io/org/engine@sha256:cccc",
+            json!({"kind": "folder", "name": "data", "target": "/data", "readOnly": false}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/org/engine/manifests/{version}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {"digest": digest, "mediaType": "application/vnd.arkitekt.release.v1+json"},
+            })))
+            .mount(server)
+            .await;
+        let mut capabilities = vec![json!({"kind": "container_engine", "name": "engine"})];
+        if !extra.is_null() {
+            capabilities.push(extra);
+        }
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/org/engine/blobs/{digest}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "spec_version": 1,
+                "manifest": {"identifier": "plugin_engine", "version": version, "scopes": ["read", "write"]},
+                "flavours": [{
+                    "name": "vanilla",
+                    "image": image,
+                    "platforms": ["linux/amd64", "linux/arm64"],
+                    "capabilities": capabilities,
+                    "inspection": {"requirements": [{"key": "kabinet", "service": "live.arkitekt.kabinet"}]},
+                }],
+            })))
+            .mount(server)
+            .await;
+    }
+    // Mounted after the first acceptance, and ahead of it from then on.
+    Mock::given(method("POST"))
+        .and(path("/o/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token_type": "Bearer",
+            "access_token": "eyJ",
+            "refresh_token": "rt-updated",
+            "client_id": "engine-client-2",
+            "self": {"sub": "2", "organization": organization},
+        })))
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+/// An engine attached at 2.1.0 beside a hub in organization 3, not started.
+async fn attached(server: &MockServer, name: &str) -> (PathBuf, PathBuf) {
+    let hub = a_connected_hub(server, name);
+    let dir = scratch(name);
+    apps::attach_app(
+        &answers(server, &hub, &dir),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("attached");
+    (hub, dir)
+}
+
+fn update_answers(dir: &std::path::Path) -> apps::UpdateAnswers {
+    apps::UpdateAnswers {
+        dir: dir.to_string_lossy().to_string(),
+        ..Default::default()
+    }
+}
+
+fn compose_of(dir: &std::path::Path) -> serde_norway::Value {
+    serde_norway::from_str(&std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_update_is_accepted_again_and_keeps_the_installation() {
+    if !docker_is_ready().await {
+        eprintln!("skipped: updating checks Docker first, and there is none ready here");
+        return;
+    }
+    let server = stand_in("3").await;
+    let (hub, dir) = attached(&server, "update").await;
+    later_releases(&server, "3").await;
+
+    assert_eq!(apps::available_update(&dir).await.as_deref(), Some("2.2.0"));
+    let plan = apps::plan_update(&dir, Some("2.2.0"))
+        .await
+        .expect("a plan");
+    assert!(plan.is_newer());
+    // The container engine it was granted is asked for unchanged: kept, not asked again.
+    assert_eq!(plan.kept, ["engine"]);
+    assert!(plan.asked.is_empty() && plan.dropped.is_empty());
+
+    let updated = apps::update_app(
+        &plan,
+        &update_answers(&dir),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .expect("updated");
+    assert_eq!(
+        (updated.from.as_str(), updated.to.as_str()),
+        ("2.1.0", "2.2.0")
+    );
+    assert_eq!(updated.organization.as_deref(), Some("3"));
+
+    let app = &compose_of(&dir)["services"]["app"];
+    assert_eq!(
+        app["image"].as_str(),
+        Some("ghcr.io/org/engine@sha256:bbbb")
+    );
+    // The same installation: what it started stays its own.
+    assert_eq!(
+        app["environment"]["ARKITEKT_INSTANCE_ID"].as_str(),
+        Some("lab-engine")
+    );
+    assert_eq!(
+        app["environment"]["DOCKER_HOST"].as_str(),
+        Some("unix:///var/run/docker.sock")
+    );
+    // A new login for the new release: the session it keeps is its old version's.
+    let secrets = std::fs::read_to_string(dir.join(apps::SECRETS_FILE)).unwrap();
+    assert_eq!(secrets.trim(), "FAKTS_TOKEN=engine-client-2:rt-updated");
+    let record = apps::read_app_record(&dir).expect("the record");
+    assert_eq!(record.app.version, "2.2.0");
+    assert_eq!(record.app.organization.as_deref(), Some("3"));
+
+    // Up to date now.
+    assert_eq!(apps::available_update(&dir).await, None);
+    let again = apps::plan_update(&dir, Some("2.2.0"))
+        .await
+        .expect("a plan");
+    assert!(!again.is_newer());
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&hub).ok();
+}
+
+#[tokio::test]
+async fn what_an_update_asks_for_anew_is_granted_only_by_name() {
+    if !docker_is_ready().await {
+        eprintln!("skipped: updating checks Docker first, and there is none ready here");
+        return;
+    }
+    let server = stand_in("3").await;
+    let (hub, dir) = attached(&server, "anew").await;
+    later_releases(&server, "3").await;
+
+    let plan = apps::plan_update(&dir, Some("2.3.0"))
+        .await
+        .expect("a plan");
+    assert_eq!(plan.kept, ["engine"]);
+    assert_eq!(
+        plan.asked
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["data"]
+    );
+
+    let error = apps::update_app(
+        &plan,
+        &update_answers(&dir),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(error.to_string().contains("--folder data="), "{error}");
+    // Refused before anybody was asked to accept it, and nothing changed.
+    let device_codes = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| r.url.path() == "/o/device/")
+        .count();
+    assert_eq!(device_codes, 1, "only the attach asked");
+    assert_eq!(apps::read_app_record(&dir).unwrap().app.version, "2.1.0");
+
+    let folder = scratch("anew-data");
+    let mut answers = update_answers(&dir);
+    answers.allow = vec!["data".into()];
+    answers
+        .folders
+        .insert("data".into(), folder.to_string_lossy().to_string());
+    apps::update_app(&plan, &answers, &CancellationToken::new(), &|_| {})
+        .await
+        .expect("updated");
+    let volumes = compose_of(&dir)["services"]["app"]["volumes"].clone();
+    let mounted = format!("{}:/data", folder.display());
+    assert!(
+        volumes
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(mounted.as_str())),
+        "{volumes:?}"
+    );
+
+    for path in [&dir, &hub, &folder] {
+        std::fs::remove_dir_all(path).ok();
+    }
+}
+
+#[tokio::test]
+async fn an_update_accepted_into_another_organization_changes_nothing() {
+    if !docker_is_ready().await {
+        eprintln!("skipped: updating checks Docker first, and there is none ready here");
+        return;
+    }
+    let server = stand_in("3").await;
+    let (hub, dir) = attached(&server, "moved").await;
+    later_releases(&server, "4").await;
+    let before = std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap();
+
+    let plan = apps::plan_update(&dir, None).await.expect("a plan");
+    assert_eq!(plan.release.manifest.version, "2.2.0", "the newest release");
+    let error = apps::update_app(
+        &plan,
+        &update_answers(&dir),
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(error.to_string().contains("organization 4"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("docker-compose.yaml")).unwrap(),
+        before
+    );
+    let secrets = std::fs::read_to_string(dir.join(apps::SECRETS_FILE)).unwrap();
+    assert_eq!(secrets.trim(), "FAKTS_TOKEN=engine-client:rt-app");
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&hub).ok();
+}
