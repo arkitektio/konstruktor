@@ -339,12 +339,22 @@ pub fn ps() -> Vec<&'static str> {
     vec!["compose", "ps", "--format", "json"]
 }
 
-/// Whether any container of the deployment in `dir` is running: what decides whether a
-/// change to its configs is applied by starting it again, or left for its next start.
+/// Whether any container of the deployment in `dir` is meant to run — running, or
+/// restarting after it stopped on its own: what decides whether a change to its configs is
+/// applied by starting it again, or left for its next start. One in a restart loop is the
+/// one a change most needs to reach.
 pub async fn is_up(dir: &std::path::Path) -> bool {
     crate::engine_probe::engine()
         .async_command()
-        .args(["compose", "ps", "--quiet", "--status", "running"])
+        .args([
+            "compose",
+            "ps",
+            "--quiet",
+            "--status",
+            "running",
+            "--status",
+            "restarting",
+        ])
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
         .output()
