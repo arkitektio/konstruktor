@@ -50,9 +50,9 @@ pub struct ConnectArgs {
     pub reach: Option<hosts::ReachPresetId>,
     /// Whether to ask for a mesh key: auto · fresh · never.
     ///
-    /// auto asks when the hub is not on a mesh yet, or its key was issued for a login.
-    /// fresh always asks — for a hub whose key expired before it joined, or whose node
-    /// the coordination server removed.
+    /// auto asks when the hub wants a mesh it is not on yet, or its key was issued for a
+    /// login. fresh always asks — to join a mesh a hub was created without, for a hub
+    /// whose key expired before it joined, or whose node the coordination server removed.
     #[arg(long, default_value = "auto", value_parser = parse_mesh_key)]
     pub mesh_key: MeshKeyRequest,
     /// Shorthand for `--mesh-key fresh`. Kept for scripts that already pass it; the

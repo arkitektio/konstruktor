@@ -394,11 +394,27 @@ export const ConnectScreen: React.FC<{}> = () => {
                   </span>
                 </span>
               </label>
-            ) : (
+            ) : mesh ? (
               <p className="mt-4 text-sm text-muted-foreground">
-                This hub is not on a mesh yet, so a mesh key is asked for with this
+                This hub is not on its mesh yet, so a mesh key is asked for with this
                 authorization.
               </p>
+            ) : (
+              <label className="mt-4 flex items-start gap-3 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={freshKey}
+                  onChange={(event) => setFreshKey(event.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">Join the mesh</span>
+                  <span className="block text-muted-foreground">
+                    This hub was created without one. Ticked, a mesh key is asked for with
+                    this authorization.
+                  </span>
+                </span>
+              </label>
             )}
           </div>
 

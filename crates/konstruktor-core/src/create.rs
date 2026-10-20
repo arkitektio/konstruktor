@@ -1118,8 +1118,13 @@ mod tests {
         }));
         let mut keyed = on_mesh.clone();
         keyed.mesh.as_mut().unwrap().login = Some("2-3-50".into());
+        let mut wanted = on_mesh.clone();
+        wanted.mesh.as_mut().unwrap().enabled = false;
 
-        assert!(MeshKeyRequest::Auto.asks(&off_mesh));
+        // Created without a mesh, it is not given one; created wanting one, it is.
+        assert!(!MeshKeyRequest::Auto.asks(&off_mesh));
+        assert!(MeshKeyRequest::Auto.asks(&wanted));
+        assert!(MeshKeyRequest::Fresh.asks(&off_mesh));
         assert!(!MeshKeyRequest::Auto.asks(&on_mesh));
         // Keyed by login: which login the next grant is only shows once it is accepted.
         assert!(MeshKeyRequest::Auto.asks(&keyed));
@@ -1209,7 +1214,8 @@ pub fn validate_service_options(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeshKeyRequest {
-    /// Ask when the hub is not on a mesh yet, or is on one through a key keyed by login.
+    /// Ask when the hub wants a mesh it is not on yet, or is on one through a key keyed by
+    /// login. A hub created without a mesh is not given one: that is `Fresh`.
     ///
     /// Which login a grant is only shows once it is accepted, and a key can only come
     /// with that same response — so a keyed hub always asks. Accepted as the same login,
@@ -1229,8 +1235,11 @@ pub enum MeshKeyRequest {
 impl MeshKeyRequest {
     pub fn asks(self, config: &HubConfig) -> bool {
         match self {
-            Self::Auto => match config.mesh.as_ref().filter(|m| m.enabled) {
-                None => true,
+            // `hub create` records a mesh it wants as a block not enabled yet; no block is
+            // a hub created without one.
+            Self::Auto => match config.mesh.as_ref() {
+                None => false,
+                Some(mesh) if !mesh.enabled => true,
                 Some(mesh) => mesh.login.is_some(),
             },
             Self::Fresh => true,

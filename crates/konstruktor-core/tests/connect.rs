@@ -282,11 +282,46 @@ async fn an_accepted_hub_gets_its_credentials_and_regenerated_configs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A hub that is not on a mesh asks for a key by default, and a granted one becomes its
+/// A hub created wanting the mesh, as `hub create` records it: a block not enabled yet.
+fn a_hub_wanting_the_mesh() -> PathBuf {
+    let dir = a_hub();
+    let mut stored = profile::read_profile(&dir).expect("a profile");
+    let mut wanted = konstruktor_core::config::mesh::build_mesh_block(
+        &konstruktor_core::config::mesh::MeshOptions {
+            hostname: "lab-hub".into(),
+            auth_key: String::new(),
+            coord_url: None,
+            login: None,
+        },
+    );
+    wanted.enabled = false;
+    stored.config.mesh = Some(wanted);
+    write_profile(&dir, &stored).expect("the profile is written");
+    dir
+}
+
+/// A hub created without a mesh is connected without one: no key is asked for.
+#[tokio::test]
+async fn a_hub_created_without_a_mesh_asks_for_no_key() {
+    let dir = a_hub();
+    let server = coordination_server(accepted(json!({}))).await;
+
+    let mut asked = answers(&dir, &server);
+    asked.mesh_key = MeshKeyRequest::Auto;
+    let done = connect(&asked, &CancellationToken::new(), &|_| {})
+        .await
+        .expect("the hub is authorized");
+    assert!(!done.mesh_requested);
+    assert!(profile::read_profile(&dir).unwrap().config.mesh.is_none());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A hub that wants the mesh asks for a key by default, and a granted one becomes its
 /// mesh block.
 #[tokio::test]
 async fn a_hub_off_the_mesh_asks_for_a_key_and_keeps_it() {
-    let dir = a_hub();
+    let dir = a_hub_wanting_the_mesh();
     let server = coordination_server(accepted(json!({
         "ionscale_auth_key": "tskey-auth-minted",
         "ionscale_coord_url": "https://mesh.example.org"
