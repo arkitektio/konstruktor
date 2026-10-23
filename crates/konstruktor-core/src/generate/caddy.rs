@@ -101,12 +101,23 @@ const INTERNAL_HOOKS: &str = "\t@internal_hooks path_regexp ^/[^/]+/(_rekuest|_f
 pub struct GatewaySites<'a> {
     /// LiveKit's signalling, on a port of its own. See [`crate::config::hub::LivekitBlock`].
     pub livekit: Option<LivekitSite<'a>>,
+    /// The certificate the gateway serves HTTPS with, beside plain HTTP. See [`crate::tls`].
+    pub tls: Option<GatewayTls>,
+}
+
+/// Where the gateway container finds its certificate and key.
+#[derive(Debug, Clone)]
+pub struct GatewayTls {
+    pub cert_file: String,
+    pub key_file: String,
 }
 
 /// Where the gateway listens for LiveKit's signalling, and where it forwards it.
 #[derive(Debug, Clone)]
 pub struct LivekitSite<'a> {
     pub listen_port: u16,
+    /// The port it is served on over TLS too, where the gateway has a certificate.
+    pub tls_listen_port: Option<u16>,
     pub upstream_host: &'a str,
     pub upstream_port: u16,
 }
@@ -132,8 +143,21 @@ pub fn build_caddyfile(
         }
     };
 
-    let mut out = String::from(GLOBAL_OPTIONS);
-    out.push_str("http:// {\n");
+    let mut out = String::new();
+    match &sites.tls {
+        // HTTPS beside plain HTTP, with the hub's own certificate for every host it is
+        // reached at. Plain HTTP is not redirected: it stays for the apps that predate the
+        // certificate, and for the mesh. The routes go in a snippet both sites import: one site block cannot hold both, as
+        // Caddy refuses TLS policies on the plain listener.
+        Some(_) => {
+            out.push_str(GLOBAL_OPTIONS_TLS);
+            out.push_str("(hub) {\n");
+        }
+        None => {
+            out.push_str(GLOBAL_OPTIONS);
+            out.push_str("http:// {\n");
+        }
+    }
     out.push_str(CORS);
     out.push_str(INTERNAL_HOOKS);
 
@@ -174,6 +198,14 @@ pub fn build_caddyfile(
     out.push_str("\t}\n\n");
 
     out.push_str("}\n");
+    if let Some(tls) = &sites.tls {
+        out.push_str("\nhttp:// {\n\timport hub\n}\n");
+        let _ = write!(
+            out,
+            "\nhttps:// {{\n\ttls {} {}\n\timport hub\n}}\n",
+            tls.cert_file, tls.key_file
+        );
+    }
 
     // LiveKit's signalling — HTTP and the WebSocket its clients upgrade to — on a port of
     // its own, as the reference deployment serves it: every LiveKit SDK takes a bare
@@ -187,6 +219,17 @@ pub fn build_caddyfile(
             livekit.upstream_host, livekit.upstream_port
         );
         out.push_str("}\n");
+        // The same over TLS, on a port of its own: one port cannot speak both.
+        if let (Some(port), Some(tls)) = (livekit.tls_listen_port, &sites.tls) {
+            let _ = write!(out, "\n:{port} {{\n");
+            let _ = write!(out, "\ttls {} {}\n", tls.cert_file, tls.key_file);
+            let _ = write!(
+                out,
+                "\treverse_proxy {}:{}\n",
+                livekit.upstream_host, livekit.upstream_port
+            );
+            out.push_str("}\n");
+        }
     }
     out
 }
@@ -198,6 +241,11 @@ pub fn build_caddyfile(
 /// to. Browsers are not among them: they negotiate HTTP/2 only inside TLS, so a web or
 /// Electron client of this site stays on HTTP/1.1 and its six connections per origin.
 const GLOBAL_OPTIONS: &str = "{\n\tservers {\n\t\tprotocols h1 h2 h2c\n\t}\n}\n\n";
+
+/// [`GLOBAL_OPTIONS`] for a gateway that also serves HTTPS with its own certificate: nothing
+/// for Caddy to obtain, and plain HTTP answered, not redirected.
+const GLOBAL_OPTIONS_TLS: &str =
+    "{\n\tauto_https disable_redirects\n\tservers {\n\t\tprotocols h1 h2 h2c\n\t}\n}\n\n";
 
 /// The response headers every route gets, and the preflight answer — the same set the
 /// Arkitekt lab gateway serves.

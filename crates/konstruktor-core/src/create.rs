@@ -445,6 +445,11 @@ pub async fn create_hub(
     sources_are_known(&config)?;
     // LiveKit announces one of the addresses the hub is about to advertise.
     config.place_livekit(&host_names(&hosts));
+    // A hub serving HTTPS gets its certificate for those addresses now, so it serves TLS
+    // from its first start; connecting keeps it as long as the addresses stay the same.
+    config
+        .place_certificate(&host_names(&hosts))
+        .map_err(CreateError::Answers)?;
 
     // --- what connecting will send ------------------------------------------
     config.identifier = Some(answers.identifier.trim().to_string());
@@ -1424,6 +1429,11 @@ pub async fn connect(
     // The hub may have moved networks, or just gained Lovekit: either way LiveKit
     // announces one of the addresses advertised now.
     config.place_livekit(&host_names(&hosts));
+    // A hub serving HTTPS gets the certificate for these addresses — kept when they did not
+    // change — and sends it with this very request.
+    config
+        .place_certificate(&host_names(&hosts))
+        .map_err(CreateError::Answers)?;
 
     on(CreateEvent::Building);
     let request = build_hub_request(

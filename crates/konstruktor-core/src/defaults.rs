@@ -26,6 +26,9 @@ pub const LIVEKIT_SIGNAL_PORT: u16 = 2756;
 /// [`crate::config::hub::LivekitBlock`].
 pub const LIVEKIT_RTC_TCP_PORT: u16 = 2757;
 pub const LIVEKIT_RTC_UDP_PORT: u16 = 2758;
+/// LiveKit's signalling over TLS, on a hub whose gateway serves HTTPS: beside the plain port,
+/// which stays for the apps that predate the hub's certificate.
+pub const LIVEKIT_SIGNAL_TLS_PORT: u16 = 2759;
 /// How far a hub is advertised: the addresses others on this network can use.
 pub const REACH: ReachPresetId = ReachPresetId::ThisNetwork;
 /// Join the organization's mesh, keeping the LAN addresses too.

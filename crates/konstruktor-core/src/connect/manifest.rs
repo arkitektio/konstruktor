@@ -79,6 +79,44 @@ pub fn alias_scope(host: &str, kind: HostCategory) -> AliasScope {
     }
 }
 
+/// Where an advertised address works — one word for what [`AliasScope`] and `kind` split
+/// between them, and what the coordination server hands apps as `reach`:
+/// `loopback` this machine, `internal` only inside the hub's own network, `lan` the local
+/// network, `mesh` the organization's mesh, `public` the internet.
+///
+/// Sent beside `kind` and `scope`, which a coordination server that predates it reads
+/// instead (and which refuses a `kind` it does not know, so those stay what they were).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AliasReach {
+    Loopback,
+    Internal,
+    Lan,
+    Mesh,
+    Public,
+}
+
+/// The reach of an address advertised at `scope`: what [`alias_scope`] decided, in the
+/// coordination server's newer words. `local` only ever means loopback here — the in-network
+/// alias says [`AliasReach::Internal`] itself, see [`internal_alias`] — and an address that is
+/// local without being loopback (never advertised, see `alias_scope`) is at most the LAN's.
+pub fn alias_reach(host: &str, scope: AliasScope) -> AliasReach {
+    match scope {
+        AliasScope::Local if is_loopback(host) => AliasReach::Loopback,
+        AliasScope::Local | AliasScope::Network => AliasReach::Lan,
+        AliasScope::Public => AliasReach::Public,
+        AliasScope::Ionscale => AliasReach::Mesh,
+    }
+}
+
+fn is_loopback(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StagingAlias {
     pub id: String,
@@ -93,6 +131,9 @@ pub struct StagingAlias {
     pub challenge: Option<String>,
     pub kind: String,
     pub scope: AliasScope,
+    /// Where it works; see [`AliasReach`]. Left out of the JSON when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach: Option<AliasReach>,
     /// Only true for addresses the coordination server could health check itself.
     pub public: bool,
 }
@@ -170,6 +211,11 @@ pub struct HubManifest {
     /// accepts it. Whoever approves decides whether to grant one, so the envelope can come
     /// back without a key even when this is set.
     pub request_auth_key: bool,
+    /// The certificate the gateway serves, when it serves HTTPS ([`crate::tls`]). The
+    /// coordination server hands it to the hub's apps, which trust exactly it for the hub's
+    /// aliases. Left out, the hub is a plain-HTTP hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_certificate: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +264,7 @@ pub fn build_aliases(
             challenge: Some(crate::health::HEALTH_PATH.to_string()),
             kind: "absolute".to_string(),
             scope: alias_scope(&h.host, h.kind),
+            reach: Some(alias_reach(&h.host, alias_scope(&h.host, h.kind))),
             // Nothing here is guaranteed to be reachable from the coordination server, so
             // it must not try to health check anything a probe has not confirmed.
             public: reachable.contains(&h.host),
@@ -250,6 +297,7 @@ pub fn mesh_alias(ssl: bool, path: &str) -> StagingAlias {
         challenge: Some(crate::health::HEALTH_PATH.to_string()),
         kind: MESH_ALIAS_KIND.to_string(),
         scope: AliasScope::Ionscale,
+        reach: Some(AliasReach::Mesh),
         // The coordination server can health check this itself once it has resolved it;
         // until then there is nothing to check.
         public: false,
@@ -271,6 +319,9 @@ pub fn internal_alias(host: &str, ssl: bool, path: &str) -> StagingAlias {
         challenge: Some(crate::health::HEALTH_PATH.to_string()),
         kind: "absolute".to_string(),
         scope: AliasScope::Local,
+        // Only inside the hub's own network. A coordination server that reads `reach` keeps
+        // it as such; one that predates it sees the `absolute` kind it always did.
+        reach: Some(AliasReach::Internal),
         public: false,
     }
 }
@@ -310,19 +361,33 @@ pub const S3_MANIFEST: &str = "live.arkitekt.s3";
 /// the rooms Lovekit hands it tokens for.
 pub const LIVEKIT_MANIFEST: &str = "io.livekit.livekit";
 
-/// Where LiveKit's signalling is reached: the gateway's dedicated port for it, at the
-/// root, in plain HTTP — see [`crate::config::hub::LivekitBlock`].
+/// Where LiveKit's signalling is reached: the gateway's dedicated port for it, at the root —
+/// see [`crate::config::hub::LivekitBlock`]. In TLS on its own port where the hub has a
+/// certificate and the alias is an HTTPS one; in plain HTTP otherwise (the plain fallbacks,
+/// the mesh, a hub without a certificate).
 ///
 /// The port is the same on every alias. On this machine's networks it is published as it
 /// is; on the tailnet and inside the stack's network nothing is mapped, and the gateway
 /// listens on that very port. No challenge: there is no health route of ours behind it,
 /// and LiveKit's own answer at the root is not one the coordination server knows to ask.
-fn livekit_alias(alias: StagingAlias, port: u16) -> StagingAlias {
+fn livekit_alias(alias: StagingAlias, livekit: &crate::config::hub::LivekitBlock, tls: bool) -> StagingAlias {
+    let secure = tls && alias.ssl;
     StagingAlias {
-        port,
+        port: if secure { livekit.signal_tls_port } else { livekit.signal_port },
         path: None,
-        ssl: false,
+        ssl: secure,
         challenge: None,
+        ..alias
+    }
+}
+
+/// The same address in plain HTTP, beside its HTTPS alias on a hub with a certificate: for the
+/// apps that predate the certificate, which do not know to trust it and would find no address
+/// they could use. An app that knows the certificate does not use these ([`crate::tls`]).
+pub fn plain_fallback(alias: StagingAlias) -> StagingAlias {
+    StagingAlias {
+        id: format!("{}+http", alias.id),
+        name: format!("{}+http", alias.name),
         ..alias
     }
 }
@@ -364,16 +429,33 @@ pub fn client_requests(config: &HubConfig, device_id: Option<&str>) -> Vec<Clien
 pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> HubStartRequest {
     let ssl = config.gateway.ssl;
     let port = advertised_port(config);
+    // A hub with its certificate serves HTTPS: each address in TLS first, then in plain HTTP
+    // for the apps that predate the certificate. The mesh stays plain — it is encrypted
+    // itself, and the certificate cannot name the tailnet node, whose name is the
+    // coordination server's to give.
+    let certificate = config.served_certificate();
+    let tls = certificate.is_some();
+    let plain_port = config.gateway.exposed_http_port.unwrap_or(80);
 
     // Every address the hub is reached at, for one path on the gateway: the chosen hosts,
     // the tailnet node, and the gateway's in-network name.
     let aliases_at = |path: &str| {
         let mut aliases = build_aliases(&options.hosts, port, ssl, path, &options.reachable_hosts);
+        if tls {
+            aliases.extend(
+                build_aliases(&options.hosts, plain_port, false, path, &options.reachable_hosts)
+                    .into_iter()
+                    .map(plain_fallback),
+            );
+        }
         if options.mesh_alias {
-            aliases.push(mesh_alias(ssl, path));
+            aliases.push(mesh_alias(ssl && !tls, path));
         }
         if let Some(host) = options.internal_host.as_deref().filter(|h| !h.is_empty()) {
             aliases.push(internal_alias(host, ssl, path));
+            if tls {
+                aliases.push(plain_fallback(internal_alias(host, false, path)));
+            }
         }
         aliases
     };
@@ -479,7 +561,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
     if let Some(livekit) = config.running_livekit() {
         let aliases = aliases_at("")
             .into_iter()
-            .map(|alias| livekit_alias(alias, livekit.signal_port))
+            .map(|alias| livekit_alias(alias, livekit, tls))
             .collect();
         instances.push(InstanceRequest {
             name: "livekit".to_string(),
@@ -511,6 +593,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             instances,
             clients: client_requests(config, options.node_id.as_deref()),
             request_auth_key: options.request_auth_key,
+            tls_certificate: certificate.map(|certificate| certificate.cert_pem.clone()),
         },
         expiration_time_seconds: options.expiration_seconds.unwrap_or(600),
     }
@@ -1013,5 +1096,138 @@ mod tests {
             .instances
             .iter()
             .all(|instance| instance.manifest.identifier != "live.arkitekt.fluss"));
+    }
+
+    /// A hub with its certificate: every address in TLS first, then in plain HTTP for the apps
+    /// that predate the certificate; the mesh plain; LiveKit over TLS on a port of its own;
+    /// the certificate sent with the manifest.
+    #[test]
+    fn a_hub_with_a_certificate_serves_tls_beside_plain_http() {
+        let mut config = support::hub(&HubConfigOptions {
+            services: Some(vec![ServiceId::Mikro, ServiceId::Lovekit]),
+            ssl: true,
+            ..Default::default()
+        });
+        let at = vec!["10.0.0.4".to_string()];
+        assert!(config.place_certificate(&at).expect("a certificate"));
+        // The same addresses again: the same certificate, not a rotation.
+        assert!(!config.place_certificate(&at).expect("a certificate"));
+
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts: vec![AdvertisedHost {
+                    host: "10.0.0.4".to_string(),
+                    kind: HostCategory::Private,
+                }],
+                mesh_alias: true,
+                internal_host: Some("gateway".to_string()),
+                ..described()
+            },
+        );
+        let certificate = config.gateway.certificate.as_ref().expect("placed");
+        assert_eq!(request.hub.tls_certificate.as_deref(), Some(certificate.cert_pem.as_str()));
+        assert!(certificate.hosts.contains(&"10.0.0.4".to_string()));
+        assert!(certificate.hosts.contains(&"gateway".to_string()));
+
+        let shape = |identifier: &str| -> Vec<(String, bool, u16)> {
+            request
+                .hub
+                .instances
+                .iter()
+                .find(|i| i.manifest.identifier.contains(identifier))
+                .expect("advertised")
+                .aliases
+                .iter()
+                .map(|a| (a.id.clone(), a.ssl, a.port))
+                .collect()
+        };
+        let https = advertised_port(&config);
+        let http = config.gateway.exposed_http_port.unwrap_or(80);
+        let owned = |v: &[(&str, bool, u16)]| -> Vec<(String, bool, u16)> {
+            v.iter().map(|(id, ssl, port)| (id.to_string(), *ssl, *port)).collect()
+        };
+        assert_eq!(
+            shape("mikro"),
+            owned(&[
+                ("10.0.0.4", true, https),
+                ("10.0.0.4+http", false, http),
+                ("mesh", false, 80),
+                ("internal", true, 443),
+                ("internal+http", false, 80),
+            ])
+        );
+        assert_eq!(
+            shape(LIVEKIT_MANIFEST),
+            owned(&[
+                ("10.0.0.4", true, 2759),
+                ("10.0.0.4+http", false, 2756),
+                ("mesh", false, 2756),
+                ("internal", true, 2759),
+                ("internal+http", false, 2756),
+            ])
+        );
+
+        // New addresses: a new certificate.
+        assert!(config
+            .place_certificate(&["10.0.0.5".to_string()])
+            .expect("a certificate"));
+    }
+
+    /// A plain-HTTP hub — `ssl` off — has no certificate, sends none, and advertises exactly
+    /// what it always did.
+    #[test]
+    fn a_plain_http_hub_has_no_certificate() {
+        let mut config = support::hub(&HubConfigOptions::default());
+        assert!(!config.gateway.ssl);
+        assert!(!config
+            .place_certificate(&["10.0.0.4".to_string()])
+            .expect("nothing to make"));
+        assert!(config.gateway.certificate.is_none());
+        let request = build_hub_request(&config, &described());
+        assert!(request.hub.tls_certificate.is_none());
+        let json = serde_json::to_value(&request.hub).expect("serializes");
+        assert!(json.get("tls_certificate").is_none(), "{json}");
+    }
+
+    /// Every alias says where it works, in the coordination server's newer words, beside the
+    /// kind and scope an older one reads: the in-network one is internal.
+    #[test]
+    fn every_alias_says_its_reach() {
+        let config = build_hub_config(&HubConfigOptions::default());
+        let request = build_hub_request(
+            &config,
+            &HubManifestOptions {
+                hosts: vec![
+                    AdvertisedHost { host: "localhost".to_string(), kind: HostCategory::Loopback },
+                    AdvertisedHost { host: "10.0.0.4".to_string(), kind: HostCategory::Private },
+                    AdvertisedHost { host: "140.78.80.150".to_string(), kind: HostCategory::Public },
+                    AdvertisedHost { host: "100.116.108.106".to_string(), kind: HostCategory::Mesh },
+                ],
+                mesh_alias: true,
+                internal_host: Some("gateway".to_string()),
+                ..described()
+            },
+        );
+        let instance = request.hub.instances.first().expect("an instance");
+        let reaches: Vec<(&str, Option<AliasReach>)> =
+            instance.aliases.iter().map(|a| (a.id.as_str(), a.reach)).collect();
+        assert_eq!(
+            reaches,
+            [
+                ("localhost", Some(AliasReach::Loopback)),
+                ("10.0.0.4", Some(AliasReach::Lan)),
+                ("140.78.80.150", Some(AliasReach::Public)),
+                ("100.116.108.106", Some(AliasReach::Mesh)),
+                ("mesh", Some(AliasReach::Mesh)),
+                ("internal", Some(AliasReach::Internal)),
+            ]
+        );
+        // The older words stay what they were: a server that predates `reach` refuses a
+        // kind it does not know.
+        let internal = instance.aliases.iter().find(|a| a.id == "internal").unwrap();
+        assert_eq!((internal.kind.as_str(), internal.scope), ("absolute", AliasScope::Local));
+        let json = serde_json::to_value(internal).expect("serializes");
+        assert_eq!(json["reach"], "internal");
     }
 }

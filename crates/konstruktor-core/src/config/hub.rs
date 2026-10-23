@@ -460,6 +460,11 @@ pub struct GatewayBlock {
     pub internal_port: u16,
     pub ssl: bool,
     pub ssl_cert: Option<String>,
+    /// The one self-signed certificate the gateway serves when [`Self::ssl`] is on — for
+    /// every host the hub is reached at, see [`crate::tls`]. Made when the hub is authorized
+    /// ([`HubConfig::place_certificate`]); absent on a plain-HTTP hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<crate::tls::GatewayCertificate>,
 }
 
 /// The key `generate::compose` writes the database under in `services:`.
@@ -599,11 +604,20 @@ pub struct LivekitBlock {
     pub rtc_tcp_port: u16,
     /// ICE over UDP, every stream multiplexed on one port. Published as is.
     pub rtc_udp_port: u16,
+    /// Where the gateway serves LiveKit's signalling over TLS, on a hub whose gateway serves
+    /// HTTPS. Beside [`Self::signal_port`], which stays plain for the apps that predate the
+    /// hub's certificate (and for the mesh, which is encrypted itself).
+    #[serde(default = "default_livekit_signal_tls_port")]
+    pub signal_tls_port: u16,
     /// The address LiveKit announces in its ICE candidates: the first private IPv4 address
     /// the hub advertises, set when it is authorized. Without one LiveKit announces its
     /// container's address, which only this machine (on Linux) can reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_ip: Option<String>,
+}
+
+fn default_livekit_signal_tls_port() -> u16 {
+    crate::defaults::LIVEKIT_SIGNAL_TLS_PORT
 }
 
 /// LiveKit 1.13.7. Pinned, not `latest`: it is not ours, and a media server's wire protocol
@@ -624,6 +638,7 @@ impl LivekitBlock {
             signal_port: crate::defaults::LIVEKIT_SIGNAL_PORT,
             rtc_tcp_port: crate::defaults::LIVEKIT_RTC_TCP_PORT,
             rtc_udp_port: crate::defaults::LIVEKIT_RTC_UDP_PORT,
+            signal_tls_port: crate::defaults::LIVEKIT_SIGNAL_TLS_PORT,
             node_ip: None,
         }
     }
@@ -1287,6 +1302,35 @@ impl HubConfig {
 
     /// Point LiveKit at the address clients should send media to, from the hosts this hub
     /// advertises (see [`livekit_node_ip`]). Left as it is when none of them is an address.
+    /// The certificate the gateway serves HTTPS with: only on a hub with [`GatewayBlock::ssl`]
+    /// that has been given one. Everything TLS — the gateway's HTTPS site, LiveKit's TLS
+    /// signalling, the HTTPS aliases' plain fallbacks — follows this, not `ssl` alone.
+    pub fn served_certificate(&self) -> Option<&crate::tls::GatewayCertificate> {
+        self.gateway.certificate.as_ref().filter(|_| self.gateway.ssl)
+    }
+
+    /// Gives a hub whose gateway serves HTTPS the certificate for the hosts it is advertised
+    /// at now: a new one when it has none or those hosts changed, the one it has otherwise —
+    /// so re-authorizing for a service change does not rotate it. A plain-HTTP hub has none.
+    /// Returns whether it is a new certificate.
+    pub fn place_certificate(&mut self, hosts: &[String]) -> Result<bool, String> {
+        if !self.gateway.ssl {
+            self.gateway.certificate = None;
+            return Ok(false);
+        }
+        let wanted = crate::tls::certificate_hosts(hosts, &self.gateway.host);
+        if self
+            .gateway
+            .certificate
+            .as_ref()
+            .is_some_and(|certificate| certificate.hosts == wanted)
+        {
+            return Ok(false);
+        }
+        self.gateway.certificate = Some(crate::tls::generate(&wanted, crate::tls::current_year())?);
+        Ok(true)
+    }
+
     pub fn place_livekit(&mut self, hosts: &[String]) {
         if let Some(livekit) = self.livekit.as_mut() {
             if let Some(ip) = livekit_node_ip(hosts) {
@@ -2013,6 +2057,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             internal_port: 80,
             ssl: options.ssl,
             ssl_cert: None,
+            certificate: None,
         },
         global_admin: options.global_admin.clone(),
         global_admin_email: blank(options.global_admin_email.as_deref()),

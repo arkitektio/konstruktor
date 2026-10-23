@@ -33,14 +33,14 @@ export const PortsStep = () => {
         <AdvancedFields fields={["httpsPort"]}>
           <StepField
             label="HTTPS port"
-            hint="Reserved on the host. The generated gateway serves plain HTTP for now."
+            hint="Where the gateway serves HTTPS, with the hub's own certificate."
           >
             <UIField name="httpsPort" type="number" inputMode="numeric" />
             <ErrorDisplay name="httpsPort" className="mt-1" />
           </StepField>
           <label className="flex flex-row items-center gap-2 text-sm">
             <input type="checkbox" {...register("ssl")} />
-            Advertise this deployment as HTTPS to the coordination server
+            Serve HTTPS with the hub's own certificate (apps verify it through the coordination server). Unticked, plain HTTP only.
           </label>
         </AdvancedFields>
       </div>

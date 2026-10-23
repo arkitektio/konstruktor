@@ -18,6 +18,7 @@ fn request() -> HubStartRequest {
             instances: vec![],
             clients: vec![],
             request_auth_key: false,
+            tls_certificate: None,
         },
         expiration_time_seconds: 600,
     }

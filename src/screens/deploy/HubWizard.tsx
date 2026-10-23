@@ -313,7 +313,9 @@ export const HubWizard = () => {
     services: (defaults?.services ?? []).filter((id) => id !== "rekuest"),
     httpPort: defaults?.http_port ?? 2754,
     httpsPort: defaults?.https_port ?? 2755,
-    ssl: false,
+    // HTTPS with the hub's own certificate, beside plain HTTP: the default. Unticked, the
+    // hub is plain HTTP only.
+    ssl: true,
     domain: "",
     globalDescription: "",
     globalAdmin: "admin",

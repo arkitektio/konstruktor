@@ -147,12 +147,31 @@ pub fn generate_hub_files(
             &caddy::GatewaySites {
                 livekit: config.running_livekit().map(|livekit| caddy::LivekitSite {
                     listen_port: livekit.signal_port,
+                    tls_listen_port: config
+                        .served_certificate()
+                        .map(|_| livekit.signal_tls_port),
                     upstream_host: &livekit.host,
                     upstream_port: crate::config::hub::LIVEKIT_INTERNAL_PORT,
+                }),
+                tls: config.served_certificate().map(|_| caddy::GatewayTls {
+                    cert_file: format!("{}/{}", crate::tls::CONTAINER_DIR, crate::tls::CERT_FILE),
+                    key_file: format!("{}/{}", crate::tls::CONTAINER_DIR, crate::tls::KEY_FILE),
                 }),
             },
         ),
     );
+
+    // --- the gateway's certificate, when it serves HTTPS ---------------------
+    if let Some(certificate) = config.served_certificate() {
+        files.insert(
+            format!("{}/{}", crate::tls::FOLDER_DIR, crate::tls::CERT_FILE),
+            certificate.cert_pem.clone(),
+        );
+        files.insert(
+            format!("{}/{}", crate::tls::FOLDER_DIR, crate::tls::KEY_FILE),
+            certificate.key_pem.clone(),
+        );
+    }
 
     // --- the compose project ------------------------------------------------
     files.insert(
@@ -161,4 +180,37 @@ pub fn generate_hub_files(
     );
 
     files
+}
+
+#[cfg(test)]
+mod tls_tests {
+    use crate::config::hub::{build_hub_config, HubConfigOptions};
+
+    /// A hub serving HTTPS writes its certificate and key, mounts them into the gateway and
+    /// serves HTTPS beside plain HTTP, unredirected; a plain-HTTP hub writes none of it.
+    #[test]
+    fn a_hub_with_a_certificate_writes_and_serves_it() {
+        let mut config = build_hub_config(&HubConfigOptions {
+            ssl: true,
+            ..Default::default()
+        });
+        config.place_certificate(&["lab.local".to_string()]).expect("a certificate");
+        let files = super::generate_hub_files(&config, &Default::default(), &Default::default());
+
+        let certificate = config.gateway.certificate.as_ref().expect("placed");
+        assert_eq!(files.get("configs/gateway/hub.crt"), Some(&certificate.cert_pem));
+        assert_eq!(files.get("configs/gateway/hub.key"), Some(&certificate.key_pem));
+        let caddyfile = files.get("configs/Caddyfile").expect("a Caddyfile");
+        assert!(caddyfile.contains("auto_https disable_redirects"), "{caddyfile}");
+        assert!(caddyfile.contains("\nhttp:// {\n\timport hub\n}\n"), "{caddyfile}");
+        assert!(caddyfile.contains("\nhttps:// {\n\ttls /etc/caddy/tls/hub.crt /etc/caddy/tls/hub.key\n\timport hub\n}\n"), "{caddyfile}");
+        let compose = files.get("docker-compose.yaml").expect("a compose file");
+        assert!(compose.contains("./configs/gateway:/etc/caddy/tls:ro"), "{compose}");
+
+        let plain = build_hub_config(&HubConfigOptions::default());
+        let files = super::generate_hub_files(&plain, &Default::default(), &Default::default());
+        assert!(!files.contains_key("configs/gateway/hub.crt"));
+        assert!(!files["configs/Caddyfile"].contains("https://"));
+        assert!(!files["docker-compose.yaml"].contains("/etc/caddy/tls"));
+    }
 }

@@ -49,11 +49,15 @@ pub struct CreateArgs {
     /// The port the gateway answers plain HTTP on.
     #[arg(long, default_value_t = konstruktor_core::defaults::HTTP_PORT)]
     pub http_port: u16,
-    /// The port the gateway answers HTTPS on, with `--ssl`.
+    /// The port the gateway answers HTTPS on (unless `--plain-http`).
     #[arg(long, default_value_t = konstruktor_core::defaults::HTTPS_PORT)]
     pub https_port: u16,
-    /// Turn HTTPS on at the gateway.
+    /// Serve plain HTTP only. By default the gateway serves HTTPS too, with the hub's own
+    /// certificate, which apps verify through the coordination server.
     #[arg(long)]
+    pub plain_http: bool,
+    /// HTTPS at the gateway: the default now; accepted so older scripts keep working.
+    #[arg(long, hide = true, conflicts_with = "plain_http")]
     pub ssl: bool,
     /// The domain name the hub is reached by. Left out, `localhost`.
     #[arg(long)]
@@ -410,7 +414,7 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         services,
         http_port: args.http_port,
         https_port: args.https_port,
-        ssl: args.ssl,
+        ssl: !args.plain_http,
         domain: args.domain.clone(),
         global_admin: args.admin.clone(),
         global_admin_password: args.admin_password.clone(),

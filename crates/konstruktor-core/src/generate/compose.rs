@@ -327,6 +327,19 @@ const LIVEKIT_CONFIG_PATH: &str = "/etc/livekit.yaml";
 
 /// Whether the hub publishes nothing on this machine: a mesh-only hub, reached through its
 /// tailnet node alone.
+/// The gateway's mounts: its Caddyfile, and the certificate it serves HTTPS with when it has one.
+fn gateway_volumes(config: &HubConfig) -> Value {
+    let mut volumes = vec![s("./configs/Caddyfile:/etc/caddy/Caddyfile")];
+    if config.served_certificate().is_some() {
+        volumes.push(s(&format!(
+            "./{}:{}:ro",
+            crate::tls::FOLDER_DIR,
+            crate::tls::CONTAINER_DIR
+        )));
+    }
+    list(volumes)
+}
+
 fn publishes_nothing(config: &HubConfig) -> bool {
     config
         .mesh
@@ -651,6 +664,10 @@ pub fn build_compose(
     // inside and out, since that is the port every alias of it names.
     if let Some(livekit) = livekit.filter(|_| !publishes_nothing(config)) {
         ports.push(s(&format!("{0}:{0}", livekit.signal_port)));
+        // And over TLS, where the gateway has a certificate.
+        if config.served_certificate().is_some() {
+            ports.push(s(&format!("{0}:{0}", livekit.signal_tls_port)));
+        }
     }
 
     let mesh = config.mesh.as_ref().filter(|m| m.enabled);
@@ -737,7 +754,7 @@ pub fn build_compose(
                 ),
                 (
                     "volumes",
-                    list(vec![s("./configs/Caddyfile:/etc/caddy/Caddyfile")]),
+                    gateway_volumes(config),
                 ),
             ]),
         );
@@ -754,7 +771,7 @@ pub fn build_compose(
                 ),
                 (
                     "volumes",
-                    list(vec![s("./configs/Caddyfile:/etc/caddy/Caddyfile")]),
+                    gateway_volumes(config),
                 ),
             ]),
         );

@@ -368,7 +368,12 @@ pub const DOCKER_ALIAS_KIND: &str = "docker";
 /// coordination server somebody else runs — and what kinds *that* server knows is not
 /// this module's to assume.
 fn mark_in_network(aliases: &mut [crate::connect::manifest::StagingAlias]) {
-    for alias in aliases.iter_mut().filter(|alias| alias.id == "internal") {
+    // `internal+http` is the same address in plain HTTP, beside a TLS one (see
+    // `connect::manifest::plain_fallback`).
+    for alias in aliases
+        .iter_mut()
+        .filter(|alias| alias.id == "internal" || alias.id == "internal+http")
+    {
         alias.kind = DOCKER_ALIAS_KIND.to_string();
     }
 }
