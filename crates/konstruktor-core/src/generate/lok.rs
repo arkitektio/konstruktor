@@ -256,6 +256,7 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
         (
             "organizations",
             list(vec![map(vec![
+                ("id", Value::from(organization.id)),
                 ("name", s(&organization.name)),
                 ("identifier", s(&organization.identifier)),
                 ("owner", s(owner)),
@@ -445,6 +446,7 @@ pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
         "issuer": lok.issuer,
         "hub": lok.hub_identifier,
         "organization": lok.organization.identifier,
+        "organization_id": lok.organization.id,
         "admin": {
             "username": config.global_admin,
             "password": config.global_admin_password,

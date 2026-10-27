@@ -63,81 +63,113 @@ http:// {
 
 	@kabinetmedia path /kabinetmedia*
 	handle @kabinetmedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@mikromedia path /mikromedia*
 	handle @mikromedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@mikrozarr path /mikrozarr*
 	handle @mikrozarr { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@mikroparquet path /mikroparquet*
 	handle @mikroparquet { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@mikrobigfile path /mikrobigfile*
 	handle @mikrobigfile { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@mikrofabriks path /mikrofabriks*
 	handle @mikrofabriks { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@mikrokonnektion path /mikrokonnektion*
 	handle @mikrokonnektion { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@flussmedia path /flussmedia*
 	handle @flussmedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@elektromedia path /elektromedia*
 	handle @elektromedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@elektrozarr path /elektrozarr*
 	handle @elektrozarr { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@elektroparquet path /elektroparquet*
 	handle @elektroparquet { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@elektrobigfile path /elektrobigfile*
 	handle @elektrobigfile { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@alpakamedia path /alpakamedia*
 	handle @alpakamedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@kraphmedia path /kraphmedia*
 	handle @kraphmedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@kraphzarr path /kraphzarr*
 	handle @kraphzarr { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 
 	@kraphbigfile path /kraphbigfile*
 	handle @kraphbigfile { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
 		reverse_proxy rustfs:9000
 	}
 

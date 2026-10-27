@@ -157,12 +157,22 @@ pub fn build_authentikate(
     // claim, so an organization that registered a hub of the same uid at the coordination
     // server must not get its tokens taken here. A self-contained hub's Lok is its own, and
     // a grant that names no organization (a server from before it said) narrows nothing —
-    // an empty list would refuse every token.
-    if config.running_lok().is_none() && !issued.organizations.is_empty() {
-        pairs.push((
-            "allowed_organizations",
-            list(issued.organizations.iter().map(|org| s(org)).collect()),
-        ));
+    // an empty list would refuse every token. An organization is named with its issuer
+    // (`"<iss>#<org>"`, authentikate 6): another issuer's organization of the same id is
+    // another organization. Without a known issuer nothing could match, so nothing narrows.
+    if let (None, Some(issuer)) = (config.running_lok(), issued.issuer.as_deref()) {
+        if !issued.organizations.is_empty() {
+            pairs.push((
+                "allowed_organizations",
+                list(
+                    issued
+                        .organizations
+                        .iter()
+                        .map(|org| s(&format!("{issuer}#{org}")))
+                        .collect(),
+                ),
+            ));
+        }
     }
 
     let rekuest = config.rekuest();

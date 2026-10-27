@@ -51,6 +51,26 @@ fn route(out: &mut String, name: &str, target: &str, port: u16) {
     out.push_str("\t}\n\n");
 }
 
+/// A bucket's route: the object store, served as data and never as a page of the hub.
+///
+/// Buckets are served on the hub's own origin, beside Lok and every service, and an object's
+/// `Content-Type` is whatever its uploader sent -- a session policy cannot constrain it. So an
+/// uploaded `text/html` opened through a signed URL would run as the hub. `sandbox` puts any
+/// document served from here in an opaque origin with scripts off, so it reaches no cookie or
+/// storage of the hub; `nosniff` stops a browser guessing its way to HTML. Neither touches what
+/// clients actually do with these routes -- fetching chunks, tables and images -- because a
+/// Content-Security-Policy only governs documents.
+fn bucket_route(out: &mut String, name: &str, target: &str, port: u16) {
+    let _ = write!(out, "\t@{name} path /{name}*\n");
+    let _ = write!(out, "\thandle @{name} {OPEN_BRACE_WITH_SPACE}\n");
+    out.push_str(BUCKET_HEADERS);
+    let _ = write!(out, "\t\treverse_proxy {target}:{port}\n");
+    out.push_str("\t}\n\n");
+}
+
+/// The response headers every bucket route sets. See [`bucket_route`].
+const BUCKET_HEADERS: &str = "\t\theader Content-Security-Policy \"sandbox; default-src 'none'\"\n\t\theader X-Content-Type-Options nosniff\n";
+
 /// One service's routed path, plus the object-storage buckets it declares.
 pub struct CaddyService<'a> {
     pub id: ServiceId,
@@ -169,7 +189,7 @@ pub fn build_caddyfile(
     ordered(&mut |service| route(&mut out, service.host, service.host, service.internal_port));
     ordered(&mut |service| {
         for bucket in &service.buckets {
-            route(&mut out, bucket, minio_host, minio_port);
+            bucket_route(&mut out, bucket, minio_host, minio_port);
         }
     });
 
@@ -179,7 +199,7 @@ pub fn build_caddyfile(
     if let Some(lok) = coordination {
         coordination_routes(&mut out, lok);
         for bucket in &lok.buckets {
-            route(&mut out, bucket, minio_host, minio_port);
+            bucket_route(&mut out, bucket, minio_host, minio_port);
         }
     }
 

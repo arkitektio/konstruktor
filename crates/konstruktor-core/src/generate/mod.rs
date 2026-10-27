@@ -147,9 +147,7 @@ pub fn generate_hub_files(
             &caddy::GatewaySites {
                 livekit: config.running_livekit().map(|livekit| caddy::LivekitSite {
                     listen_port: livekit.signal_port,
-                    tls_listen_port: config
-                        .served_certificate()
-                        .map(|_| livekit.signal_tls_port),
+                    tls_listen_port: config.served_certificate().map(|_| livekit.signal_tls_port),
                     upstream_host: &livekit.host,
                     upstream_port: crate::config::hub::LIVEKIT_INTERNAL_PORT,
                 }),
@@ -194,18 +192,35 @@ mod tls_tests {
             ssl: true,
             ..Default::default()
         });
-        config.place_certificate(&["lab.local".to_string()]).expect("a certificate");
+        config
+            .place_certificate(&["lab.local".to_string()])
+            .expect("a certificate");
         let files = super::generate_hub_files(&config, &Default::default(), &Default::default());
 
         let certificate = config.gateway.certificate.as_ref().expect("placed");
-        assert_eq!(files.get("configs/gateway/hub.crt"), Some(&certificate.cert_pem));
-        assert_eq!(files.get("configs/gateway/hub.key"), Some(&certificate.key_pem));
+        assert_eq!(
+            files.get("configs/gateway/hub.crt"),
+            Some(&certificate.cert_pem)
+        );
+        assert_eq!(
+            files.get("configs/gateway/hub.key"),
+            Some(&certificate.key_pem)
+        );
         let caddyfile = files.get("configs/Caddyfile").expect("a Caddyfile");
-        assert!(caddyfile.contains("auto_https disable_redirects"), "{caddyfile}");
-        assert!(caddyfile.contains("\nhttp:// {\n\timport hub\n}\n"), "{caddyfile}");
+        assert!(
+            caddyfile.contains("auto_https disable_redirects"),
+            "{caddyfile}"
+        );
+        assert!(
+            caddyfile.contains("\nhttp:// {\n\timport hub\n}\n"),
+            "{caddyfile}"
+        );
         assert!(caddyfile.contains("\nhttps:// {\n\ttls /etc/caddy/tls/hub.crt /etc/caddy/tls/hub.key\n\timport hub\n}\n"), "{caddyfile}");
         let compose = files.get("docker-compose.yaml").expect("a compose file");
-        assert!(compose.contains("./configs/gateway:/etc/caddy/tls:ro"), "{compose}");
+        assert!(
+            compose.contains("./configs/gateway:/etc/caddy/tls:ro"),
+            "{compose}"
+        );
 
         let plain = build_hub_config(&HubConfigOptions::default());
         let files = super::generate_hub_files(&plain, &Default::default(), &Default::default());

@@ -252,7 +252,11 @@ mod authorized {
                 .iter()
                 .filter_map(Value::as_str)
                 .collect();
-            assert_eq!(allowed, ["3", "4"], "{id:?}");
+            assert_eq!(
+                allowed,
+                [format!("{ISSUER}#3"), format!("{ISSUER}#4")],
+                "{id:?}"
+            );
         }
     }
 

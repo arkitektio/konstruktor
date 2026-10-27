@@ -370,10 +370,18 @@ pub const LIVEKIT_MANIFEST: &str = "io.livekit.livekit";
 /// is; on the tailnet and inside the stack's network nothing is mapped, and the gateway
 /// listens on that very port. No challenge: there is no health route of ours behind it,
 /// and LiveKit's own answer at the root is not one the coordination server knows to ask.
-fn livekit_alias(alias: StagingAlias, livekit: &crate::config::hub::LivekitBlock, tls: bool) -> StagingAlias {
+fn livekit_alias(
+    alias: StagingAlias,
+    livekit: &crate::config::hub::LivekitBlock,
+    tls: bool,
+) -> StagingAlias {
     let secure = tls && alias.ssl;
     StagingAlias {
-        port: if secure { livekit.signal_tls_port } else { livekit.signal_port },
+        port: if secure {
+            livekit.signal_tls_port
+        } else {
+            livekit.signal_port
+        },
         path: None,
         ssl: secure,
         challenge: None,
@@ -443,9 +451,15 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
         let mut aliases = build_aliases(&options.hosts, port, ssl, path, &options.reachable_hosts);
         if tls {
             aliases.extend(
-                build_aliases(&options.hosts, plain_port, false, path, &options.reachable_hosts)
-                    .into_iter()
-                    .map(plain_fallback),
+                build_aliases(
+                    &options.hosts,
+                    plain_port,
+                    false,
+                    path,
+                    &options.reachable_hosts,
+                )
+                .into_iter()
+                .map(plain_fallback),
             );
         }
         if options.mesh_alias {
@@ -1126,7 +1140,10 @@ mod tests {
             },
         );
         let certificate = config.gateway.certificate.as_ref().expect("placed");
-        assert_eq!(request.hub.tls_certificate.as_deref(), Some(certificate.cert_pem.as_str()));
+        assert_eq!(
+            request.hub.tls_certificate.as_deref(),
+            Some(certificate.cert_pem.as_str())
+        );
         assert!(certificate.hosts.contains(&"10.0.0.4".to_string()));
         assert!(certificate.hosts.contains(&"gateway".to_string()));
 
@@ -1145,7 +1162,9 @@ mod tests {
         let https = advertised_port(&config);
         let http = config.gateway.exposed_http_port.unwrap_or(80);
         let owned = |v: &[(&str, bool, u16)]| -> Vec<(String, bool, u16)> {
-            v.iter().map(|(id, ssl, port)| (id.to_string(), *ssl, *port)).collect()
+            v.iter()
+                .map(|(id, ssl, port)| (id.to_string(), *ssl, *port))
+                .collect()
         };
         assert_eq!(
             shape("mikro"),
@@ -1199,10 +1218,22 @@ mod tests {
             &config,
             &HubManifestOptions {
                 hosts: vec![
-                    AdvertisedHost { host: "localhost".to_string(), kind: HostCategory::Loopback },
-                    AdvertisedHost { host: "10.0.0.4".to_string(), kind: HostCategory::Private },
-                    AdvertisedHost { host: "140.78.80.150".to_string(), kind: HostCategory::Public },
-                    AdvertisedHost { host: "100.116.108.106".to_string(), kind: HostCategory::Mesh },
+                    AdvertisedHost {
+                        host: "localhost".to_string(),
+                        kind: HostCategory::Loopback,
+                    },
+                    AdvertisedHost {
+                        host: "10.0.0.4".to_string(),
+                        kind: HostCategory::Private,
+                    },
+                    AdvertisedHost {
+                        host: "140.78.80.150".to_string(),
+                        kind: HostCategory::Public,
+                    },
+                    AdvertisedHost {
+                        host: "100.116.108.106".to_string(),
+                        kind: HostCategory::Mesh,
+                    },
                 ],
                 mesh_alias: true,
                 internal_host: Some("gateway".to_string()),
@@ -1210,8 +1241,11 @@ mod tests {
             },
         );
         let instance = request.hub.instances.first().expect("an instance");
-        let reaches: Vec<(&str, Option<AliasReach>)> =
-            instance.aliases.iter().map(|a| (a.id.as_str(), a.reach)).collect();
+        let reaches: Vec<(&str, Option<AliasReach>)> = instance
+            .aliases
+            .iter()
+            .map(|a| (a.id.as_str(), a.reach))
+            .collect();
         assert_eq!(
             reaches,
             [
@@ -1225,8 +1259,15 @@ mod tests {
         );
         // The older words stay what they were: a server that predates `reach` refuses a
         // kind it does not know.
-        let internal = instance.aliases.iter().find(|a| a.id == "internal").unwrap();
-        assert_eq!((internal.kind.as_str(), internal.scope), ("absolute", AliasScope::Local));
+        let internal = instance
+            .aliases
+            .iter()
+            .find(|a| a.id == "internal")
+            .unwrap();
+        assert_eq!(
+            (internal.kind.as_str(), internal.scope),
+            ("absolute", AliasScope::Local)
+        );
         let json = serde_json::to_value(internal).expect("serializes");
         assert_eq!(json["reach"], "internal");
     }

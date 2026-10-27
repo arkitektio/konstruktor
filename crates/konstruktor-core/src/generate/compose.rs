@@ -752,10 +752,7 @@ pub fn build_compose(
                         ]),
                     )]),
                 ),
-                (
-                    "volumes",
-                    gateway_volumes(config),
-                ),
+                ("volumes", gateway_volumes(config)),
             ]),
         );
     } else {
@@ -769,10 +766,7 @@ pub fn build_compose(
                     "networks",
                     list(vec![s(&config.internal_network), s("default")]),
                 ),
-                (
-                    "volumes",
-                    gateway_volumes(config),
-                ),
+                ("volumes", gateway_volumes(config)),
             ]),
         );
     }

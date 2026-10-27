@@ -49,7 +49,12 @@ pub fn certificate_hosts(advertised: &[String], gateway_host: &str) -> Vec<Strin
         .iter()
         .map(String::as_str)
         .chain(["localhost", "127.0.0.1", "::1", gateway_host])
-        .map(|host| host.trim().trim_start_matches('[').trim_end_matches(']').to_lowercase())
+        .map(|host| {
+            host.trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_lowercase()
+        })
         .filter(|host| !host.is_empty())
         .collect();
     hosts.sort();
@@ -133,7 +138,14 @@ mod tests {
         );
         assert_eq!(
             hosts,
-            ["10.0.0.4", "127.0.0.1", "::1", "gateway", "lab.local", "localhost"]
+            [
+                "10.0.0.4",
+                "127.0.0.1",
+                "::1",
+                "gateway",
+                "lab.local",
+                "localhost"
+            ]
         );
     }
 
@@ -141,11 +153,16 @@ mod tests {
     fn makes_a_server_certificate_for_names_and_addresses() {
         let hosts = certificate_hosts(&["lab.local".into(), "10.0.0.4".into()], "gateway");
         let certificate = generate(&hosts, 2026).unwrap();
-        assert!(certificate.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(certificate
+            .cert_pem
+            .starts_with("-----BEGIN CERTIFICATE-----"));
         assert!(certificate.key_pem.contains("PRIVATE KEY"));
         assert_eq!(certificate.hosts, hosts);
         // Each call is a new key: a rotation is a new certificate.
-        assert_ne!(generate(&hosts, 2026).unwrap().cert_pem, certificate.cert_pem);
+        assert_ne!(
+            generate(&hosts, 2026).unwrap().cert_pem,
+            certificate.cert_pem
+        );
     }
 
     /// DER with no DEFAULT value encoded: no basicConstraints extension at all (its OID,
@@ -159,7 +176,9 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with("-----"))
             .collect();
-        let der = base64::engine::general_purpose::STANDARD.decode(body).unwrap();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .unwrap();
         let oid = [0x06, 0x03, 0x55, 0x1d, 0x13];
         assert!(!der.windows(oid.len()).any(|w| w == oid));
     }

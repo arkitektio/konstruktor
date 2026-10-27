@@ -814,9 +814,20 @@ pub struct LokUser {
 /// The organization Lok creates on boot, and registers this hub in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LokOrganization {
-    /// The slug: what a mandate key and a membership name the organization by.
+    /// Its id: what every token's `org` claim and every service names it by. Lok creates
+    /// it with this id, so the hub's services can be told it before Lok ever ran.
+    #[serde(default = "first_organization")]
+    pub id: i64,
+    /// Lok's handle for it (its slug): what a mandate key and a membership in Lok's own
+    /// configuration name it by. It never leaves Lok.
     pub identifier: String,
     pub name: String,
+}
+
+/// The id of a self-contained hub's one organization (a hub saved before ids were fixed
+/// reads as this too).
+fn first_organization() -> i64 {
+    1
 }
 
 /// A key an app logs in with, without anybody accepting anything.
@@ -959,6 +970,7 @@ fn build_lok_block(options: &LokOptions) -> LokBlock {
         hub_identifier: options.hub_identifier.clone(),
         advertised_hosts: options.hosts.clone(),
         organization: LokOrganization {
+            id: first_organization(),
             identifier: options.organization.clone(),
             name: options.organization.clone(),
         },
@@ -1306,7 +1318,10 @@ impl HubConfig {
     /// that has been given one. Everything TLS — the gateway's HTTPS site, LiveKit's TLS
     /// signalling, the HTTPS aliases' plain fallbacks — follows this, not `ssl` alone.
     pub fn served_certificate(&self) -> Option<&crate::tls::GatewayCertificate> {
-        self.gateway.certificate.as_ref().filter(|_| self.gateway.ssl)
+        self.gateway
+            .certificate
+            .as_ref()
+            .filter(|_| self.gateway.ssl)
     }
 
     /// Gives a hub whose gateway serves HTTPS the certificate for the hosts it is advertised
