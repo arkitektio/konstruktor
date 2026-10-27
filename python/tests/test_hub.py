@@ -104,6 +104,23 @@ def test_a_testing_hub_starts_no_plugin_engine_unless_asked(fake_konstruktor) ->
     assert "--no-plugin-engine" not in asked
 
 
+def test_a_testing_hub_is_plain_http_unless_asked(fake_konstruktor) -> None:
+    with testing_hub() as hub:
+        hub.create()
+    with testing_hub(tls=True) as hub:
+        hub.create()
+
+    plain, asked = [call for call in fake_konstruktor.calls if call[:2] == ["hub", "create"]]
+    assert "--plain-http" in plain
+    assert "--plain-http" not in asked
+
+
+def test_a_local_hub_serves_https_as_any_hub_does(fake_konstruktor, tmp_path: Path) -> None:
+    with local_hub(tmp_path / "lab") as hub:
+        hub.create()
+    assert "--plain-http" not in fake_konstruktor.calls[0]
+
+
 def test_a_local_hub_runs_the_plugin_engine_as_any_hub_does(fake_konstruktor, tmp_path: Path) -> None:
     with local_hub(tmp_path / "lab") as hub:
         hub.create()

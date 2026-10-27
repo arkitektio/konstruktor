@@ -82,6 +82,10 @@ class KonstruktorProject(BaseModel):
     #: apps the organization installs, as containers on this machine. It is handed
     #: the machine's Docker socket, so it is off unless asked for.
     plugin_engine: bool = False
+    #: Serve HTTPS beside plain HTTP, with the hub's own certificate. An app is then
+    #: pointed at the HTTPS address, and trusts the certificate only once the
+    #: coordination server has handed it over -- off, the hub is plain HTTP only.
+    tls: bool = True
     #: Images to run instead of the ones a new hub gets, by compose service:
     #: ``{"rekuest": "jhnnsrs/rekuest:1.2.3"}``.
     images: dict[str, str] = Field(default_factory=dict)
@@ -162,6 +166,8 @@ class KonstruktorProject(BaseModel):
         ]
         if not self.plugin_engine:
             args.append("--no-plugin-engine")
+        if not self.tls:
+            args.append("--plain-http")
         for service, image in self.images.items():
             args += ["--image", f"{service}={image}"]
         for service in self.debug:

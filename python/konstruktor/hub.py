@@ -419,6 +419,7 @@ def testing_hub(
     user_password: str | None = None,
     mandate_keys: int = 1,
     plugin_engine: bool = False,
+    tls: bool = False,
     images: Mapping[str, str] | None = None,
     debug: Sequence[str] = (),
     mounts: Mapping[str, str | os.PathLike[str]] | None = None,
@@ -454,6 +455,10 @@ def testing_hub(
         plugin_engine: Run the plugin engine beside Kabinet: it is handed this
             machine's Docker socket and starts the apps the organization installs.
             Off for a test, which should start nothing it did not ask for.
+        tls: Serve HTTPS too, with the hub's own certificate. Off for a test: the
+            hub's address is then plain HTTP, which an app reaches without the
+            certificate the coordination server only hands it after it is in, and
+            no two test hubs contend for the one HTTPS port.
         images: Images to run instead of the ones a new hub gets, by service.
         debug: Services to run with their development server.
         mounts: Source trees to run instead of what an image holds, by service.
@@ -474,6 +479,7 @@ def testing_hub(
             user_password=user_password,
             mandate_keys=mandate_keys,
             plugin_engine=plugin_engine,
+            tls=tls,
             images=images,
             debug=debug,
             mounts=mounts,
