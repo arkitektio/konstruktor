@@ -768,15 +768,19 @@ pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:3.0.0-va
 /// is approved with is pinned to.
 pub const PLUGIN_ENGINE_IDENTIFIER: &str = "plugin_engine";
 
-/// The scopes the plugin engine is approved with: what its Kabinet and Rekuest clients ask for
-/// (the engine names none of its own, its manifest is what its clients' operations need). The
-/// services declare them, so a hub has to run releases that do; lok never makes a pin name
-/// `openid`.
-pub const PLUGIN_ENGINE_SCOPES: [&str; 8] = [
+/// The scopes the plugin engine is approved with: what its Kabinet, Lok (unlok) and Rekuest
+/// clients ask for (the engine names none of its own, its manifest is what its clients'
+/// operations need). The services declare theirs and lok makes its own, so a hub has to run
+/// releases that do; lok never makes a pin name `openid`.
+pub const PLUGIN_ENGINE_SCOPES: [&str; 12] = [
     "kabinet_approve",
     "kabinet_deploy",
     "kabinet_read",
     "kabinet_repos",
+    "lok_mandates",
+    "lok_profile",
+    "lok_read",
+    "lok_services",
     "rekuest_agent",
     "rekuest_call",
     "rekuest_read",

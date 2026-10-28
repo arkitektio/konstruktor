@@ -200,7 +200,7 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
     );
     assert_eq!(client.manifest.identifier, PLUGIN_ENGINE_IDENTIFIER);
     assert_eq!(client.manifest.version, "3.0.0");
-    // What its Kabinet and Rekuest clients ask for, and nothing generic.
+    // What its Kabinet, Lok and Rekuest clients ask for, and nothing generic.
     assert_eq!(
         client.manifest.scopes,
         [
@@ -208,6 +208,10 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
             "kabinet_deploy",
             "kabinet_read",
             "kabinet_repos",
+            "lok_mandates",
+            "lok_profile",
+            "lok_read",
+            "lok_services",
             "rekuest_agent",
             "rekuest_call",
             "rekuest_read",
