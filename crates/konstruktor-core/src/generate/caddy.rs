@@ -254,6 +254,147 @@ pub fn build_caddyfile(
     out
 }
 
+/// Where a public site's certificate comes from, as the gateway is told it.
+#[derive(Debug, Clone)]
+pub enum SiteCertificate {
+    /// Obtained by the gateway over ACME, as Caddy does for a site with a name.
+    Acme,
+    /// Files in the gateway's container.
+    Files { cert_file: String, key_file: String },
+}
+
+/// The ACME account and CA a gateway with an ACME site uses: Caddy's global options.
+#[derive(Debug, Clone)]
+pub struct Acme {
+    pub email: String,
+    pub ca: Option<String>,
+    /// The root the CA's directory is served under, in the container.
+    pub ca_root: Option<String>,
+}
+
+/// A site served at a public name.
+#[derive(Debug, Clone)]
+pub struct PublicSiteBlock {
+    /// The name: served on the container's 443, whatever the host publishes that on.
+    pub address: String,
+    pub certificate: SiteCertificate,
+}
+
+/// What a coordination server's gateway serves.
+pub struct CoordSites<'a> {
+    pub lok: Upstream<'a>,
+    /// The account frontend, at the root of Lok's origin: `(host, port)`.
+    pub kontrol: (&'a str, u16),
+    /// Lok's public site, and the plain-HTTP one when it has none (a lab's).
+    pub public: Option<PublicSiteBlock>,
+    /// The mesh control server's site: `(its site, host, port)`.
+    pub mesh: Option<(PublicSiteBlock, &'a str, u16)>,
+    pub acme: Option<Acme>,
+    /// The port the host publishes the public sites' 443 on. Not 443, plain HTTP is
+    /// redirected there by name: Caddy's own redirect knows only the port it listens on.
+    pub public_port: u16,
+    /// The self-signed certificate every other name is served with: `localhost`, the
+    /// gateway's name, the probes'.
+    pub fallback: Option<GatewayTls>,
+    pub minio_host: &'a str,
+    pub minio_port: u16,
+}
+
+/// A coordination server's Caddyfile.
+///
+/// Not the hub's: its routes get no CORS of the gateway's, since Lok answers CORS itself
+/// and only on the endpoints that take bearer tokens — echoing every origin on the ones that
+/// ride on its session would hand that session to any page. The account frontend takes the
+/// root, after everything Lok and the object store serve.
+///
+/// Plain HTTP is redirected to HTTPS, which Caddy does by itself for a site with a name;
+/// without a public site (a lab's) the routes are served over plain HTTP alone.
+pub fn build_coord_caddyfile(sites: &CoordSites<'_>) -> String {
+    let mut out = String::new();
+    out.push_str("{\n");
+    if let Some(acme) = &sites.acme {
+        let _ = write!(out, "\temail {}\n", acme.email);
+        if let Some(ca) = &acme.ca {
+            let _ = write!(out, "\tacme_ca {ca}\n");
+        }
+        if let Some(root) = &acme.ca_root {
+            let _ = write!(out, "\tacme_ca_root {root}\n");
+        }
+    }
+    out.push_str("\tservers {\n\t\tprotocols h1 h2 h2c\n\t}\n}\n\n");
+
+    out.push_str("(coord) {\n");
+    out.push_str("\theader -Server\n\n");
+    coordination_routes(&mut out, &sites.lok);
+    for bucket in &sites.lok.buckets {
+        bucket_route(&mut out, bucket, sites.minio_host, sites.minio_port);
+    }
+    let _ = write!(out, "\t@minio path /minio/*\n");
+    let _ = write!(out, "\thandle @minio {OPEN_BRACE_BARE}\n");
+    let _ = write!(
+        out,
+        "\t\treverse_proxy {}:{}\n",
+        sites.minio_host, sites.minio_port
+    );
+    out.push_str("\t}\n\n");
+    let _ = write!(out, "\t@rustfs path {RUSTFS_PREFIX}/*\n");
+    let _ = write!(out, "\thandle @rustfs {OPEN_BRACE_BARE}\n");
+    let _ = write!(out, "\t\turi strip_prefix {RUSTFS_PREFIX}\n");
+    let _ = write!(
+        out,
+        "\t\treverse_proxy {}:{}\n",
+        sites.minio_host, sites.minio_port
+    );
+    out.push_str("\t}\n\n");
+    let (kontrol_host, kontrol_port) = sites.kontrol;
+    out.push_str("\thandle {\n");
+    let _ = write!(out, "\t\treverse_proxy {kontrol_host}:{kontrol_port}\n");
+    out.push_str("\t}\n}\n");
+
+    match &sites.public {
+        Some(public) => {
+            site_block(&mut out, public, "\timport coord\n");
+            if let Some((mesh, host, port)) = &sites.mesh {
+                site_block(&mut out, mesh, &format!("\treverse_proxy {host}:{port}\n"));
+            }
+            if let Some(tls) = &sites.fallback {
+                let _ = write!(
+                    out,
+                    "\nhttps:// {{\n\ttls {} {}\n\timport coord\n}}\n",
+                    tls.cert_file, tls.key_file
+                );
+            }
+            if sites.public_port != 443 {
+                let names = std::iter::once(&public.address)
+                    .chain(sites.mesh.iter().map(|(mesh, _, _)| &mesh.address));
+                for name in names {
+                    let _ = write!(
+                        out,
+                        "\nhttp://{name} {{\n\tredir https://{name}:{}{{uri}} 308\n}}\n",
+                        sites.public_port
+                    );
+                }
+            }
+        }
+        None => out.push_str("\nhttp:// {\n\timport coord\n}\n"),
+    }
+    out
+}
+
+/// A site at a public name, with `body` inside.
+fn site_block(out: &mut String, site: &PublicSiteBlock, body: &str) {
+    let _ = write!(out, "\n{} {{\n", site.address);
+    if let SiteCertificate::Files {
+        cert_file,
+        key_file,
+    } = &site.certificate
+    {
+        let _ = write!(out, "\ttls {cert_file} {key_file}\n");
+    }
+    out.push_str(body);
+    out.push_str("}\n");
+}
+
 /// The gateway's global options: which HTTP versions its listeners speak.
 ///
 /// A hub is served over plain `http://`, where Caddy's default is HTTP/1.1 only. `h2c` is

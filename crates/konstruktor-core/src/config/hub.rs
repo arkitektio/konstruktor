@@ -465,6 +465,63 @@ pub struct GatewayBlock {
     /// ([`HubConfig::place_certificate`]); absent on a plain-HTTP hub.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate: Option<crate::tls::GatewayCertificate>,
+    /// The name the gateway is reached at on the internet, with a certificate any client
+    /// trusts. Served beside the self-signed site above, which stays for every other name
+    /// the gateway answers to (`localhost`, its name on the stack's network). Absent on a
+    /// gateway that has no such name — which generates exactly what it generated before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<PublicSite>,
+}
+
+/// A DNS name the gateway serves with a publicly valid certificate. See [`crate::tls`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicSite {
+    /// What clients put in their address bar: `coord.example.org`. Lowercase, no scheme,
+    /// no port — it is served on 443.
+    pub domain: String,
+    /// Further names the same gateway serves on the same port, each a site of its own: a
+    /// coordination server's mesh, which Tailscale clients reach at the root of a name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_names: Vec<String>,
+    pub tls: PublicTls,
+}
+
+impl PublicSite {
+    /// Every name the certificate has to cover: the domain first, then the extra names.
+    pub fn names(&self) -> Vec<String> {
+        std::iter::once(self.domain.clone())
+            .chain(self.extra_names.iter().cloned())
+            .collect()
+    }
+}
+
+/// Where a public site's certificate comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PublicTls {
+    /// Obtained and renewed by the gateway itself, over ACME (Let's Encrypt by default).
+    /// Needs the domain to resolve to this machine and its ports 80 and 443 to be reached
+    /// from the internet: the CA asks there.
+    Acme {
+        /// Where the CA writes about expiring certificates and problems with the account.
+        email: String,
+        /// Another CA's ACME directory: Let's Encrypt's staging, a step-ca, Pebble.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca: Option<String>,
+        /// A file on this machine holding the root that CA's directory is served under, when
+        /// that is not a public one (Pebble, a step-ca). Mounted read-only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_root: Option<String>,
+    },
+    /// A certificate somebody else obtains and renews (certbot, `tailscale cert`, an
+    /// institution's PKI), used where it lies: both files are mounted read-only, so a renewal
+    /// is a `konstruktor tls reload` away and never a copy.
+    Provided {
+        /// The certificate and its chain, PEM, leaf first.
+        cert_path: String,
+        /// Its private key, PEM.
+        key_path: String,
+    },
 }
 
 /// The key `generate::compose` writes the database under in `services:`.
@@ -809,6 +866,10 @@ pub struct LokUser {
     pub password: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// An administrator of Lok itself — its admin site and every organization's settings.
+    /// The first account of a coordination server is one; a self-contained hub's is not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub superuser: bool,
 }
 
 /// The organization Lok creates on boot, and registers this hub in.
@@ -939,6 +1000,12 @@ impl Default for LokOptions {
 /// What a self-contained hub's coordination server calls itself in its tokens.
 pub const LOK_ISSUER: &str = "lok";
 
+/// The port a public site is reached at: the gateway's published HTTPS port. ACME needs it
+/// to be 443; a provided certificate may be served anywhere.
+pub fn public_port(config: &HubConfig) -> u16 {
+    config.gateway.exposed_https_port.unwrap_or(443)
+}
+
 /// `scheme://host[:port]`, the port left off where it is the scheme's default — the way a
 /// browser spells an origin.
 pub(crate) fn origin(scheme: &str, host: &str, port: u16) -> String {
@@ -979,6 +1046,7 @@ fn build_lok_block(options: &LokOptions) -> LokBlock {
             password: blank(options.user_password.as_deref())
                 .unwrap_or_else(|| generate_alpha_numeric_string(40)),
             email: None,
+            superuser: false,
         }],
         mandate_keys: options
             .mandate_keys
@@ -1039,9 +1107,13 @@ pub struct HubConfig {
     /// Present only when the hub runs its own Ollama. See [`OllamaBlock`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_ollama: Option<OllamaBlock>,
-    /// Present only on a self-contained hub. See [`LokBlock`].
+    /// Present only on a self-contained hub and on a coordination server. See [`LokBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lok: Option<LokBlock>,
+    /// Present only on a coordination server: what makes this profile one, and what it runs
+    /// beside Lok. See [`crate::config::coord::CoordBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coord: Option<crate::config::coord::CoordBlock>,
     /// Present only on a hub that joined a mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshBlock>,
@@ -1284,6 +1356,11 @@ impl HubConfig {
             .into_iter()
             .flat_map(|id| self.service(id).database_names())
             .chain(self.running_lok().map(|lok| lok.db.clone()))
+            .chain(
+                self.running_coord()
+                    .and_then(|coord| coord.mesh.as_ref())
+                    .map(|mesh| mesh.db.clone()),
+            )
             .collect()
     }
 
@@ -1322,6 +1399,18 @@ impl HubConfig {
             .certificate
             .as_ref()
             .filter(|_| self.gateway.ssl)
+    }
+
+    /// The name the gateway serves with a publicly valid certificate, if it has one: only on
+    /// a gateway that serves HTTPS, like [`Self::served_certificate`].
+    pub fn public_site(&self) -> Option<&PublicSite> {
+        self.gateway.public.as_ref().filter(|_| self.gateway.ssl)
+    }
+
+    /// `https://<domain>[:port]`, the public site's origin as a browser spells it.
+    pub fn public_origin(&self) -> Option<String> {
+        self.public_site()
+            .map(|site| origin("https", &site.domain, public_port(self)))
     }
 
     /// Gives a hub whose gateway serves HTTPS the certificate for the hosts it is advertised
@@ -1383,6 +1472,16 @@ impl HubConfig {
     }
 
     /// The coordination server this stack runs, if it runs one.
+    /// What this profile runs as a coordination server, when it is one.
+    pub fn running_coord(&self) -> Option<&crate::config::coord::CoordBlock> {
+        self.coord.as_ref().filter(|_| self.running_lok().is_some())
+    }
+
+    /// Whether this profile is a coordination server rather than a hub.
+    pub fn is_coord(&self) -> bool {
+        self.coord.is_some()
+    }
+
     pub fn running_lok(&self) -> Option<&LokBlock> {
         self.lok.as_ref().filter(|lok| lok.enabled)
     }
@@ -1500,6 +1599,12 @@ impl HubConfig {
         if let Some(lok) = self.running_lok() {
             images.push((lok.host.clone(), lok.image.clone()));
         }
+        if let Some(coord) = self.running_coord() {
+            images.push((coord.kontrol.host.clone(), coord.kontrol.image.clone()));
+            if let Some(mesh) = &coord.mesh {
+                images.push((mesh.host.clone(), mesh.image.clone()));
+            }
+        }
         if let Some(reporter) = self.reporter.as_ref().filter(|r| r.enabled) {
             images.push((reporter.host.clone(), reporter.image.clone()));
         }
@@ -1554,6 +1659,16 @@ impl HubConfig {
         if let Some(lok) = self.lok.as_mut().filter(|l| l.host == service) {
             lok.image = image.to_string();
             return;
+        }
+        if let Some(coord) = self.coord.as_mut() {
+            if coord.kontrol.host == service {
+                coord.kontrol.image = image.to_string();
+                return;
+            }
+            if let Some(mesh) = coord.mesh.as_mut().filter(|m| m.host == service) {
+                mesh.image = image.to_string();
+                return;
+            }
         }
         if let Some(reporter) = self.reporter.as_mut().filter(|r| r.host == service) {
             reporter.image = image.to_string();
@@ -1760,8 +1875,6 @@ pub const DB_FOLDER_MOUNT: &str = "./db_data";
 /// The bind mount the object storage uses when the data lives in the deployment folder.
 pub const STORAGE_FOLDER_MOUNT: &str = "./rustfs_data";
 
-/// Reads a profile back into a [`StorageMode`]: any bind mount on either block means the
-/// data is in a folder, an empty `mount` on both means the volumes.
 /// `https` when the gateway terminates TLS, `http` otherwise.
 ///
 /// One helper because three places used to decide this independently — the dashboard's
@@ -1832,9 +1945,17 @@ pub fn trusted_origins(config: &HubConfig, hosts: &[String]) -> Vec<String> {
         }
     }
 
+    if let Some(site) = config.public_site() {
+        for name in site.names() {
+            push(origin("https", &name, public_port(config)));
+        }
+    }
+
     out
 }
 
+/// Reads a profile back into a [`StorageMode`]: any bind mount on either block means the
+/// data is in a folder, an empty `mount` on both means the volumes.
 pub fn storage_mode_of(config: &HubConfig) -> StorageMode {
     let bound = |mount: &Option<String>| mount.as_deref().is_some_and(|m| !m.is_empty());
     if bound(&config.db.mount) || bound(&config.minio.mount) {
@@ -2073,6 +2194,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             ssl: options.ssl,
             ssl_cert: None,
             certificate: None,
+            public: None,
         },
         global_admin: options.global_admin.clone(),
         global_admin_email: blank(options.global_admin_email.as_deref()),
@@ -2084,6 +2206,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         internal_network: generate_name(),
         local_ollama: None,
         lok: None,
+        coord: None,
         local_redis: RedisBlock {
             enabled: true,
             host: "redis".into(),

@@ -1,0 +1,397 @@
+version: '2.0'
+kind: hub
+backend: docker
+config:
+  uid: 47de1efa-9fd4-491e-adbc-20320e4b7c7b
+  coord_server: local
+  csrf_trusted_origins:
+  - https://coord.example.org
+  db:
+    enabled: true
+    github_repo: https://github.com/arkitektio/daten-server
+    host: daten
+    image: jhnnsrs/daten:latest
+    mount: null
+    postgres_password: b2x8vrjzuefflkvc8kqzdrdbcfy0ac65ytk5g9ky
+    postgres_user: billowing-darkness
+    volume_name: db_data
+  default_service_grace_period_seconds: 2
+  device_id: device-1
+  domain: coord.example.org
+  gateway:
+    auto_https: true
+    enabled: true
+    exposed_http_port: 80
+    exposed_https_port: 443
+    host: gateway
+    image: caddy:2.11.4
+    internal_port: 80
+    ssl: true
+    ssl_cert: null
+    certificate:
+      hosts:
+      - 127.0.0.1
+      - ::1
+      - gateway
+      - localhost
+      cert_pem: |
+        -----BEGIN CERTIFICATE-----
+        MIIBkDCCATWgAwIBAgIUKYtZEgaYDdk32rUk+2FGgGVX8ykwCgYIKoZIzj0EAwIw
+        FzEVMBMGA1UEAwwMQXJraXRla3QgaHViMB4XDTI1MDEwMTAwMDAwMFoXDTQ2MDEw
+        MTAwMDAwMFowFzEVMBMGA1UEAwwMQXJraXRla3QgaHViMFkwEwYHKoZIzj0CAQYI
+        KoZIzj0DAQcDQgAEPYpEibS227FkWiGxje9uI0LAEVAPETpNO/uYZWKsASUtfy6f
+        NfrU8iPvk8d+bjh1dQapOfq2lia+4DzXG99oA6NfMF0wNQYDVR0RBC4wLIcEfwAA
+        AYcQAAAAAAAAAAAAAAAAAAAAAYIHZ2F0ZXdheYIJbG9jYWxob3N0MA8GA1UdDwEB
+        /wQFAwMHgAAwEwYDVR0lBAwwCgYIKwYBBQUHAwEwCgYIKoZIzj0EAwIDSQAwRgIh
+        AL6OJw+fHcG+VC6St5ydU5+iCLq0Spzi3dV9q3TwpBV6AiEA3TzYfsU09yuuezVh
+        pUy4wXKhQXbVHAysb69Qk/cTkZw=
+        -----END CERTIFICATE-----
+      key_pem: |
+        -----BEGIN PRIVATE KEY-----
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgYHcgJfb2m93yI91X
+        Dy4EYG/6dOu6kL3D1JoFy81rC7ehRANCAAQ9ikSJtLbbsWRaIbGN724jQsARUA8R
+        Ok07+5hlYqwBJS1/Lp81+tTyI++Tx35uOHV1Bqk5+raWJr7gPNcb32gD
+        -----END PRIVATE KEY-----
+    public:
+      domain: coord.example.org
+      extra_names:
+      - mesh.coord.example.org
+      tls:
+        kind: acme
+        email: ops@example.org
+  global_admin: admin
+  global_admin_email: ops@example.org
+  global_admin_password: admin-password
+  global_description: null
+  internal_network: curly-lake
+  local_redis:
+    enabled: true
+    host: redis
+    image: redis:8.10.1
+    internal_port: 6379
+  lok:
+    enabled: true
+    host: lok
+    image: jhnnsrs/lok:8
+    internal_port: 80
+    db: lok_main
+    media_bucket:
+      kind: local
+      bucket_name: lokmedia
+    secret_key: oh0y6&@b76xi+5%hpzu@hl)%*$%1&c&9ep7p-((1h4clmxar6w
+    key_pair:
+      key_type: RS256
+      public_key: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5kyb2uUDdRTcfDUctvFf
+        fw5eoikgPO/Bp4k/H9Rbp4FSl0nIdhU6hYAJLGDKG7Umv1fGmjd8t+ez143Bx9BA
+        et7QzIgMV08z+ZmZfym+FKBNdiz6ISuqXFTanzXt2DNKjbdZOyjSzIsuSIG19lep
+        9UCggMkGSESBzCkfesQ+9Ug2Dl+XlPIod/VGxWGzcsiqeqUobxUeiNArfFbygrbL
+        f6OeMfsHN6KBtfHiCdMGLR+HhjFcaiGmxj5TS3mQFamovFFSktjkhZdYT6CjXHpC
+        28E4KPBiKNz3Mu5Q2B/yDfdKQhhfdPaCVcQ4iI31lslaOeJay6DyQDpQBvRNo9nX
+        pwIDAQAB
+        -----END PUBLIC KEY-----
+      private_key: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDmTJva5QN1FNx8
+        NRy28V9/Dl6iKSA878GniT8f1FungVKXSch2FTqFgAksYMobtSa/V8aaN3y357PX
+        jcHH0EB63tDMiAxXTzP5mZl/Kb4UoE12LPohK6pcVNqfNe3YM0qNt1k7KNLMiy5I
+        gbX2V6n1QKCAyQZIRIHMKR96xD71SDYOX5eU8ih39UbFYbNyyKp6pShvFR6I0Ct8
+        VvKCtst/o54x+wc3ooG18eIJ0wYtH4eGMVxqIabGPlNLeZAVqai8UVKS2OSFl1hP
+        oKNcekLbwTgo8GIo3Pcy7lDYH/IN90pCGF909oJVxDiIjfWWyVo54lrLoPJAOlAG
+        9E2j2denAgMBAAECggEBAMGbD79Cndh01DLbF6u4WVbgBrB+sGpqCLxGhjnE9dRo
+        xL0IuyyCBjOrAos7R01pygw7x2toUEHu2OLSemD3cu2YmaIIkY9ot0ITXdZoijKe
+        3OAHSbRPGCYM88m6tZv26qsewzYXyLdKHnu4B/fzlJ7oWMZLuStR5Gh0/dDgYCkk
+        loC6nXdmXbfEbbyDBlDPjcHmpQDAci4agRR0iVlJ5vCtBIg8jgjImpOq+8dtFlWG
+        ZM4l+VWdrd6GDiM8Rslmk4hXvC3nwkDEtkliGY+tmbV9EbIFQ10NofpWvs+LddmA
+        cLjMYsmpZKJlHcljRZY41nfL508zDsYAE+dzY6W7V5kCgYEA9OSQ03dPRzNvI5XY
+        KadMoZD+uvY5K5DAHSjgZB1znKqn6R8Spl55k+tYIqdWrSQO4FsWSswJjaGWjuRn
+        M/4BatgHLFEVHSfVEbUPsKNUjLC1bXlwCP/QPxqnKJ3Lc/eWG5O4KkOyDIl3iDoU
+        NOYnsAJb27EdqD+XEXRQB7cEBuUCgYEA8L6ZFXxM8lkAISVp4eADcOizSiW9ej/2
+        5OqbXLrO72xBaddDvKcTpDjH6KAUo3qmhmOqCQvwE1MmFZvGd9Cm7CaLClGsuzaQ
+        zwZwIUl7PQAc/gd4Lrx0tUUXHIbNHBVM3xI70XM1wdbd7cODCVv3HagfbUnQDenW
+        gCkfXReVT5sCgYEAm3VZJpSPpBBXlgxya4bDk7Das87IXgqGmjwvrf4wPRzseIV8
+        Lla88RSuH1mBIWpJc0z/ar35tooEbHM7vHqbZbr7WruiHp8BmDsLWcNlUeZ/VZ6I
+        a34RMW32/UamN9jM1nbAqzvMFD9TvQu5dhdAzG/C5kSaIgs0GCVxBGS+zq0CgYBy
+        OYy6xAJiTlYgY/cMA9S+IrrGqIdxVJ4ZWTMj2ULMGKokxM1P2loYZhR7zFBejJgs
+        VWdc6XwcPyxnvkR5ntdEXrlDySLSpP4qLBzRvmKpu78FzJd6XVJmm4RutYrmEzko
+        8ibNpwNPmFouMMCglTD3skhO+2Gq6FMs9dX6vnDKlwKBgCZKusgsPRI/x9NlrP11
+        bBiYGGbCqcuQb2mAQJPNFHkCxYfv4VXS3N6Z9pYhWbxyQk0CHNGw1whbPtXYLHWl
+        b5NkmsZKF9GqRRWQXQByjOE5QugUpTAdqJMLSjrw8fNhPQtfizkH9v0VbNGtbDd/
+        WCA0QCisUp9Ujwkl5t+ICJ8S
+        -----END PRIVATE KEY-----
+    key_id: lok-key-1
+    issuer: https://coord.example.org
+    hub_identifier: Example Lab
+    advertised_hosts:
+    - host: coord.example.org
+      kind: verified-fqdn
+    organization:
+      id: 1
+      identifier: example-lab
+      name: Example Lab
+    users:
+    - username: admin
+      password: admin-password
+      email: ops@example.org
+      superuser: true
+    mandate_keys: []
+  coord:
+    name: Example Lab
+    origin: https://coord.example.org
+    kontrol:
+      host: kontrol
+      image: jhnnsrs/kontrol:4
+      internal_port: 80
+    mesh:
+      host: ionskale
+      image: jhnnsrs/ionskale:latest
+      internal_port: 8080
+      domain: mesh.coord.example.org
+      stun_port: 3478
+      dns_suffix: ts.coord.example.org
+      db: ionskale_main
+      service_token: svc_1mmx75ck9x4qpehab4jex7q23xepfcwhqqh2xvdnztbzoqao
+      client_id: ionskale
+      client_secret: qamb574d5nivl8jsjw4gp1tplmlc33nzer0mhrv67n1cd9s7
+    signup: closed
+  minio:
+    access_key: kkh7ql7rlof273f7fvanfplh16squg8uu86cuteu
+    console_port: 9001
+    enabled: true
+    exposed_console_port: null
+    host: rustfs
+    image: rustfs/rustfs:latest
+    init_container_host: rustfs_init
+    init_container_image: jhnnsrs/init:latest
+    internal_port: 9000
+    mount: null
+    root_password: czz9cpl1c82d4wgq15owtgun2pyvgk0lr4macp4d
+    root_user: muddy-glade
+    secret_key: lcaw0s8k3dqvy4h1n7x5ahmv24xykrxzyaejyo9g
+    volume_name: rustfs_data
+  rekuest_server: ''
+  services:
+    alpaka:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: alpaka
+      image: jhnnsrs/alpaka:6
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: j9$jeqa(*rcpciy29(o)_omhp0mx5g2ee^*tbml)6y=$1ljmyh
+      ollama_config:
+        kind: local
+    bank:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: bank
+      image: jhnnsrs/bank:6
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: wu&-jtq-^iwcnpl#02ouv#cuq+=*r46b&9=ocdms0z)z0sljum
+    dokuments:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: dokuments
+      image: jhnnsrs/dokuments:3
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: mi*_vai+j!bt1_(&monnr@u(%-kuvn%4-!&=hm36%8%yr%qvm3
+    elektro:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: elektro
+      image: jhnnsrs/elektro:6
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: 0dco-_i@#__cz1yo=9&3%m8$(t*n0u&srb$6c)!=5!pgd+p5gy
+    fluss:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: fluss
+      image: jhnnsrs/fluss:6
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: d*to^r6234&ywf#+j90o7k^=iuieb(^m)o7orv&xu8mt&)f@-7
+    kabinet:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: kabinet
+      image: jhnnsrs/kabinet:7
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: az(95$$p)7)xqxw2t&jd&g3rtntvcz-mhkw@lmp(@op$im^+kg
+      ensured_repositories:
+      - jhnnsrs/ome:main
+      - jhnnsrs/renderer:main
+    kraph:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: kraph
+      image: jhnnsrs/kraph:3
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: 7p50olb6aq%5d30u0_076f)+=tlk$4s-khmlr3ip$j%+dry9p0
+    kuvert:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: kuvert
+      image: jhnnsrs/kuvert:6
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: '@=o&p9)joso8el(77+y991lcm29@azb4jz)#*sz8bmx$sc3z=@'
+    lokate:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: lokate
+      image: jhnnsrs/lokate:4
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: j^2x**ljvw(#j_*-_we36m-_0hlgu(znx^w4jtdz5eyttxp(n1
+    lovekit:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: lovekit
+      image: jhnnsrs/lovekit:5
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: 7*-exc##mr9719ptj8iobc+r8h5^7%+h6_#=7%q0x8!9s&c=c^
+    mikro:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: mikro
+      image: jhnnsrs/mikro:9
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: h9d0$llxb(j4mai!*_g*5dcn^)ys5k#f^zx+1@obau*w+r0to%
+    rekuest:
+      admin_config:
+        kind: global
+      allowed_hosts:
+      - '*'
+      auth_config:
+        kind: local
+      debug: false
+      enabled: false
+      host: rekuest
+      image: jhnnsrs/rekuest:9
+      internal_port: 80
+      mount_github: false
+      path_config:
+        kind: local
+      redis_config:
+        kind: local
+      secret_key: j@_j7m0a7)dri5zap^8q26e4+z)xu(p&$61y+nhby*45#gnx4)
+      provenance_issuer: rekuest
+      provenance_kid: rekuest-prov-1

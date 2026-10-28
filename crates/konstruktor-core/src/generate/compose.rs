@@ -165,7 +165,7 @@ fn compose_service(
 }
 
 /// One entry of a `depends_on` map: wait for `service` to be in `condition`.
-fn after<'a>(service: &'a str, condition: &str) -> (&'a str, Value) {
+pub(crate) fn after<'a>(service: &'a str, condition: &str) -> (&'a str, Value) {
     (service, map(vec![("condition", s(condition))]))
 }
 
@@ -269,6 +269,18 @@ pub fn companions(config: &HubConfig, service: &str) -> Vec<String> {
 }
 
 /// The service `companion` moves with, if it is one: Rekuest, for takt.
+/// Compose services that run another's image, and whose: `(follower, leader)`. Not in the
+/// stack's images of their own, they are pinned to whatever build the leader is.
+pub fn image_followers(config: &HubConfig) -> Vec<(String, String)> {
+    match (config.running_coord(), config.running_lok()) {
+        (Some(coord), Some(lok)) if coord.mesh.is_some() => vec![(
+            crate::generate::coord::RECONCILER_HOST.to_string(),
+            lok.host.clone(),
+        )],
+        _ => Vec::new(),
+    }
+}
+
 pub fn companion_of(config: &HubConfig, companion: &str) -> Option<String> {
     (config.takt_host().as_deref() == Some(companion)).then(|| config.rekuest().host.clone())
 }
@@ -337,7 +349,54 @@ fn gateway_volumes(config: &HubConfig) -> Value {
             crate::tls::CONTAINER_DIR
         )));
     }
+    if obtains_certificates(config) {
+        volumes.push(s(&format!("{CADDY_DATA_VOLUME}:/data")));
+    }
     list(volumes)
+}
+
+/// The volume a gateway that obtains its certificates keeps them in, with its ACME account:
+/// without it every recreate would ask the CA again, and Let's Encrypt limits how often.
+pub const CADDY_DATA_VOLUME: &str = "caddy_data";
+
+/// Whether the gateway obtains a certificate itself, over ACME.
+pub fn obtains_certificates(config: &HubConfig) -> bool {
+    config
+        .public_site()
+        .is_some_and(|site| matches!(site.tls, crate::config::hub::PublicTls::Acme { .. }))
+}
+
+/// Every name the gateway answers to on the stack's networks: its own, and the public names
+/// it serves — so a container beside it (ionskale fetching Lok's OpenID configuration)
+/// reaches them here, with the certificate they are served with, rather than through an
+/// address the host may not route back to itself.
+pub fn gateway_aliases(config: &HubConfig) -> Vec<String> {
+    std::iter::once(config.gateway.host.clone())
+        .chain(
+            config
+                .public_site()
+                .into_iter()
+                .flat_map(|site| site.names()),
+        )
+        .collect()
+}
+
+/// The gateway's networks: a plain list, unless it has public names to answer to there.
+fn gateway_networks(config: &HubConfig) -> Value {
+    let networks = [config.internal_network.as_str(), "default"];
+    if config.public_site().is_none() {
+        return list(networks.iter().map(|n| s(n)).collect());
+    }
+    // Its own name it has as the service it is; the public ones are aliases.
+    let aliases: Vec<Value> = gateway_aliases(config)
+        .iter()
+        .skip(1)
+        .map(|a| s(a))
+        .collect();
+    map(networks
+        .iter()
+        .map(|network| (*network, map(vec![("aliases", list(aliases.clone()))])))
+        .collect())
 }
 
 fn publishes_nothing(config: &HubConfig) -> bool {
@@ -472,6 +531,12 @@ pub fn build_compose(
         .iter()
         .flat_map(|id| config.service(*id).database_names())
         .chain(lok.map(|lok| lok.db.clone()))
+        .chain(
+            config
+                .running_coord()
+                .and_then(|coord| coord.mesh.as_ref())
+                .map(|mesh| mesh.db.clone()),
+        )
         .collect();
 
     if !databases.is_empty() {
@@ -600,6 +665,34 @@ pub fn build_compose(
         );
     }
 
+    // --- what a coordination server runs beside Lok ---------------------------
+    if let (Some(coord), Some(lok)) = (config.running_coord(), lok) {
+        use crate::generate::coord;
+        insert(
+            &mut services,
+            &coord.kontrol.host,
+            coord::kontrol_service(coord),
+        );
+        if let Some(mesh) = &coord.mesh {
+            insert(
+                &mut services,
+                &mesh.host,
+                coord::ionskale_service(config, coord, mesh),
+            );
+            // Only what Lok's image names is run in it.
+            if let Some(job) = said
+                .get(&lok.host)
+                .and_then(|said| said.jobs.get(coord::RECONCILE_JOB))
+            {
+                insert(
+                    &mut services,
+                    coord::RECONCILER_HOST,
+                    coord::reconciler_service(config, lok, &job.command),
+                );
+            }
+        }
+    }
+
     // --- the services themselves ---------------------------------------------
     for id in enabled {
         let service = config.service(*id);
@@ -703,7 +796,12 @@ pub fn build_compose(
         // A member of the sidecar's namespace has no name of its own on the network, so
         // the sidecar answers to the gateway's too: plugin apps and services beside the
         // stack reach Caddy as `gateway` whether or not the hub is on a mesh.
-        let gateway_alias = || map(vec![("aliases", list(vec![s(&config.gateway.host)]))]);
+        let gateway_alias = || {
+            map(vec![(
+                "aliases",
+                list(gateway_aliases(config).iter().map(|a| s(a)).collect()),
+            )])
+        };
         let networks = map(vec![
             (config.internal_network.as_str(), gateway_alias()),
             ("default", gateway_alias()),
@@ -762,10 +860,7 @@ pub fn build_compose(
             map(vec![
                 ("image", s(&config.gateway.image)),
                 ("ports", list(ports)),
-                (
-                    "networks",
-                    list(vec![s(&config.internal_network), s("default")]),
-                ),
+                ("networks", gateway_networks(config)),
                 ("volumes", gateway_volumes(config)),
             ]),
         );
@@ -843,6 +938,17 @@ pub fn build_compose(
     }
     if enabled.contains(&ServiceId::Rekuest) && config.takt_image().is_some() {
         insert(&mut volumes, TAKT_SOCKET_VOLUME, empty_map());
+    }
+    if obtains_certificates(config) {
+        insert(&mut volumes, CADDY_DATA_VOLUME, empty_map());
+    }
+
+    // A coordination server is a server: everything it runs comes back on its own.
+    if config.running_coord().is_some() {
+        crate::generate::coord::keep_running(
+            &mut services,
+            &[config.minio.init_container_host.as_str()],
+        );
     }
 
     map(vec![

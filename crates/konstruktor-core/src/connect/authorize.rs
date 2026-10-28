@@ -243,7 +243,7 @@ pub async fn start(
         },
     )?;
 
-    let response = reqwest::Client::new()
+    let response = crate::trust::client()
         .post(&endpoint)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
@@ -291,7 +291,7 @@ pub async fn poll_once(grant: &HubGrant) -> Result<PollStatus, HubAuthorizationE
         ("client_id", grant.client_id.as_str()),
     ];
 
-    let response = reqwest::Client::new()
+    let response = crate::trust::client()
         .post(&grant.token_endpoint)
         .header("Accept", "application/json")
         .form(&form)

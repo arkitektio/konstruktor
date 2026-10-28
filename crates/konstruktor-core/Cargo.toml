@@ -27,6 +27,11 @@ tokio-util.workspace = true
 # `join_all`: the images of a hub are asked, fetched and prepared side by side.
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# Checking a certificate somebody provides the way a client will: its chain, its names, its
+# dates, its key. Already in the tree through reqwest.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-native-certs = "0.8"
+webpki-roots = "1"
 
 [dev-dependencies]
 wiremock = "0.6"

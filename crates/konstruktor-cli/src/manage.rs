@@ -206,10 +206,15 @@ impl Target {
     /// The other two kinds are refused by name rather than by a missing file, and the
     /// refusal says what *does* work on them — the alternative is a user concluding their
     /// engine is corrupt.
+    /// A deployment kept by its profile: a hub, or a coordination server — which is built,
+    /// pinned, backed up and updated as a hub of no services is.
     pub fn resolve(&self) -> Result<PathBuf> {
         let resolved = self.resolve_any()?;
         match resolved.kind {
             profile::DeploymentKind::Hub => Ok(resolved.dir),
+            profile::DeploymentKind::Coord if profile::holds_a_hub(&resolved.dir) => {
+                Ok(resolved.dir)
+            }
             other => bail!(
                 "{} is a {}, which has no hub profile. `up`, `stop`, `down`, `pull`, \
                  `ps`, `logs`, `restart`, `status`, `report`, `destroy`, `purge` and \
@@ -218,6 +223,20 @@ impl Target {
                 other.label()
             ),
         }
+    }
+
+    /// A hub, and nothing else: for what only a hub has — services, a coordination server
+    /// it is connected to, source checkouts.
+    pub fn resolve_hub(&self) -> Result<PathBuf> {
+        let dir = self.resolve()?;
+        if profile::profile_is_a_coord(&dir) {
+            bail!(
+                "{} is a coordination server: it runs no services and connects to nobody. \
+                 This command is for hubs.",
+                dir.display()
+            );
+        }
+        Ok(dir)
     }
 }
 
@@ -461,7 +480,7 @@ async fn apply_remedy(probe: &docker::DockerProbe, yes: bool) -> Result<()> {
 /// one it switches. The switch refuses over uncommitted work, and says so per service
 /// rather than stopping at the first — a partial answer here is worse than a full report.
 pub fn checkout(args: &CheckoutArgs) -> Result<()> {
-    let dir = Target::named(args.in_deployment.clone()).resolve()?;
+    let dir = Target::named(args.in_deployment.clone()).resolve_hub()?;
     let profile = profile::read_profile(&dir)?;
     let checkouts = git::checkouts(&dir, &profile.config);
 
@@ -654,6 +673,11 @@ async fn other_status(resolved: &Resolved) -> Result<()> {
         };
         rows.push(("mesh".into(), mesh));
     }
+    if resolved.kind == profile::DeploymentKind::Coord {
+        if let Ok(profile) = profile::read_profile(&resolved.dir) {
+            rows.extend(coord_rows(&resolved.dir, &profile.config));
+        }
+    }
     if resolved.kind == profile::DeploymentKind::App {
         if let Ok(record) = konstruktor_core::apps::read_app_record(&resolved.dir) {
             rows.push((
@@ -676,6 +700,65 @@ async fn other_status(resolved: &Resolved) -> Result<()> {
     report_containers(&resolved.dir).await;
     ui::say("");
     Ok(())
+}
+
+/// What `status` says of a coordination server beyond what it says of any deployment: where
+/// it is reached, what its certificate is, its mesh, and who may sign up.
+fn coord_rows(
+    dir: &std::path::Path,
+    config: &konstruktor_core::config::hub::HubConfig,
+) -> Vec<(String, String)> {
+    use konstruktor_core::config::hub::PublicTls;
+    let Some(coord) = config.running_coord() else {
+        return Vec::new();
+    };
+    let mut rows = vec![("address".to_string(), coord.origin.clone())];
+    rows.push((
+        "certificate".into(),
+        match config.public_site().map(|site| &site.tls) {
+            None => "none — plain HTTP".into(),
+            Some(PublicTls::Acme { ca, .. }) => match ca {
+                Some(ca) => format!("obtained by the gateway from {ca}"),
+                None => "obtained by the gateway from Let's Encrypt".into(),
+            },
+            Some(PublicTls::Provided { cert_path, .. }) => {
+                match konstruktor_core::tls::installed_certificate(dir, config) {
+                    Some(Ok(info)) => {
+                        let days = info.days_left(konstruktor_core::tls::now_seconds());
+                        let warning = if info.expires_soon(konstruktor_core::tls::now_seconds()) {
+                            " — renew it, then `konstruktor tls reload`"
+                        } else {
+                            ""
+                        };
+                        format!("{cert_path}, {days} days left{warning}")
+                    }
+                    Some(Err(why)) => format!("{cert_path} — {why}"),
+                    None => cert_path.clone(),
+                }
+            }
+        },
+    ));
+    if let Some(mesh) = &coord.mesh {
+        rows.push(("mesh".into(), mesh.url()));
+    }
+    rows.push((
+        "signup".into(),
+        if coord.signup.is_open() {
+            "open to anybody".into()
+        } else {
+            // What it was made as. Whether Lok does as it is told is a question for it.
+            "meant closed — `konstruktor check` says whether Lok keeps it so".into()
+        },
+    ));
+    rows.push((
+        "admin".into(),
+        format!(
+            "{}/lok/admin/ as {}",
+            coord.origin.trim_end_matches('/'),
+            config.global_admin
+        ),
+    ));
+    rows
 }
 
 /// The container readout both kinds of status end with.
@@ -993,7 +1076,12 @@ pub async fn wait(args: WaitArgs, json: bool) -> Result<()> {
         ui::end_progress();
         for endpoint in &endpoints {
             let line = format!("{} — {}", endpoint.name, endpoint.url);
-            if endpoint.ready {
+            if endpoint.warning {
+                ui::warn(&format!(
+                    "{line}: {}",
+                    endpoint.detail.as_deref().unwrap_or_default()
+                ));
+            } else if endpoint.ready {
                 ui::ok(&line);
             } else {
                 ui::warn(&match (&endpoint.detail, endpoint.status) {
@@ -1022,6 +1110,9 @@ pub async fn gateway(target: &Target, json: bool) -> Result<()> {
     // A hub, by name: the addresses come from its profile, which nothing else has.
     let dir = target.resolve()?;
     let profile = konstruktor_core::profile::read_profile(&dir)?;
+    if profile.config.is_coord() {
+        return check_coord(&profile.config, json).await;
+    }
     let aliases = konstruktor_core::gateway_check::check(&dir, &profile.config).await;
 
     if json {
@@ -1079,6 +1170,36 @@ pub async fn gateway(target: &Target, json: bool) -> Result<()> {
         .any(|a| a.services.iter().any(|s| !s.healthy));
     if broken {
         bail!("some services do not answer on an address this hub advertises");
+    }
+    Ok(())
+}
+
+/// `konstruktor check` on a coordination server: every endpoint, asked the way a client
+/// elsewhere asks — its names as DNS resolves them, its certificate verified.
+async fn check_coord(config: &konstruktor_core::config::hub::HubConfig, json: bool) -> Result<()> {
+    let endpoints = konstruktor_core::ready::check(config)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    if json {
+        ui::emit_json(&endpoints)?;
+    } else {
+        ui::say("");
+        for endpoint in &endpoints {
+            let line = format!("{} — {}", endpoint.name, endpoint.url);
+            if endpoint.ready {
+                ui::ok(&line);
+            } else {
+                ui::fail(&match (&endpoint.detail, endpoint.status) {
+                    (Some(detail), _) => format!("{line}: {detail}"),
+                    (None, Some(status)) => format!("{line} answered {status}"),
+                    (None, None) => format!("{line} did not answer"),
+                });
+            }
+        }
+        ui::say("");
+    }
+    if endpoints.iter().any(|e| !e.ready) {
+        bail!("the coordination server does not answer everywhere a client asks");
     }
     Ok(())
 }

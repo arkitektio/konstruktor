@@ -70,7 +70,7 @@ pub async fn run(command: ConfigCommand) -> Result<()> {
 
 /// The hub's folder, once `service` is known to be one of its services.
 fn hub_with(target: Option<String>, service: &str) -> Result<std::path::PathBuf> {
-    let dir = Target::named(target).resolve()?;
+    let dir = Target::named(target).resolve_hub()?;
     let config = profile::read_profile(&dir)?.config;
     let runs = config
         .enabled_services()

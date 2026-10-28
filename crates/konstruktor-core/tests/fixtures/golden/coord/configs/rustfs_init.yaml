@@ -1,0 +1,8 @@
+buckets:
+- name: lokmedia
+users:
+- access_key: kkh7ql7rlof273f7fvanfplh16squg8uu86cuteu
+  name: Default User
+  policies:
+  - readwrite
+  secret_key: lcaw0s8k3dqvy4h1n7x5ahmv24xykrxzyaejyo9g

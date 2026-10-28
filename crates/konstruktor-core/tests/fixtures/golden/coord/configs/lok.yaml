@@ -1,0 +1,134 @@
+django:
+  admin:
+    email: ops@example.org
+    password: admin-password
+    username: admin
+  allow_insecure_transport: false
+  cors_allow_all_origins: true
+  csrf_trusted_origins:
+  - https://coord.example.org
+  debug: false
+  force_script_name: lok
+  hosts:
+  - coord.example.org
+  - gateway
+  - lok
+  - localhost
+  secret_key: oh0y6&@b76xi+5%hpzu@hl)%*$%1&c&9ep7p-((1h4clmxar6w
+  trusted_proxy_depth: 1
+postgres:
+  db_name: lok_main
+  engine: django.db.backends.postgresql
+  host: db
+  password: b2x8vrjzuefflkvc8kqzdrdbcfy0ac65ytk5g9ky
+  port: 5432
+  username: billowing-darkness
+redis:
+  host: redis
+  port: 6379
+authentikate:
+  audience: '*'
+  issuers:
+  - iss: https://coord.example.org
+    kid: lok-key-1
+    kind: rsa
+    public_key: |
+      -----BEGIN PUBLIC KEY-----
+      MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5kyb2uUDdRTcfDUctvFf
+      fw5eoikgPO/Bp4k/H9Rbp4FSl0nIdhU6hYAJLGDKG7Umv1fGmjd8t+ez143Bx9BA
+      et7QzIgMV08z+ZmZfym+FKBNdiz6ISuqXFTanzXt2DNKjbdZOyjSzIsuSIG19lep
+      9UCggMkGSESBzCkfesQ+9Ug2Dl+XlPIod/VGxWGzcsiqeqUobxUeiNArfFbygrbL
+      f6OeMfsHN6KBtfHiCdMGLR+HhjFcaiGmxj5TS3mQFamovFFSktjkhZdYT6CjXHpC
+      28E4KPBiKNz3Mu5Q2B/yDfdKQhhfdPaCVcQ4iI31lslaOeJay6DyQDpQBvRNo9nX
+      pwIDAQAB
+      -----END PUBLIC KEY-----
+  static_tokens: {}
+datalayer:
+  access_key: kkh7ql7rlof273f7fvanfplh16squg8uu86cuteu
+  secret_key: lcaw0s8k3dqvy4h1n7x5ahmv24xykrxzyaejyo9g
+  host: rustfs
+  port: 9000
+  protocol: http
+  media:
+    bucket: lokmedia
+deployment:
+  name: Example Lab
+  configure_url: https://coord.example.org/configure/{code}
+  hub_configure_url: https://coord.example.org/hubconfigure/{code}
+  mesh_configure_url: https://coord.example.org/meshconfigure/{code}
+lok:
+  key_id: lok-key-1
+  public_key: |
+    -----BEGIN PUBLIC KEY-----
+    MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5kyb2uUDdRTcfDUctvFf
+    fw5eoikgPO/Bp4k/H9Rbp4FSl0nIdhU6hYAJLGDKG7Umv1fGmjd8t+ez143Bx9BA
+    et7QzIgMV08z+ZmZfym+FKBNdiz6ISuqXFTanzXt2DNKjbdZOyjSzIsuSIG19lep
+    9UCggMkGSESBzCkfesQ+9Ug2Dl+XlPIod/VGxWGzcsiqeqUobxUeiNArfFbygrbL
+    f6OeMfsHN6KBtfHiCdMGLR+HhjFcaiGmxj5TS3mQFamovFFSktjkhZdYT6CjXHpC
+    28E4KPBiKNz3Mu5Q2B/yDfdKQhhfdPaCVcQ4iI31lslaOeJay6DyQDpQBvRNo9nX
+    pwIDAQAB
+    -----END PUBLIC KEY-----
+private_key: |
+  -----BEGIN PRIVATE KEY-----
+  MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDmTJva5QN1FNx8
+  NRy28V9/Dl6iKSA878GniT8f1FungVKXSch2FTqFgAksYMobtSa/V8aaN3y357PX
+  jcHH0EB63tDMiAxXTzP5mZl/Kb4UoE12LPohK6pcVNqfNe3YM0qNt1k7KNLMiy5I
+  gbX2V6n1QKCAyQZIRIHMKR96xD71SDYOX5eU8ih39UbFYbNyyKp6pShvFR6I0Ct8
+  VvKCtst/o54x+wc3ooG18eIJ0wYtH4eGMVxqIabGPlNLeZAVqai8UVKS2OSFl1hP
+  oKNcekLbwTgo8GIo3Pcy7lDYH/IN90pCGF909oJVxDiIjfWWyVo54lrLoPJAOlAG
+  9E2j2denAgMBAAECggEBAMGbD79Cndh01DLbF6u4WVbgBrB+sGpqCLxGhjnE9dRo
+  xL0IuyyCBjOrAos7R01pygw7x2toUEHu2OLSemD3cu2YmaIIkY9ot0ITXdZoijKe
+  3OAHSbRPGCYM88m6tZv26qsewzYXyLdKHnu4B/fzlJ7oWMZLuStR5Gh0/dDgYCkk
+  loC6nXdmXbfEbbyDBlDPjcHmpQDAci4agRR0iVlJ5vCtBIg8jgjImpOq+8dtFlWG
+  ZM4l+VWdrd6GDiM8Rslmk4hXvC3nwkDEtkliGY+tmbV9EbIFQ10NofpWvs+LddmA
+  cLjMYsmpZKJlHcljRZY41nfL508zDsYAE+dzY6W7V5kCgYEA9OSQ03dPRzNvI5XY
+  KadMoZD+uvY5K5DAHSjgZB1znKqn6R8Spl55k+tYIqdWrSQO4FsWSswJjaGWjuRn
+  M/4BatgHLFEVHSfVEbUPsKNUjLC1bXlwCP/QPxqnKJ3Lc/eWG5O4KkOyDIl3iDoU
+  NOYnsAJb27EdqD+XEXRQB7cEBuUCgYEA8L6ZFXxM8lkAISVp4eADcOizSiW9ej/2
+  5OqbXLrO72xBaddDvKcTpDjH6KAUo3qmhmOqCQvwE1MmFZvGd9Cm7CaLClGsuzaQ
+  zwZwIUl7PQAc/gd4Lrx0tUUXHIbNHBVM3xI70XM1wdbd7cODCVv3HagfbUnQDenW
+  gCkfXReVT5sCgYEAm3VZJpSPpBBXlgxya4bDk7Das87IXgqGmjwvrf4wPRzseIV8
+  Lla88RSuH1mBIWpJc0z/ar35tooEbHM7vHqbZbr7WruiHp8BmDsLWcNlUeZ/VZ6I
+  a34RMW32/UamN9jM1nbAqzvMFD9TvQu5dhdAzG/C5kSaIgs0GCVxBGS+zq0CgYBy
+  OYy6xAJiTlYgY/cMA9S+IrrGqIdxVJ4ZWTMj2ULMGKokxM1P2loYZhR7zFBejJgs
+  VWdc6XwcPyxnvkR5ntdEXrlDySLSpP4qLBzRvmKpu78FzJd6XVJmm4RutYrmEzko
+  8ibNpwNPmFouMMCglTD3skhO+2Gq6FMs9dX6vnDKlwKBgCZKusgsPRI/x9NlrP11
+  bBiYGGbCqcuQb2mAQJPNFHkCxYfv4VXS3N6Z9pYhWbxyQk0CHNGw1whbPtXYLHWl
+  b5NkmsZKF9GqRRWQXQByjOE5QugUpTAdqJMLSjrw8fNhPQtfizkH9v0VbNGtbDd/
+  WCA0QCisUp9Ujwkl5t+ICJ8S
+  -----END PRIVATE KEY-----
+oidc_issuer: https://coord.example.org
+discovery_follows_request: false
+kontrol_frontend_url: https://coord.example.org
+account:
+  allow_signup: false
+users:
+- username: admin
+  password: admin-password
+  email: ops@example.org
+  is_superuser: true
+  is_staff: true
+organizations:
+- id: 1
+  name: Example Lab
+  identifier: example-lab
+  owner: admin
+  auto_configure: false
+memberships:
+- user: admin
+  organization: example-lab
+  roles:
+  - admin
+ionscale:
+  server_url: http://ionskale:8080
+  coord_url: https://mesh.coord.example.org
+  service_token: svc_1mmx75ck9x4qpehab4jex7q23xepfcwhqqh2xvdnztbzoqao
+  magic_dns_suffix: ts.coord.example.org
+  auto_create_mesh: true
+openid_apps:
+- client_name: Mesh
+  client_id: ionskale
+  client_secret: qamb574d5nivl8jsjw4gp1tplmlc33nzer0mhrv67n1cd9s7
+  redirect_uris:
+  - https://mesh.coord.example.org/a/callback
+  scope: openid profile email

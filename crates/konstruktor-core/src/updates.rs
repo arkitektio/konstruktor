@@ -547,8 +547,15 @@ pub fn is_infrastructure(config: &HubConfig, service: &str) -> bool {
     let reporter = config.reporter.as_ref().is_some_and(|r| r.host == service);
     // takt is Rekuest's other half: it moves with Rekuest, at Rekuest's risk.
     let companion = crate::generate::compose::companion_of(config, service).is_some();
+    // On a coordination server Lok is what it serves, and kontrol is Lok's own frontend:
+    // they move as a hub's services do, migrating their own data. The mesh's state is
+    // ionskale's, and stays behind `--infra` like the database.
+    let coordination = config.running_coord().is_some_and(|coord| {
+        coord.kontrol.host == service || config.running_lok().is_some_and(|lok| lok.host == service)
+    });
     !reporter
         && !companion
+        && !coordination
         && !config
             .enabled_services()
             .into_iter()

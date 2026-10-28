@@ -754,7 +754,7 @@ async fn seeds(json: bool) -> Result<std::collections::BTreeMap<String, String>>
 }
 
 /// `KONSTRUKTOR_IMAGES`: the images every hub created while it is set runs, by service.
-fn images_of_the_environment() -> Result<std::collections::BTreeMap<String, String>> {
+pub(crate) fn images_of_the_environment() -> Result<std::collections::BTreeMap<String, String>> {
     parse_images(
         &std::env::var("KONSTRUKTOR_IMAGES")
             .unwrap_or_default()
@@ -1157,7 +1157,7 @@ fn parse_from_source(spec: &str) -> Result<FromSource> {
 
 /// `["rekuest=jhnnsrs/rekuest:1.2.3"]` → `{rekuest: jhnnsrs/rekuest:1.2.3}`. Split on the
 /// first `=` only: an image reference may carry one of its own, in a digest.
-fn parse_images(specs: &[String]) -> Result<std::collections::BTreeMap<String, String>> {
+pub(crate) fn parse_images(specs: &[String]) -> Result<std::collections::BTreeMap<String, String>> {
     specs
         .iter()
         .map(|spec| match spec.split_once('=') {

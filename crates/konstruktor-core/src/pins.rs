@@ -81,12 +81,20 @@ pub fn apply(files: &mut GeneratedFiles, config: &HubConfig, pins: &BTreeMap<Str
     else {
         return;
     };
+    // A container that runs another's image runs its build too: Lok's reconciler.
+    let followers = crate::generate::compose::image_followers(config);
     for (service, reference) in &references {
-        if let Some(entry) = services
-            .get_mut(service.as_str())
-            .and_then(|entry| entry.as_mapping_mut())
-        {
-            entry.insert("image".into(), reference.as_str().into());
+        let following = followers
+            .iter()
+            .filter(|(_, leader)| leader == service)
+            .map(|(follower, _)| follower.as_str());
+        for name in std::iter::once(service.as_str()).chain(following) {
+            if let Some(entry) = services
+                .get_mut(name)
+                .and_then(|entry| entry.as_mapping_mut())
+            {
+                entry.insert("image".into(), reference.as_str().into());
+            }
         }
     }
     files.insert(

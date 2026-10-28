@@ -1,0 +1,31 @@
+listen_addr: :8080
+public_addr: mesh.coord.example.org:443
+stun_listen_addr: :3478
+stun_public_addr: mesh.coord.example.org:3478
+tls:
+  disable: true
+  force_https: false
+database:
+  type: postgres
+  url: postgres://billowing-darkness:b2x8vrjzuefflkvc8kqzdrdbcfy0ac65ytk5g9ky@db:5432/ionskale_main?sslmode=disable
+auth:
+  provider:
+    issuer: https://coord.example.org
+    client_id: ionskale
+    client_secret: qamb574d5nivl8jsjw4gp1tplmlc33nzer0mhrv67n1cd9s7
+    additional_scopes:
+    - profile
+    - email
+  organizations:
+    claim: org
+    roles_claim: roles
+    admin_roles:
+    - admin
+    required: true
+  service_tokens:
+  - name: lok
+    token: svc_1mmx75ck9x4qpehab4jex7q23xepfcwhqqh2xvdnztbzoqao
+dns:
+  magic_dns_suffix: ts.coord.example.org
+logging:
+  level: info

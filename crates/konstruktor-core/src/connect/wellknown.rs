@@ -117,7 +117,7 @@ pub fn well_known_url(server: &str) -> String {
 pub async fn discover(server: &str) -> Result<WellKnownFakts, CoordinationServerError> {
     let url = well_known_url(server);
 
-    let response = reqwest::Client::new()
+    let response = crate::trust::client()
         .get(&url)
         .header("Accept", "application/json")
         .send()

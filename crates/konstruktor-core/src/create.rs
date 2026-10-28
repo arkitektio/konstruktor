@@ -566,7 +566,7 @@ fn compose_services(config: &HubConfig) -> Vec<String> {
 }
 
 /// Of `images`, the entries naming a compose service this hub has.
-fn images_this_hub_runs(
+pub(crate) fn images_this_hub_runs(
     config: &HubConfig,
     images: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
@@ -580,7 +580,7 @@ fn images_this_hub_runs(
 
 /// Points the named compose services at other images. A name the stack does not have is
 /// refused rather than ignored: a pin that silently did nothing is worse than none.
-fn apply_images(
+pub(crate) fn apply_images(
     config: &mut HubConfig,
     images: &BTreeMap<String, String>,
 ) -> Result<(), CreateError> {

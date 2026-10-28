@@ -90,7 +90,7 @@ fn parse_mesh_key(value: &str) -> Result<MeshKeyRequest, String> {
 }
 
 pub async fn run(args: ConnectArgs) -> Result<()> {
-    let dir = args.target.resolve()?;
+    let dir = args.target.resolve_hub()?;
     connect(&dir, &args).await
 }
 
@@ -269,7 +269,7 @@ pub(crate) async fn connect(dir: &std::path::Path, args: &ConnectArgs) -> Result
 }
 
 pub async fn disconnect(args: DisconnectArgs) -> Result<()> {
-    let dir = args.target.resolve()?;
+    let dir = args.target.resolve_hub()?;
     let Some(held) = credentials::read_credentials(&dir) else {
         bail!("this hub is not connected to any organization");
     };

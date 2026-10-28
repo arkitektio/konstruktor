@@ -1,0 +1,56 @@
+{
+	email ops@example.org
+	servers {
+		protocols h1 h2 h2c
+	}
+}
+
+(coord) {
+	header -Server
+
+	@lok path /lok /lok/*
+	handle @lok {
+		reverse_proxy lok:80
+	}
+
+	@wellknown path /.well-known/*
+	handle @wellknown {
+		rewrite * /lok{uri}
+		reverse_proxy lok:80
+	}
+
+	@lokmedia path /lokmedia*
+	handle @lokmedia { 
+		header Content-Security-Policy "sandbox; default-src 'none'"
+		header X-Content-Type-Options nosniff
+		reverse_proxy rustfs:9000
+	}
+
+	@minio path /minio/*
+	handle @minio {
+		reverse_proxy rustfs:9000
+	}
+
+	@rustfs path /rustfs/*
+	handle @rustfs {
+		uri strip_prefix /rustfs
+		reverse_proxy rustfs:9000
+	}
+
+	handle {
+		reverse_proxy kontrol:80
+	}
+}
+
+coord.example.org {
+	import coord
+}
+
+mesh.coord.example.org {
+	reverse_proxy ionskale:8080
+}
+
+https:// {
+	tls /etc/caddy/tls/hub.crt /etc/caddy/tls/hub.key
+	import coord
+}

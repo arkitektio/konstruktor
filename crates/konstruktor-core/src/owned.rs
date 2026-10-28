@@ -138,7 +138,9 @@ pub fn of(dir: &Path, kind: DeploymentKind, config: Option<&HubConfig>) -> Owned
             files.insert(crate::engine::SECRETS_FILE.to_string());
             files.insert(crate::engine::MESH_FILE.to_string());
         }
-        DeploymentKind::Coord => {
+        // A coordination server without a profile: the folder `coord create` once refused
+        // to fill. One with a profile is written like a hub, below.
+        DeploymentKind::Coord if !dir.join(HUB_CONFIG_FILENAME).exists() => {
             files.insert(crate::coord::COORD_CONFIG_FILE.to_string());
         }
         DeploymentKind::App => {
@@ -146,7 +148,7 @@ pub fn of(dir: &Path, kind: DeploymentKind, config: Option<&HubConfig>) -> Owned
             files.insert(crate::apps::SECRETS_FILE.to_string());
             files.insert(crate::engine::MESH_FILE.to_string());
         }
-        DeploymentKind::Hub => {
+        DeploymentKind::Hub | DeploymentKind::Coord => {
             let lock = crate::lock::LOCK_FILENAME;
             let state = crate::hubhealth::STATE_FILENAME;
             files.extend([
@@ -160,6 +162,17 @@ pub fn of(dir: &Path, kind: DeploymentKind, config: Option<&HubConfig>) -> Owned
                 crate::config::mesh::MESH_ENV_FILE.to_string(),
                 TAKEN_FILE.to_string(),
             ]);
+            // A public site's certificate, copied in from where it lies rather than
+            // generated — and what a copy that was cut short left.
+            for file in [
+                crate::tls::PUBLIC_CERT_FILE,
+                crate::tls::PUBLIC_KEY_FILE,
+                crate::tls::ACME_ROOT_FILE,
+            ] {
+                let path = format!("{}/{file}", crate::tls::FOLDER_DIR);
+                files.insert(format!("{path}.partial"));
+                files.insert(path);
+            }
 
             let held = recorded(dir);
             // A service's config, the facts it was written from and what the operator

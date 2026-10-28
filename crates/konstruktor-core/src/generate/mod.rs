@@ -1,5 +1,6 @@
 pub mod caddy;
 pub mod compose;
+pub mod coord;
 pub mod lok;
 pub mod service;
 pub mod write;
@@ -64,10 +65,34 @@ pub fn generate_hub_files(
             format!("configs/{}.yaml", lok.host),
             dump(&lok::build_lok_config(config, lok, said)),
         );
-        let mut access = serde_json::to_string_pretty(&lok::build_access(config, lok))
-            .expect("the access document is plain data");
+        let access = match config.running_coord() {
+            Some(coord) => coord::build_access(config, lok, coord),
+            None => lok::build_access(config, lok),
+        };
+        let mut access =
+            serde_json::to_string_pretty(&access).expect("the access document is plain data");
         access.push('\n');
         files.insert(lok::ACCESS_FILE.to_string(), access);
+    }
+
+    // --- what a coordination server runs beside Lok ---------------------------
+    if let Some(coord) = config.running_coord() {
+        let mut landing = serde_json::to_string_pretty(&coord::build_landing(coord))
+            .expect("the landing page is plain data");
+        landing.push('\n');
+        files.insert(coord::LANDING_FILE.to_string(), landing);
+        if let Some(mesh) = &coord.mesh {
+            files.insert(
+                coord::IONSKALE_CONFIG_FILE.to_string(),
+                dump(&coord::build_ionskale_config(config, coord, mesh)),
+            );
+        }
+        if let Some(roots) = &coord.extra_roots {
+            files.insert(
+                crate::config::coord::TRUSTED_ROOTS_FILE.to_string(),
+                roots.clone(),
+            );
+        }
     }
 
     // --- secret files, mounted read-only into the one service that reads each ---
@@ -131,9 +156,9 @@ pub fn generate_hub_files(
         })
         .collect();
 
-    files.insert(
-        "configs/Caddyfile".to_string(),
-        caddy::build_caddyfile(
+    let caddyfile = match (config.running_coord(), lok) {
+        (Some(coord), Some(lok)) => caddy::build_coord_caddyfile(&coord_sites(config, coord, lok)),
+        _ => caddy::build_caddyfile(
             &caddy_services,
             lok.map(|lok| caddy::Upstream {
                 name: &lok.host,
@@ -157,7 +182,8 @@ pub fn generate_hub_files(
                 }),
             },
         ),
-    );
+    };
+    files.insert("configs/Caddyfile".to_string(), caddyfile);
 
     // --- the gateway's certificate, when it serves HTTPS ---------------------
     if let Some(certificate) = config.served_certificate() {
@@ -178,6 +204,74 @@ pub fn generate_hub_files(
     );
 
     files
+}
+
+/// What a coordination server's gateway serves, from its profile.
+fn coord_sites<'a>(
+    config: &'a HubConfig,
+    coord: &'a crate::config::coord::CoordBlock,
+    lok: &'a crate::config::hub::LokBlock,
+) -> caddy::CoordSites<'a> {
+    use crate::config::hub::PublicTls;
+    let in_container = |file: &str| format!("{}/{file}", crate::tls::CONTAINER_DIR);
+    let site = config.public_site();
+    let certificate = site.map(|site| match &site.tls {
+        PublicTls::Acme { .. } => caddy::SiteCertificate::Acme,
+        PublicTls::Provided { .. } => caddy::SiteCertificate::Files {
+            cert_file: in_container(crate::tls::PUBLIC_CERT_FILE),
+            key_file: in_container(crate::tls::PUBLIC_KEY_FILE),
+        },
+    });
+    // The name alone: inside its container the gateway listens on 443 whatever port the
+    // host publishes that on, and a site matches a request by its host, not its port.
+    let address = |name: &str| name.to_string();
+    caddy::CoordSites {
+        lok: caddy::Upstream {
+            name: &lok.host,
+            target: &lok.host,
+            port: lok.internal_port,
+            buckets: vec![lok.media_bucket.bucket_name.clone()],
+        },
+        kontrol: (&coord.kontrol.host, coord.kontrol.internal_port),
+        public: site
+            .zip(certificate.clone())
+            .map(|(site, certificate)| caddy::PublicSiteBlock {
+                address: address(&site.domain),
+                certificate,
+            }),
+        mesh: coord
+            .mesh
+            .as_ref()
+            .zip(certificate)
+            .filter(|_| site.is_some())
+            .map(|(mesh, certificate)| {
+                (
+                    caddy::PublicSiteBlock {
+                        address: address(&mesh.domain),
+                        certificate,
+                    },
+                    mesh.host.as_str(),
+                    mesh.internal_port,
+                )
+            }),
+        acme: site.and_then(|site| match &site.tls {
+            PublicTls::Acme { email, ca, ca_root } => Some(caddy::Acme {
+                email: email.clone(),
+                ca: ca.clone(),
+                ca_root: ca_root
+                    .as_ref()
+                    .map(|_| in_container(crate::tls::ACME_ROOT_FILE)),
+            }),
+            PublicTls::Provided { .. } => None,
+        }),
+        public_port: crate::config::hub::public_port(config),
+        fallback: config.served_certificate().map(|_| caddy::GatewayTls {
+            cert_file: in_container(crate::tls::CERT_FILE),
+            key_file: in_container(crate::tls::KEY_FILE),
+        }),
+        minio_host: &config.minio.host,
+        minio_port: config.minio.internal_port,
+    }
 }
 
 #[cfg(test)]

@@ -203,9 +203,29 @@ pub fn regenerate(dir: &Path) -> Result<crate::services::Provided, ProfileError>
     Ok(provided)
 }
 
-/// Whether a directory already holds a hub deployment.
+/// Whether a directory already holds a hub's profile: a hub, or a coordination server.
 pub fn holds_a_hub(dir: &Path) -> bool {
     profile_path(dir).exists()
+}
+
+/// Whether the profile in `dir` is a coordination server's ([`HubConfig::coord`]). Read for
+/// that one key, so a profile this build cannot otherwise read is still told apart.
+pub fn profile_is_a_coord(dir: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Peek {
+        #[serde(default)]
+        config: Option<PeekConfig>,
+    }
+    #[derive(Deserialize)]
+    struct PeekConfig {
+        #[serde(default)]
+        coord: Option<serde_norway::Value>,
+    }
+    std::fs::read_to_string(profile_path(dir))
+        .ok()
+        .and_then(|text| serde_norway::from_str::<Peek>(&text).ok())
+        .and_then(|peek| peek.config)
+        .is_some_and(|config| config.coord.is_some_and(|coord| !coord.is_null()))
 }
 
 /// The three shapes a deployment folder comes in.
@@ -253,7 +273,12 @@ impl DeploymentKind {
 /// here so that resolving a deployment and deleting one cannot disagree about what counts.
 pub fn holds_a_deployment(dir: &Path) -> Option<DeploymentKind> {
     if holds_a_hub(dir) {
-        return Some(DeploymentKind::Hub);
+        // A coordination server has a hub's profile too, and says so in it.
+        return Some(if profile_is_a_coord(dir) {
+            DeploymentKind::Coord
+        } else {
+            DeploymentKind::Hub
+        });
     }
     if crate::coord::holds_a_coord(dir) {
         return Some(DeploymentKind::Coord);
@@ -325,6 +350,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Coord));
+    }
+
+    #[test]
+    fn a_profile_that_says_so_makes_it_a_coordination_server() {
+        let dir = tmpdir();
+        std::fs::write(
+            profile_path(&dir),
+            "version: '2.0'\nkind: hub\nconfig:\n  coord:\n    name: lab\n",
+        )
+        .unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Coord));
+        // A self-contained hub runs Lok too, and is a hub: its profile has no `coord`.
+        std::fs::write(profile_path(&dir), "version: '2.0'\nconfig:\n  lok: {}\n").unwrap();
+        std::fs::create_dir_all(dir.join("configs")).unwrap();
+        std::fs::write(dir.join(crate::coord::COORD_CONFIG_FILE), "lok: {}").unwrap();
+        assert_eq!(holds_a_deployment(&dir), Some(DeploymentKind::Hub));
     }
 
     /// Engines written before coordination servers existed have only a compose file.

@@ -16,12 +16,17 @@ pub fn write_generated_files(dir: &Path, files: &GeneratedFiles) -> std::io::Res
         // Key files are readable by their owner alone, where the platform can say so. The
         // containers run as root, so the read-only mount still reads them.
         #[cfg(unix)]
-        if relative.starts_with("secrets/") {
+        if relative.starts_with("secrets/") || is_private_key(relative) {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
         }
     }
     Ok(())
+}
+
+/// The gateway's own key, which lives beside its certificate rather than under `secrets/`.
+fn is_private_key(relative: &str) -> bool {
+    relative == format!("{}/{}", crate::tls::FOLDER_DIR, crate::tls::KEY_FILE)
 }
 
 /// Writes the mesh sidecar's `mesh.env` from the profile when the hub is on a mesh and the

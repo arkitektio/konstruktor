@@ -1,4 +1,4 @@
-import { ArrowRight, Boxes, Plus, Puzzle, TriangleAlert, Wrench } from "lucide-react";
+import { ArrowRight, Boxes, Plus, Puzzle, ShieldCheck, TriangleAlert, Wrench } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { engineName } from "../api";
@@ -37,19 +37,21 @@ const Column = ({
   title: string;
   empty: string;
   deployments: DeploymentRecord[];
-  /** Where "new one of these" goes. */
-  to: string;
+  /** Where "new one of these" goes. Left out where there is no wizard for one. */
+  to?: string;
 }) => (
   <div className="flex flex-col gap-2">
     <div className="flex items-center gap-2">
       <Icon className="size-4 text-muted-foreground" />
       <span className="text-sm font-medium">{title}</span>
       <span className="text-xs text-muted-foreground">{deployments.length}</span>
-      <Button asChild size="icon-sm" variant="ghost" className="ml-auto" aria-label={`New ${title}`}>
-        <Link to={to}>
-          <Plus className="size-3.5" />
-        </Link>
-      </Button>
+      {to && (
+        <Button asChild size="icon-sm" variant="ghost" className="ml-auto" aria-label={`New ${title}`}>
+          <Link to={to}>
+            <Plus className="size-3.5" />
+          </Link>
+        </Button>
+      )}
     </div>
 
     {deployments.length === 0 ? (
@@ -99,7 +101,12 @@ export const Home: React.FC<{}> = () => {
   const warning = DOCKER_WARNING[state]?.(engineName(probe?.engine));
   // An attached app is shown with the engines: one container beside a hub, no profile.
   const engines = deployments.filter((d) => d.kind === "engine" || d.kind === "app");
-  const hubs = deployments.filter((d) => d.kind !== "engine" && d.kind !== "app");
+  // A coordination server has a hub's profile, but is none: it runs no services and
+  // connects to nobody. It is created with `konstruktor coord create`.
+  const coords = deployments.filter((d) => d.kind === "coord");
+  const hubs = deployments.filter(
+    (d) => d.kind !== "engine" && d.kind !== "app" && d.kind !== "coord",
+  );
 
   return (
     <Page
@@ -145,6 +152,14 @@ export const Home: React.FC<{}> = () => {
               deployments={engines}
               to="/new/engine"
             />
+            {coords.length > 0 && (
+              <Column
+                icon={ShieldCheck}
+                title="Coordination servers"
+                empty="No coordination servers yet."
+                deployments={coords}
+              />
+            )}
           </div>
         </div>
       ) : (

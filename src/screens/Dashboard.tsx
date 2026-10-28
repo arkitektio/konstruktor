@@ -76,7 +76,10 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
    * a red alert on every engine dashboard. Everything that reads `status` is guarded on
    * it already; this just stops the question being asked.
    */
-  const isHub = deployment.kind !== "engine" && deployment.kind !== "app";
+  // A coordination server has a hub's profile too, but none of a hub's actions — services,
+  // connecting — apply to it: it gets the view every other deployment gets.
+  const isHub =
+    deployment.kind !== "engine" && deployment.kind !== "app" && deployment.kind !== "coord";
 
   const loadProfile = useCallback(async () => {
     if (!isHub) {

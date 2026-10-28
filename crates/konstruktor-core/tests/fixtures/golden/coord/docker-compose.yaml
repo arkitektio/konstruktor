@@ -1,0 +1,181 @@
+services:
+  db:
+    image: jhnnsrs/daten:latest
+    environment:
+      POSTGRES_MULTIPLE_DATABASES: lok_main,ionskale_main
+      POSTGRES_PASSWORD: b2x8vrjzuefflkvc8kqzdrdbcfy0ac65ytk5g9ky
+      POSTGRES_USER: billowing-darkness
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -h
+      - 127.0.0.1
+      - -U
+      - billowing-darkness
+      interval: 3s
+      timeout: 5s
+      retries: 40
+    volumes:
+    - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  redis:
+    image: redis:8.10.1
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: muddy-glade
+      RUSTFS_SECRET_KEY: czz9cpl1c82d4wgq15owtgun2pyvgk0lr4macp4d
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: :9000
+    user: 0:0
+    stop_grace_period: 2s
+    volumes:
+    - rustfs_data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  rustfs_init:
+    image: jhnnsrs/init:latest
+    volumes:
+    - ./configs/rustfs_init.yaml:/workspace/config.yaml
+    stop_grace_period: 2s
+    environment:
+      RUSTFS_ACCESS_KEY: muddy-glade
+      RUSTFS_SECRET_KEY: czz9cpl1c82d4wgq15owtgun2pyvgk0lr4macp4d
+      RUSTFS_HOST: http://rustfs:9000
+    depends_on:
+      rustfs:
+        condition: service_started
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  lok:
+    image: jhnnsrs/lok:8
+    command:
+    - arkitekt-service
+    - serve
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rustfs:
+        condition: service_started
+      rustfs_init:
+        condition: service_completed_successfully
+    stop_grace_period: 2s
+    volumes:
+    - ./configs/lok.yaml:/workspace/config.yaml
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  kontrol:
+    image: jhnnsrs/kontrol:4
+    volumes:
+    - ./configs/kontrol/landing.json:/usr/share/nginx/html/landing.json:ro
+    stop_grace_period: 2s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  ionskale:
+    image: jhnnsrs/ionskale:latest
+    command:
+    - server
+    - --config
+    - /etc/ionscale/config.yaml
+    ports:
+    - 3478:3478/udp
+    depends_on:
+      db:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+      lok:
+        condition: service_started
+    volumes:
+    - ./configs/ionskale.yaml:/etc/ionscale/config.yaml:ro
+    stop_grace_period: 2s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  lok-reconciler:
+    image: jhnnsrs/lok:8
+    entrypoint:
+    - sh
+    - -c
+    - while :; do sleep 900; arkitekt-service run reconcile_meshes --sidecars-only || true; done
+    volumes:
+    - ./configs/lok.yaml:/workspace/config.yaml
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      lok:
+        condition: service_started
+    stop_grace_period: 1s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+  gateway:
+    image: caddy:2.11.4
+    ports:
+    - 80:80
+    - 443:443
+    networks:
+      curly-lake:
+        aliases:
+        - coord.example.org
+        - mesh.coord.example.org
+      default:
+        aliases:
+        - coord.example.org
+        - mesh.coord.example.org
+    volumes:
+    - ./configs/Caddyfile:/etc/caddy/Caddyfile
+    - ./configs/gateway:/etc/caddy/tls:ro
+    - caddy_data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+networks:
+  curly-lake:
+    driver: bridge
+    name: curly-lake
+volumes:
+  db_data: {}
+  rustfs_data: {}
+  caddy_data: {}

@@ -44,6 +44,27 @@ pub struct Endpoint {
     /// Why it is not ready although it answered, when that needs saying.
     #[serde(default)]
     pub detail: Option<String>,
+    /// Asked with the certificate verified, as a client of a public site asks: it answers
+    /// once the gateway serves a certificate a client trusts for its name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verified: bool,
+    /// Ready, and still worth saying something about: [`Self::detail`] is a warning, not why
+    /// it is not ready. What `wait` makes of a signup policy Lok does not enforce — no
+    /// amount of waiting changes it, and the server is usable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
+}
+
+/// What an endpoint's answer is checked for beyond its status.
+enum Expect {
+    /// Nothing: any success.
+    Success,
+    /// A self-contained hub's well-known, following the address it was asked at.
+    FollowsRequest,
+    /// A coordination server's well-known, naming its origin.
+    Issuer(String),
+    /// Lok's account configuration, taking signups or not.
+    Signup(bool),
 }
 
 /// The name of the endpoint that is a self-contained hub's well-known.
@@ -73,10 +94,57 @@ pub fn check_well_known(asked: &str, body: &str) -> Result<(), String> {
     ))
 }
 
+/// What a coordination server's well-known has to say: that it is the issuer it was made
+/// as, and its endpoints are there. Lok builds them on its issuer, so a well-known that names
+/// another is a Lok configured as something else — every token it mints would be refused.
+pub fn check_issuer(origin: &str, body: &str) -> Result<(), String> {
+    let origin = origin.trim_end_matches('/');
+    let document: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "the well-known is not JSON".to_string())?;
+    let issuer = document["issuer"].as_str().unwrap_or_default();
+    let token_endpoint = document["token_endpoint"].as_str().unwrap_or_default();
+    if issuer.trim_end_matches('/') == origin && token_endpoint.starts_with(origin) {
+        return Ok(());
+    }
+    Err(format!(
+        "the coordination server says it is `{issuer}`, with its token endpoint at \
+         `{token_endpoint}`; it was made to be {origin}"
+    ))
+}
+
+/// What Lok's account configuration (allauth's, `/lok/_allauth/browser/v1/config`) has to
+/// say of signups.
+///
+/// Lok ignores a setting it does not know, so a server meant closed whose image predates the
+/// switch would take anybody's signup without a word. This is what says so.
+pub fn check_signup(open: bool, body: &str) -> Result<(), String> {
+    let document: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| "the account configuration is not JSON".to_string())?;
+    match document["data"]["account"]["is_open_for_signup"].as_bool() {
+        Some(answer) if answer == open => Ok(()),
+        Some(true) => Err(
+            "Signups are OPEN: Lok takes anybody's, though this coordination server is meant to \
+             be closed — its image does not read `account.allow_signup` yet. Until a Lok \
+             release does (`konstruktor update` then takes it), anybody who reaches it can \
+             make an account."
+                .into(),
+        ),
+        Some(false) => Err(
+            "Lok takes no signups, though this coordination server is meant to be open to \
+             them."
+                .into(),
+        ),
+        None => Err("Lok's account configuration does not say whether it takes signups".into()),
+    }
+}
+
 /// Every endpoint the hub has to answer on before an app can use it, through the gateway
 /// on this machine. `None` for a hub that publishes no port — a mesh-only one, which
 /// nothing on this machine can ask.
 pub fn endpoints(config: &HubConfig) -> Option<Vec<Endpoint>> {
+    if config.running_coord().is_some() {
+        return coord_endpoints(config).map(|e| e.into_iter().map(|(e, _)| e).collect());
+    }
     config
         .gateway
         .exposed_http_port
@@ -92,6 +160,8 @@ pub fn endpoints(config: &HubConfig) -> Option<Vec<Endpoint>> {
         status: None,
         ready: false,
         detail: None,
+        verified: false,
+        warning: false,
     };
 
     let mut out = Vec::new();
@@ -117,55 +187,225 @@ pub fn endpoints(config: &HubConfig) -> Option<Vec<Endpoint>> {
     Some(out)
 }
 
+/// A coordination server's endpoints, each with what its answer is checked for: at its
+/// public names when it has them — asked on this machine, the names resolved here — and at
+/// `localhost` when it serves plain HTTP.
+fn coord_endpoints(config: &HubConfig) -> Option<Vec<(Endpoint, Expect)>> {
+    let coord = config.running_coord()?;
+    let lok = config.running_lok()?;
+    config
+        .gateway
+        .exposed_http_port
+        .or(config.gateway.exposed_https_port)?;
+    let (base, verified) = match config.public_origin() {
+        Some(origin) => (origin, true),
+        None => (
+            format!("http://localhost:{}", advertised_port(config)),
+            false,
+        ),
+    };
+    let endpoint = |name: &str, url: String, verified: bool| Endpoint {
+        name: name.to_string(),
+        url,
+        status: None,
+        ready: false,
+        detail: None,
+        verified,
+        warning: false,
+    };
+    let mut out = vec![
+        (
+            endpoint(FAKTS, format!("{base}/{WELL_KNOWN}"), verified),
+            Expect::Issuer(coord.origin.clone()),
+        ),
+        (
+            endpoint(
+                &lok.host,
+                format!("{base}/{}/{HEALTH_PATH}", lok.host),
+                false,
+            ),
+            Expect::Success,
+        ),
+        (
+            endpoint(
+                "signup",
+                format!("{base}/{}/_allauth/browser/v1/config", lok.host),
+                false,
+            ),
+            Expect::Signup(coord.signup.is_open()),
+        ),
+        (
+            endpoint(&coord.kontrol.host, format!("{base}/"), false),
+            Expect::Success,
+        ),
+        (
+            endpoint(
+                "s3",
+                format!("{base}/{}", crate::generate::caddy::S3_CHALLENGE),
+                false,
+            ),
+            Expect::Success,
+        ),
+    ];
+    if let Some(mesh) = coord.mesh.as_ref().filter(|_| verified) {
+        out.push((
+            endpoint(&mesh.host, format!("{}/healthz", mesh.url()), true),
+            Expect::Success,
+        ));
+    }
+    Some(out)
+}
+
 /// Asks every endpoint until all of them answer with a success, or `timeout` runs out.
 /// Returns what each one last said either way; the caller decides what an unready one
 /// means. `on_round` is told after every round, for narration.
+///
+/// A coordination server's public names are asked on this machine: resolved here, whatever
+/// DNS says of them yet. [`check`] asks them the way the internet does.
 pub async fn wait(
     config: &HubConfig,
     timeout: Duration,
     on_round: &(dyn Fn(&[Endpoint]) + Sync),
 ) -> Result<Vec<Endpoint>, String> {
-    let mut endpoints = endpoints(config).ok_or_else(|| {
-        "this hub publishes no port on this machine, so there is nothing here to ask".to_string()
-    })?;
+    ask(config, timeout, true, on_round).await
+}
 
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        // Whether the certificate is right is the gateway's business; this asks whether
-        // the service answers. Same reasoning as `gateway_check`.
-        .danger_accept_invalid_certs(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+/// Asks every endpoint once, a coordination server's public names as DNS resolves them:
+/// what a client elsewhere would find.
+pub async fn check(config: &HubConfig) -> Result<Vec<Endpoint>, String> {
+    ask(config, Duration::ZERO, false, &|_| {}).await
+}
+
+async fn ask(
+    config: &HubConfig,
+    timeout: Duration,
+    here: bool,
+    on_round: &(dyn Fn(&[Endpoint]) + Sync),
+) -> Result<Vec<Endpoint>, String> {
+    let unpublished = || {
+        "this hub publishes no port on this machine, so there is nothing here to ask".to_string()
+    };
+    let (mut endpoints, expectations): (Vec<Endpoint>, Vec<Expect>) = match coord_endpoints(config)
+    {
+        Some(asked) => asked.into_iter().unzip(),
+        None => {
+            let endpoints = endpoints(config).ok_or_else(unpublished)?;
+            let expectations = endpoints
+                .iter()
+                .map(|e| {
+                    if e.name == FAKTS {
+                        Expect::FollowsRequest
+                    } else {
+                        Expect::Success
+                    }
+                })
+                .collect();
+            (endpoints, expectations)
+        }
+    };
+
+    // A public site's names, resolved to this machine's gateway when asked from here.
+    let pinned: Vec<(String, std::net::SocketAddr)> = config
+        .public_site()
+        .filter(|_| here)
+        .map(|site| {
+            let port = crate::config::hub::public_port(config);
+            site.names()
+                .into_iter()
+                .map(|name| (name, std::net::SocketAddr::from(([127, 0, 0, 1], port))))
+                .collect()
+        })
+        .unwrap_or_default();
+    let build = |builder: reqwest::ClientBuilder| {
+        pinned
+            .iter()
+            .fold(builder.timeout(REQUEST_TIMEOUT), |builder, (name, addr)| {
+                builder.resolve(name, *addr)
+            })
+            .build()
+            .map_err(|e| e.to_string())
+    };
+    // Whether the certificate is right is the gateway's business; this asks whether the
+    // service answers. Same reasoning as `gateway_check`.
+    let client = build(reqwest::Client::builder().danger_accept_invalid_certs(true))?;
+    // Except where it is the point: a public site's, which every client verifies.
+    let verifying = build(crate::trust::client_builder())?;
 
     let started = Instant::now();
     loop {
         // Side by side: one that hangs must not hold up the asking of the others.
-        futures_util::future::join_all(endpoints.iter_mut().filter(|e| !e.ready).map(
-            |endpoint| async {
-                match client.get(&endpoint.url).send().await {
-                    Ok(response) => {
-                        endpoint.status = Some(response.status().as_u16());
-                        endpoint.ready = response.status().is_success();
-                        if endpoint.ready && endpoint.name == FAKTS {
-                            let body = response.text().await.unwrap_or_default();
-                            endpoint.detail = check_well_known(&endpoint.url, &body).err();
-                            endpoint.ready = endpoint.detail.is_none();
+        futures_util::future::join_all(
+            endpoints
+                .iter_mut()
+                .zip(&expectations)
+                .filter(|(e, _)| !e.ready)
+                .map(|(endpoint, expect)| {
+                    let client = if endpoint.verified {
+                        &verifying
+                    } else {
+                        &client
+                    };
+                    async move {
+                        match client.get(&endpoint.url).send().await {
+                            Ok(response) => {
+                                endpoint.status = Some(response.status().as_u16());
+                                endpoint.ready = response.status().is_success();
+                                if endpoint.ready && !matches!(expect, Expect::Success) {
+                                    let body = response.text().await.unwrap_or_default();
+                                    endpoint.detail = match expect {
+                                        Expect::FollowsRequest => {
+                                            check_well_known(&endpoint.url, &body).err()
+                                        }
+                                        Expect::Issuer(origin) => check_issuer(origin, &body).err(),
+                                        Expect::Signup(open) => check_signup(*open, &body).err(),
+                                        Expect::Success => None,
+                                    };
+                                    // Waited on, a signup policy is said, not waited for.
+                                    endpoint.warning = here
+                                        && matches!(expect, Expect::Signup(_))
+                                        && endpoint.detail.is_some();
+                                    endpoint.ready = endpoint.detail.is_none() || endpoint.warning;
+                                }
+                            }
+                            Err(error) => {
+                                endpoint.status = None;
+                                // A refused certificate is worth saying: it is the one
+                                // answer that will not change by waiting on the server.
+                                endpoint.detail = endpoint
+                                    .verified
+                                    .then(|| describe_failure(&error))
+                                    .flatten();
+                            }
                         }
                     }
-                    Err(_) => endpoint.status = None,
-                }
-            },
-        ))
+                }),
+        )
         .await;
         on_round(&endpoints);
         // A well-known that answers wrongly will not answer rightly later: the image is
-        // what it is. No point waiting out the clock on it.
-        let hopeless = endpoints.iter().any(|e| e.detail.is_some());
+        // what it is. No point waiting out the clock on it. A certificate that is refused
+        // may still be replaced by the one the gateway is obtaining, so that is waited on.
+        let hopeless = endpoints
+            .iter()
+            .any(|e| !e.ready && e.detail.is_some() && e.status.is_some());
         if endpoints.iter().all(|e| e.ready) || hopeless || started.elapsed() >= timeout {
             return Ok(endpoints);
         }
         tokio::time::sleep(INTERVAL).await;
     }
+}
+
+/// Why a verified request failed, when the reason is the certificate.
+fn describe_failure(error: &reqwest::Error) -> Option<String> {
+    let mut source: Option<&dyn std::error::Error> = Some(error);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if text.contains("certificate") || text.contains("UnknownIssuer") {
+            return Some(format!("its certificate is refused: {text}"));
+        }
+        source = cause.source();
+    }
+    None
 }
 
 #[cfg(test)]
@@ -217,6 +457,36 @@ mod tests {
         let pinned = r#"{"token_endpoint": "http://lok/lok/o/token/"}"#;
         assert!(check_well_known(asked, pinned).is_err());
         assert!(check_well_known(asked, "<html>").is_err());
+    }
+
+    #[test]
+    fn a_coordination_servers_well_known_names_the_origin_it_was_made_as() {
+        let origin = "https://coord.example.org";
+        let right = r#"{"issuer": "https://coord.example.org",
+            "token_endpoint": "https://coord.example.org/lok/o/token/"}"#;
+        assert!(check_issuer(origin, right).is_ok());
+        // The issuer with Lok's prefix: every token would name an address nothing serves.
+        let doubled = r#"{"issuer": "https://coord.example.org/lok",
+            "token_endpoint": "https://coord.example.org/lok/lok/o/token/"}"#;
+        assert!(check_issuer(origin, doubled).is_err());
+        // Following the request, as a self-contained hub's does.
+        let follows = r#"{"issuer": "lok", "token_endpoint": "http://localhost/lok/o/token/"}"#;
+        assert!(check_issuer(origin, follows).is_err());
+    }
+
+    #[test]
+    fn signups_are_what_they_were_meant_to_be_or_said_loudly() {
+        let open = r#"{"data": {"account": {"is_open_for_signup": true}}}"#;
+        let closed = r#"{"data": {"account": {"is_open_for_signup": false}}}"#;
+        assert!(check_signup(false, closed).is_ok());
+        assert!(check_signup(true, open).is_ok());
+        let why = check_signup(false, open).unwrap_err();
+        assert!(
+            why.contains("OPEN") && why.contains("account.allow_signup"),
+            "{why}"
+        );
+        assert!(check_signup(true, closed).is_err());
+        assert!(check_signup(false, "{}").is_err());
     }
 
     #[test]

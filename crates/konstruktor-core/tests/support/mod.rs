@@ -10,6 +10,8 @@
 //! Shared by the library's unit tests and by every integration test (`mod support;`).
 #![allow(dead_code)]
 
+pub mod lok;
+
 use std::collections::BTreeMap;
 
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};

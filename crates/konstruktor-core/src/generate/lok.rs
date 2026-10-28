@@ -120,11 +120,59 @@ pub fn preconfigured_hub(
     hub
 }
 
+/// Lok's database, on the stack's Postgres.
+pub(crate) fn postgres(config: &HubConfig, db: &str) -> Value {
+    map(vec![
+        ("db_name", s(db)),
+        ("engine", s("django.db.backends.postgresql")),
+        ("host", s(DB_COMPOSE_SERVICE)),
+        ("password", s(&config.db.postgres_password)),
+        ("port", Value::from(5432)),
+        ("username", s(&config.db.postgres_user)),
+    ])
+}
+
+pub(crate) fn redis(config: &HubConfig) -> Value {
+    map(vec![
+        ("host", s(&config.local_redis.host)),
+        ("port", Value::from(config.local_redis.internal_port)),
+    ])
+}
+
+/// What Lok verifies its own tokens with: its key, inline.
+pub(crate) fn authentikate(lok: &LokBlock) -> Value {
+    map(vec![
+        ("audience", s("*")),
+        ("issuers", list(vec![rsa_issuer(lok)])),
+        ("static_tokens", Value::Mapping(Mapping::new())),
+    ])
+}
+
+/// Where Lok keeps its media: its bucket on the stack's object store.
+pub(crate) fn datalayer(config: &HubConfig, lok: &LokBlock) -> Value {
+    map(vec![
+        ("access_key", s(&config.minio.access_key)),
+        ("secret_key", s(&config.minio.secret_key)),
+        ("host", s(&config.minio.host)),
+        ("port", Value::from(config.minio.internal_port)),
+        ("protocol", s("http")),
+        (
+            "media",
+            map(vec![("bucket", s(&lok.media_bucket.bucket_name))]),
+        ),
+    ])
+}
+
 /// `configs/lok.yaml`.
 ///
 /// Lok's settings model ignores keys it does not know, so a misspelt one is not an error —
 /// it is silently the default. Every key here is one `lok_server/configuration.py` reads.
+///
+/// A coordination server's Lok is configured as one: see [`crate::generate::coord`].
 pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contract::Said) -> Value {
+    if let Some(coord) = config.running_coord() {
+        return crate::generate::coord::build_lok_config(config, lok, coord);
+    }
     let csrf = config
         .csrf_trusted_origins
         .clone()
@@ -177,46 +225,10 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
                 ("trusted_proxy_depth", Value::from(1)),
             ]),
         ),
-        (
-            "postgres",
-            map(vec![
-                ("db_name", s(&lok.db)),
-                ("engine", s("django.db.backends.postgresql")),
-                ("host", s(DB_COMPOSE_SERVICE)),
-                ("password", s(&config.db.postgres_password)),
-                ("port", Value::from(5432)),
-                ("username", s(&config.db.postgres_user)),
-            ]),
-        ),
-        (
-            "redis",
-            map(vec![
-                ("host", s(&config.local_redis.host)),
-                ("port", Value::from(config.local_redis.internal_port)),
-            ]),
-        ),
-        (
-            "authentikate",
-            map(vec![
-                ("audience", s("*")),
-                ("issuers", list(vec![rsa_issuer(lok)])),
-                ("static_tokens", Value::Mapping(Mapping::new())),
-            ]),
-        ),
-        (
-            "datalayer",
-            map(vec![
-                ("access_key", s(&config.minio.access_key)),
-                ("secret_key", s(&config.minio.secret_key)),
-                ("host", s(&config.minio.host)),
-                ("port", Value::from(config.minio.internal_port)),
-                ("protocol", s("http")),
-                (
-                    "media",
-                    map(vec![("bucket", s(&lok.media_bucket.bucket_name))]),
-                ),
-            ]),
-        ),
+        ("postgres", postgres(config, &lok.db)),
+        ("redis", redis(config)),
+        ("authentikate", authentikate(lok)),
+        ("datalayer", datalayer(config, lok)),
         ("deployment", map(vec![("name", s(&lok.hub_identifier))])),
         (
             "lok",

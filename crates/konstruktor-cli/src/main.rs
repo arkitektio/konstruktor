@@ -10,6 +10,7 @@ mod job_cmd;
 mod manage;
 mod self_cmd;
 mod services;
+mod tls_cmd;
 mod ui;
 
 use anyhow::Result;
@@ -88,6 +89,7 @@ Change a hub:
   inspect          Show what a service's image says of itself
   hub regenerate   Rewrite its generated files from its profile
   check            Check that every service answers on every advertised address
+  tls              Its public certificate: status, reload a renewal, set another
 
 Change an engine or an app:
   engine attach    Join a hub's network, so its plugins reach the hub in Docker
@@ -236,6 +238,9 @@ enum Command {
     /// Show or change what was set for a hub's services beyond what is generated.
     #[command(subcommand)]
     Config(config_cmd::ConfigCommand),
+    /// The certificate a public site is served with: its status, a renewal, another one.
+    #[command(subcommand)]
+    Tls(tls_cmd::TlsCommand),
     /// List or run the jobs a service's image offers beside its start.
     #[command(subcommand)]
     Job(job_cmd::JobCommand),
@@ -447,6 +452,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Engine(EngineCommand::Detach(args)) => engine::attach(args.engine, None).await,
         Command::Coord(CoordCommand::Create(args)) => coord::run(*args).await,
+        Command::Tls(command) => tls_cmd::run(command, json).await,
         Command::Authorize(args) => connect::run(*args).await,
         Command::Checkout(args) => manage::checkout(&args),
         Command::Doctor(args) => manage::doctor(json, args.fix, args.yes).await,

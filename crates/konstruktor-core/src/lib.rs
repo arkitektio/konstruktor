@@ -30,6 +30,7 @@ pub mod overrides;
 pub mod owned;
 pub mod paths;
 pub mod pins;
+pub mod preflight;
 pub mod process;
 pub mod profile;
 pub mod ready;
@@ -48,6 +49,7 @@ pub mod start;
 pub mod status;
 pub mod templates;
 pub mod tls;
+pub mod trust;
 pub mod updates;
 
 // The tests' own knowledge of the services (`tests/support`), for the unit tests here as

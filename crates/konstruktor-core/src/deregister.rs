@@ -430,7 +430,7 @@ async fn remove_grant(
         })
         .flatten();
 
-    let client = reqwest::Client::builder().timeout(TIMEOUT).build()?;
+    let client = crate::trust::client_builder().timeout(TIMEOUT).build()?;
 
     // Asked before the reporter is touched: a server that is not there, or cannot do
     // this, is found out without having stopped anything.

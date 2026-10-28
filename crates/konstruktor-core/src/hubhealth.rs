@@ -407,7 +407,7 @@ pub struct ReporterConfig {
 /// error; everything else is logged and retried, because a reporter that exits is a hub
 /// that goes offline for as long as nobody notices the container stopped.
 pub async fn run(config: &ReporterConfig, log: &(dyn Fn(&str) + Sync)) -> Result<(), ReportError> {
-    let client = reqwest::Client::builder()
+    let client = crate::trust::client_builder()
         .timeout(Duration::from_secs(20))
         .build()?;
     let mut access: Option<AccessToken> = None;

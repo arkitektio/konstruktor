@@ -165,7 +165,7 @@ struct Listed {
 }
 
 fn list(target: &Target, json: bool) -> Result<()> {
-    let dir = target.resolve()?;
+    let dir = target.resolve_hub()?;
     let config = profile::read_profile(&dir)?.config;
     let running = config.enabled_services();
 
@@ -260,7 +260,7 @@ async fn change_services(
     described: BTreeMap<String, Description>,
 ) -> Result<()> {
     let target = Target::named(args.in_hub.clone());
-    let dir = target.resolve()?;
+    let dir = target.resolve_hub()?;
     let config = profile::read_profile(&dir)?.config;
 
     // Refused here, before anybody is sent to a browser; the core asks again.
@@ -363,7 +363,7 @@ async fn change_services(
 }
 
 async fn apply(target: &Target) -> Result<()> {
-    let dir = target.resolve()?;
+    let dir = target.resolve_hub()?;
     ui::say("");
     ui::step(&format!(
         "Bringing {} to its services…",

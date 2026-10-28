@@ -128,7 +128,7 @@ konstruktor hub templates       # the kinds there are
 konstruktor engine create ~/plugins --hub ~/MyHub
 konstruktor app attach ghcr.io/org/some-app --hub ~/MyHub --dir ~/some-app
 konstruktor app update ~/some-app   # to its newest release, accepted again
-konstruktor coord create ~/lab-coord
+konstruktor coord create ~/lab-coord --domain coord.example.org --acme-email ops@example.org
 
 # run it — any of the three
 konstruktor up|stop|down|pull|ps|logs [target]
@@ -178,13 +178,10 @@ where the positional is something else — a service, a branch, a backup folder:
 `konstruktor restart mikro --in lab-hub`. `konstruktor --help` lists the commands under
 these same headings.
 
-> **`coord create` is not finished.** A coordination server is a first-class deployment —
-> it is recognised on disk, listed, and driven by every lifecycle command above — and
-> Konstruktor can generate a hub that *runs* one (see [a self-contained hub](#a-self-contained-hub)).
-> A coordination server on its own, which other hubs authorize against, also needs the
-> account frontend where somebody accepts them, and that is not generated yet. `coord create`
-> says so and writes nothing. Until it lands, point hubs at a coordination server you
-> already run with `hub create --server <address>`.
+A coordination server is kept like a hub — `backup`, `restore`, `update`, `rollback`,
+`freeze`, `wait` and `check` work on it — and [has a section of its
+own](#your-own-coordination-server). What only a hub has (`hub services`, `hub connect`,
+`checkout`, `config`) says so when it is pointed at one.
 
 `pull` fetches every image whether anything changed or not; **`update`** asks each registry
 whether the tag has moved and recreates only those services. `--check` reports without
@@ -390,6 +387,68 @@ again — they are part of what its coordination server was set up with.
 
 From Python, the `konstruktor` package wraps exactly this and nothing more — see
 [`python/README.md`](python/README.md).
+
+### Your own coordination server
+
+`konstruktor coord create` runs the thing hubs and apps connect to — what `go.arkitekt.live`
+is — on a machine of your own, under a DNS name of your own:
+
+```
+konstruktor coord create ~/lab-coord --domain coord.example.org --acme-email ops@example.org
+konstruktor hub create ~/MyHub --server coord.example.org     # elsewhere, any number of times
+```
+
+It runs Lok (users, organizations, the tokens every service trusts) and kontrol, the account
+frontend, at the root of that name: where you log in, and where a hub or an app that asks to
+be accepted sends whoever accepts it. Postgres, Redis, the object store and the gateway are a
+hub's, generated and pinned the same way. Its tokens name its address (`https://coord.example.org`),
+and it answers there and nowhere else. Everything is started again after a reboot, and logs
+are rotated: it is a server, not something a desktop decides to run.
+
+The first account is the administrator (`--admin`, `--admin-password`; left out, one is
+generated), in an organization of its own (`--org`) that hubs can be accepted into. Signups
+are meant to be closed unless `--signup open` — an administrator makes accounts — and Lok is
+told so as `account.allow_signup`. **Lok 8 does not read that setting yet, so for now
+anybody who reaches the server can sign up**; `wait` and `create` say so, and `check` fails
+on it until a Lok release that reads it is run. `--smtp-host`,
+`--smtp-user`, `--smtp-password-file` and `--smtp-from` let it send mail (login codes,
+verification). How to log in, and as whom, is in `secrets/access.json`.
+
+**Its certificate** has to be one every client trusts: apps believe a hub's own certificate
+because they got it from here. Three ways, one of them per server:
+
+| | |
+|---|---|
+| `--acme-email EMAIL` | **Let's Encrypt.** The gateway obtains it and renews it. The name has to resolve to this machine, and ports 80 and 443 have to reach it from the internet — that is where the CA asks. `--acme-ca` takes another CA's directory (Let's Encrypt's staging while trying it out, a step-ca of your own), `--acme-ca-root` its root. |
+| `--tls-cert FILE --tls-key FILE` | **A certificate you have** — from certbot, `tailscale cert`, your institution. Used on any port. It is checked first (its chain, that it names the domain, that the key is its own, its dates), and the gateway serves a copy: after a renewal, `konstruktor tls reload` takes the new one in without a restart — what to give certbot as `--deploy-hook`. `konstruktor tls set --cert … --key …` switches to other files, `konstruktor tls status` says how long it has left. |
+| `--plain-http` | **None**, for a lab or a test on a network you trust. Its address is this machine's on the network (`--domain` to say which) — never `localhost`, which is every hub container itself. |
+
+Before anything is written it checks that the name points at this machine (`--public-ip` for
+one behind a NAT, `--skip-dns-check` to skip it) and that its ports are free.
+
+**The mesh** is one more name: `--mesh-domain mesh.coord.example.org` runs ionskale beside
+Lok, served by the same gateway with the same kind of certificate, and every organization gets
+a private network that its hubs and apps can join. It also needs UDP port 3478 reachable.
+
+A firewall in front of it opens 80/tcp and 443/tcp (and 3478/udp with a mesh).
+
+`konstruktor wait` and `konstruktor check` ask what a client asks: the well-known (naming
+the address it was made with), Lok, the account frontend, the object store, the mesh, and
+whether signups are what they were meant to be — Lok ignores a setting it does not know, so a
+release from before `account.allow_signup` says so here instead of taking anybody's signup
+in silence. `wait` asks on this machine; `check` asks the names as DNS resolves them.
+
+Konstruktor itself trusts the roots this machine trusts, and the PEM file of roots
+`KONSTRUKTOR_CA_FILE` names, so it can create, check and connect to a coordination server
+behind a CA of your own. That is Konstruktor alone: a hub's services, its apps and every
+browser check the certificate against their own machine's roots, so with such a CA those
+have to trust it too — `coord create` says so when a certificate is trusted only through
+`KONSTRUKTOR_CA_FILE`.
+
+**Not yet for the internet:** the published `jhnnsrs/kontrol` image is the account frontend's
+development server (`pnpm dev`, two gigabytes), not its production build. It works, and it is
+what a coordination server runs until kontrol's release publishes its nginx image under the
+same tags.
 
 ### The desktop app
 
