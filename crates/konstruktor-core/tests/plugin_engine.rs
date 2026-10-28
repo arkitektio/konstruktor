@@ -112,7 +112,7 @@ fn the_engine_is_handed_the_socket_and_starts_apps_on_the_hubs_network() {
 
     assert_eq!(
         engine["image"],
-        "ghcr.io/arkitektio/plugin_engine:2.0.0-vanilla"
+        "ghcr.io/arkitektio/plugin_engine:3.0.0-vanilla"
     );
     assert_eq!(engine["command"][0], "arkitekt");
     let volumes: Vec<&str> = engine["volumes"]
@@ -199,7 +199,7 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
         config.plugin_engine.as_ref().unwrap().mandate_key
     );
     assert_eq!(client.manifest.identifier, PLUGIN_ENGINE_IDENTIFIER);
-    assert_eq!(client.manifest.version, "2.0.0");
+    assert_eq!(client.manifest.version, "3.0.0");
     assert_eq!(client.manifest.scopes, ["read", "write"]);
     assert_eq!(client.manifest.device_id.as_deref(), Some("device"));
     let services: Vec<&str> = client
@@ -299,7 +299,7 @@ fn the_engines_image_is_reported_and_written_back() {
     let mut config = with_engine(remote(kabinet_hub()));
     assert!(config.stack_images().contains(&(
         "plugin_engine".to_string(),
-        "ghcr.io/arkitektio/plugin_engine:2.0.0-vanilla".to_string()
+        "ghcr.io/arkitektio/plugin_engine:3.0.0-vanilla".to_string()
     )));
 
     config.set_service_image(

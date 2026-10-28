@@ -705,7 +705,7 @@ impl Default for ReporterBlock {
 
 /// The image of the plugin engine, pinned to a release: the engine starts every app the
 /// organization installs, so it moves only when Konstruktor is released with a new one.
-pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:2.0.0-vanilla";
+pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:3.0.0-vanilla";
 
 /// What the plugin engine is registered as: its app identifier, which the token the hub
 /// is approved with is pinned to.
