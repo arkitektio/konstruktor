@@ -747,7 +747,7 @@ fn coord_rows(
             "open to anybody".into()
         } else {
             // What it was made as. Whether Lok does as it is told is a question for it.
-            "meant closed — `konstruktor check` says whether Lok keeps it so".into()
+            "closed — an administrator makes accounts (`konstruktor check` asks Lok)".into()
         },
     ));
     rows.push((

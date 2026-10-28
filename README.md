@@ -407,10 +407,9 @@ are rotated: it is a server, not something a desktop decides to run.
 
 The first account is the administrator (`--admin`, `--admin-password`; left out, one is
 generated), in an organization of its own (`--org`) that hubs can be accepted into. Signups
-are meant to be closed unless `--signup open` — an administrator makes accounts — and Lok is
-told so as `account.allow_signup`. **Lok 8 does not read that setting yet, so for now
-anybody who reaches the server can sign up**; `wait` and `create` say so, and `check` fails
-on it until a Lok release that reads it is run. `--smtp-host`,
+are closed unless `--signup open` — an administrator makes accounts — which Lok is told as
+`account.allow_signup` (Lok 8.1 and later read it; on an older Lok anybody could sign up, and
+`create`, `wait` and `check` say so). `--smtp-host`,
 `--smtp-user`, `--smtp-password-file` and `--smtp-from` let it send mail (login codes,
 verification). How to log in, and as whom, is in `secrets/access.json`.
 
@@ -435,7 +434,7 @@ A firewall in front of it opens 80/tcp and 443/tcp (and 3478/udp with a mesh).
 `konstruktor wait` and `konstruktor check` ask what a client asks: the well-known (naming
 the address it was made with), Lok, the account frontend, the object store, the mesh, and
 whether signups are what they were meant to be — Lok ignores a setting it does not know, so a
-release from before `account.allow_signup` says so here instead of taking anybody's signup
+release from before `account.allow_signup` is caught here instead of taking anybody's signup
 in silence. `wait` asks on this machine; `check` asks the names as DNS resolves them.
 
 Konstruktor itself trusts the roots this machine trusts, and the PEM file of roots

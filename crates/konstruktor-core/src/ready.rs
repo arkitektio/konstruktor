@@ -124,9 +124,9 @@ pub fn check_signup(open: bool, body: &str) -> Result<(), String> {
         Some(answer) if answer == open => Ok(()),
         Some(true) => Err(
             "Signups are OPEN: Lok takes anybody's, though this coordination server is meant to \
-             be closed — its image does not read `account.allow_signup` yet. Until a Lok \
-             release does (`konstruktor update` then takes it), anybody who reaches it can \
-             make an account."
+             be closed — its image is older than Lok 8.1 and does not read \
+             `account.allow_signup`. Until it runs one that does (`konstruktor update`), \
+             anybody who reaches it can make an account."
                 .into(),
         ),
         Some(false) => Err(

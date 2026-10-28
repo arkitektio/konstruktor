@@ -314,7 +314,7 @@ pub async fn run(args: CoordCreateArgs) -> Result<()> {
     rows.push((
         "signup".into(),
         match answers.signup {
-            SignupPolicy::Closed => "closed — once Lok reads `account.allow_signup`".into(),
+            SignupPolicy::Closed => "closed — an administrator makes accounts".into(),
             SignupPolicy::Open => "open to anybody".into(),
         },
     ));
