@@ -343,7 +343,7 @@ mod tests {
             version: "1.0.0".into(),
             description: None,
             logo: None,
-            scopes: vec!["read".into()],
+            scopes: vec!["kabinet_deploy".into()],
             requirements: vec![],
             instance_id: "my-engine".into(),
             node_id: Some("device".into()),

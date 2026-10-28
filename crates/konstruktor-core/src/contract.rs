@@ -32,12 +32,30 @@ const REFUSED: i32 = 78;
 
 pub const FACTS_DIR: &str = "facts";
 
-/// A permission or a role a service declares, with what it means.
+/// What an app may do at a service on a user's behalf, with what it means.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
     pub key: String,
     #[serde(default)]
     pub description: String,
+    /// It grants everything the service offers: every scope check there passes with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_all_scope: bool,
+}
+
+/// What a member of an organization may do at a service, with what it means.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Role {
+    pub key: String,
+    #[serde(default)]
+    pub description: String,
+    /// It lets a member do everything in the service: the coordination server gives it to
+    /// the organization's owner and admins.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_admin_role: bool,
+    /// Every full member holds it, unless an admin took it away.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_default_role: bool,
 }
 
 /// What a service needs a hub to provide.
@@ -70,7 +88,7 @@ pub struct Needs {
     pub scopes: Vec<Scope>,
     /// The roles a member of an organization can hold at the service.
     #[serde(default)]
-    pub roles: Vec<Scope>,
+    pub roles: Vec<Role>,
     /// A key of its own, to sign what it sends the hub's other services with.
     #[serde(default)]
     pub instance_key: bool,

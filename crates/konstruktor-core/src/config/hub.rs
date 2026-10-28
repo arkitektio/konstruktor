@@ -768,8 +768,15 @@ pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:3.0.0-va
 /// is approved with is pinned to.
 pub const PLUGIN_ENGINE_IDENTIFIER: &str = "plugin_engine";
 
-/// The scopes the plugin engine is approved with. Rekuest and Kabinet declare both.
-pub const PLUGIN_ENGINE_SCOPES: [&str; 2] = ["read", "write"];
+/// The scopes the plugin engine is approved with: Kabinet's, to declare its backend and run and
+/// read the pods it is asked to, and Rekuest's, to act as the agent of the apps it starts. The
+/// services declare them, so a hub has to run releases that do.
+pub const PLUGIN_ENGINE_SCOPES: [&str; 4] = [
+    "kabinet_read",
+    "kabinet_deploy",
+    "rekuest_read",
+    "rekuest_agent",
+];
 
 /// The services the plugin engine needs, as `(key, service)`: what its manifest requires,
 /// and so the most its key may log it in with.

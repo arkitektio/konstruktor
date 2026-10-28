@@ -16,7 +16,9 @@ use std::collections::BTreeMap;
 
 use konstruktor_core::catalog::{ServiceId, SERVICE_IDS};
 use konstruktor_core::config::hub::{build_hub_config, HubConfig, HubConfigOptions};
-use konstruktor_core::contract::{Description, Job, Needs, Offers, Said, Scope, Source, CONTRACT};
+use konstruktor_core::contract::{
+    Description, Job, Needs, Offers, Role, Said, Scope, Source, CONTRACT,
+};
 
 fn scopes(pairs: &[(&str, &str)]) -> Vec<Scope> {
     pairs
@@ -24,6 +26,18 @@ fn scopes(pairs: &[(&str, &str)]) -> Vec<Scope> {
         .map(|(key, description)| Scope {
             key: (*key).to_string(),
             description: (*description).to_string(),
+            ..Scope::default()
+        })
+        .collect()
+}
+
+fn roles(pairs: &[(&str, &str)]) -> Vec<Role> {
+    pairs
+        .iter()
+        .map(|(key, description)| Role {
+            key: (*key).to_string(),
+            description: (*description).to_string(),
+            ..Role::default()
         })
         .collect()
 }
@@ -62,8 +76,8 @@ pub const HOOKED: [ServiceId; 7] = [
     ServiceId::Kuvert,
 ];
 
-fn roles_of(id: ServiceId) -> Vec<Scope> {
-    scopes(match id {
+fn roles_of(id: ServiceId) -> Vec<Role> {
+    roles(match id {
         ServiceId::Rekuest => &[
             ("agent", "Can act as a workflow agent"),
             ("caller", "Can call remote procedures"),
@@ -313,7 +327,7 @@ pub fn example() -> Description {
         needs: Needs {
             storage: words(&["archive"]),
             scopes: scopes(&[("example_read", "Read examples")]),
-            roles: scopes(&[("curator", "Can curate examples")]),
+            roles: roles(&[("curator", "Can curate examples")]),
             instance_key: false,
             secrets: words(&["signing"]),
             ..Needs::default()

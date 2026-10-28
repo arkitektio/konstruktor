@@ -200,7 +200,15 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
     );
     assert_eq!(client.manifest.identifier, PLUGIN_ENGINE_IDENTIFIER);
     assert_eq!(client.manifest.version, "3.0.0");
-    assert_eq!(client.manifest.scopes, ["read", "write"]);
+    assert_eq!(
+        client.manifest.scopes,
+        [
+            "kabinet_read",
+            "kabinet_deploy",
+            "rekuest_read",
+            "rekuest_agent"
+        ]
+    );
     assert_eq!(client.manifest.device_id.as_deref(), Some("device"));
     let services: Vec<&str> = client
         .manifest

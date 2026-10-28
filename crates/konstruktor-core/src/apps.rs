@@ -1627,7 +1627,7 @@ mod tests {
                 version: "2.1.0".into(),
                 description: Some("Runs apps".into()),
                 logo: None,
-                scopes: vec!["read".into(), "write".into()],
+                scopes: vec!["kabinet_read".into(), "kabinet_deploy".into()],
             },
             flavours: vec![],
         };

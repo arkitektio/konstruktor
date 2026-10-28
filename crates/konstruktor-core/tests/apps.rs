@@ -66,7 +66,7 @@ async fn stand_in(organization: &str) -> MockServer {
         .and(path(format!("/v2/org/engine/blobs/{DESCRIPTOR}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "spec_version": 1,
-            "manifest": {"identifier": "plugin_engine", "version": "2.1.0", "scopes": ["read", "write"]},
+            "manifest": {"identifier": "plugin_engine", "version": "2.1.0", "scopes": ["kabinet_read", "kabinet_deploy"]},
             "flavours": [{
                 "name": "vanilla",
                 "image": "ghcr.io/org/engine@sha256:aaaa",
@@ -308,7 +308,7 @@ async fn later_releases(server: &MockServer, organization: &str) {
             .and(path(format!("/v2/org/engine/blobs/{digest}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "spec_version": 1,
-                "manifest": {"identifier": "plugin_engine", "version": version, "scopes": ["read", "write"]},
+                "manifest": {"identifier": "plugin_engine", "version": version, "scopes": ["kabinet_read", "kabinet_deploy"]},
                 "flavours": [{
                     "name": "vanilla",
                     "image": image,

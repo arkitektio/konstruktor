@@ -8,19 +8,43 @@ use crate::hosts::HostCategory;
 /// Two shape gotchas worth knowing: a `ServiceManifest` carries no `name`, and
 /// `HubManifest.identifier` must be unique inside the organization that accepts it.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A scope or a role, as the coordination server is told of it. The flags say which of them
+/// stands for all of the service (and which role every member holds); unset, they are not sent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub key: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_all_scope: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_admin_role: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_default_role: bool,
 }
 
-/// The scopes or roles a service's image declared for it, as the manifest lists them.
-fn declared(scopes: &[crate::contract::Scope]) -> Vec<ManifestEntry> {
+/// The scopes a service's image declared for it, as the manifest lists them.
+fn declared_scopes(scopes: &[crate::contract::Scope]) -> Vec<ManifestEntry> {
     scopes
         .iter()
         .map(|scope| ManifestEntry {
             key: scope.key.clone(),
             description: scope.description.clone(),
+            is_all_scope: scope.is_all_scope,
+            ..ManifestEntry::default()
+        })
+        .collect()
+}
+
+/// The roles a service's image declared for it, as the manifest lists them.
+fn declared_roles(roles: &[crate::contract::Role]) -> Vec<ManifestEntry> {
+    roles
+        .iter()
+        .map(|role| ManifestEntry {
+            key: role.key.clone(),
+            description: role.description.clone(),
+            is_admin_role: role.is_admin_role,
+            is_default_role: role.is_default_role,
+            ..ManifestEntry::default()
         })
         .collect()
 }
@@ -504,8 +528,8 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                     version: "1.0.0".to_string(),
                     description: summary,
                     logo: None,
-                    roles: declared(&said.needs.roles),
-                    scopes: declared(&said.needs.scopes),
+                    roles: declared_roles(&said.needs.roles),
+                    scopes: declared_scopes(&said.needs.scopes),
                     node_id: options.node_id.clone(),
                     instance_id: "default".to_string(),
                     // Where its code is, when its image says: listed as what the
@@ -1055,16 +1079,30 @@ mod tests {
     /// service whose image has not spoken, nothing is told at all.
     #[test]
     fn a_service_that_described_itself_is_announced_with_its_own_scopes() {
-        use crate::contract::{Description, Needs, Scope};
+        use crate::contract::{Description, Needs, Role, Scope};
 
         let config = build_hub_config(&HubConfigOptions::default());
         let said = Description {
             contract: 1,
             name: "mikro".into(),
             needs: Needs {
-                scopes: vec![Scope {
-                    key: "mikro_annotate".into(),
-                    description: "Annotate images".into(),
+                scopes: vec![
+                    Scope {
+                        key: "mikro_annotate".into(),
+                        description: "Annotate images.".into(),
+                        ..Scope::default()
+                    },
+                    Scope {
+                        key: "mikro_all".into(),
+                        description: "Do everything in Mikro.".into(),
+                        is_all_scope: true,
+                    },
+                ],
+                roles: vec![Role {
+                    key: "mikro_admin".into(),
+                    description: "Full control of Mikro.".into(),
+                    is_admin_role: true,
+                    ..Role::default()
                 }],
                 ..Needs::default()
             },
@@ -1094,17 +1132,30 @@ mod tests {
                 })
                 .unwrap_or_default()
         };
-        assert_eq!(scopes("live.arkitekt.mikro"), ["mikro_annotate"]);
-        // It declared no roles: none are invented for it.
-        assert!(request
+        assert_eq!(
+            scopes("live.arkitekt.mikro"),
+            ["mikro_annotate", "mikro_all"]
+        );
+        // Its catch-alls are said as such, and a flag that is not set is not sent at all.
+        let mikro = &request
             .hub
             .instances
             .iter()
             .find(|instance| instance.manifest.identifier == "live.arkitekt.mikro")
             .unwrap()
-            .manifest
-            .roles
-            .is_empty());
+            .manifest;
+        let sent = serde_json::to_value(mikro).unwrap();
+        assert_eq!(
+            sent["scopes"],
+            serde_json::json!([
+                {"key": "mikro_annotate", "description": "Annotate images."},
+                {"key": "mikro_all", "description": "Do everything in Mikro.", "is_all_scope": true},
+            ])
+        );
+        assert_eq!(
+            sent["roles"],
+            serde_json::json!([{"key": "mikro_admin", "description": "Full control of Mikro.", "is_admin_role": true}])
+        );
         assert!(request
             .hub
             .instances
