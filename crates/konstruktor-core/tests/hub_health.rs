@@ -372,8 +372,8 @@ fn create_organization(dir: &Path, slug: &str) {
     let code = format!(
         "import threading\n\
          from authentikate.models import Organization\n\
-         Organization.objects.create(slug='{slug}')\n\
-         [t.join() for t in threading.enumerate() if t.name == 'provision-{slug}']"
+         organization = Organization.objects.create(identifier='hub-health#{slug}')\n\
+         [t.join() for t in threading.enumerate() if t.name == f'provision-{{organization.pk}}']"
     );
     let out = compose(
         dir,
