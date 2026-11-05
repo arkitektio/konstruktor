@@ -649,13 +649,15 @@ async fn add_local_mesh(config: &mut HubConfig, answers: &HubAnswers) -> Result<
             )
         })?,
     };
+    // Not one the gateway is about to publish: those are only numbers yet, bound by nothing.
+    let gateway = [answers.http_port, answers.https_port];
     let https_port = match answers.mesh_port {
         Some(port) => port,
-        None => free_port(false)?,
+        None => free_port(false, &gateway)?,
     };
     let stun_port = match answers.mesh_stun_port {
         Some(port) => port,
-        None => free_port(true)?,
+        None => free_port(true, &[])?,
     };
     let local = build_local_mesh_block(
         &LocalMeshOptions {
@@ -682,15 +684,23 @@ async fn docker_bridge_address() -> Option<String> {
         .map(|binding| binding.bind)
 }
 
-/// A port nothing listens on right now, TCP or UDP.
-fn free_port(udp: bool) -> Result<u16, CreateError> {
-    let port = if udp {
-        std::net::UdpSocket::bind(("0.0.0.0", 0)).and_then(|socket| socket.local_addr())
-    } else {
-        std::net::TcpListener::bind(("0.0.0.0", 0)).and_then(|listener| listener.local_addr())
-    };
-    port.map(|address| address.port())
-        .map_err(|e| CreateError::Answers(format!("no free port for the local mesh: {e}")))
+/// A port nothing listens on right now, TCP or UDP, and none of `avoid`.
+fn free_port(udp: bool, avoid: &[u16]) -> Result<u16, CreateError> {
+    for _ in 0..32 {
+        let port = if udp {
+            std::net::UdpSocket::bind(("0.0.0.0", 0)).and_then(|socket| socket.local_addr())
+        } else {
+            std::net::TcpListener::bind(("0.0.0.0", 0)).and_then(|listener| listener.local_addr())
+        }
+        .map(|address| address.port())
+        .map_err(|e| CreateError::Answers(format!("no free port for the local mesh: {e}")))?;
+        if !avoid.contains(&port) {
+            return Ok(port);
+        }
+    }
+    Err(CreateError::Answers(
+        "no free port for the local mesh that the gateway does not take".into(),
+    ))
 }
 
 /// What a self-contained hub cannot be, said before anything is written.

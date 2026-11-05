@@ -112,8 +112,10 @@ fn the_engine_is_handed_the_socket_and_starts_apps_on_the_hubs_network() {
 
     assert_eq!(
         engine["image"],
-        "ghcr.io/arkitektio/plugin_engine:4.0.0-vanilla"
+        "ghcr.io/arkitektio/plugin_engine:4-vanilla"
     );
+    // Its major's channel, which the manifest it logs in with reads as a version.
+    assert_eq!(config.plugin_engine.as_ref().unwrap().version(), "4.0.0");
     assert_eq!(engine["command"][0], "arkitekt");
     let volumes: Vec<&str> = engine["volumes"]
         .as_sequence()
@@ -316,7 +318,7 @@ fn the_engines_image_is_reported_and_written_back() {
     let mut config = with_engine(remote(kabinet_hub()));
     assert!(config.stack_images().contains(&(
         "plugin_engine".to_string(),
-        "ghcr.io/arkitektio/plugin_engine:4.0.0-vanilla".to_string()
+        "ghcr.io/arkitektio/plugin_engine:4-vanilla".to_string()
     )));
 
     config.set_service_image(

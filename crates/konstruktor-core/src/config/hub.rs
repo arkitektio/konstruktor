@@ -760,9 +760,11 @@ impl Default for ReporterBlock {
     }
 }
 
-/// The image of the plugin engine, pinned to a release: the engine starts every app the
-/// organization installs, so it moves only when Konstruktor is released with a new one.
-pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:4.0.0-vanilla";
+/// The image of the plugin engine: the channel of its major, which every 4.x release moves
+/// (`arkitekt plugin release` tags it). Like every other image here, a hub runs the build
+/// its lock pinned the channel to, and only `update` looks again: an engine fix reaches a
+/// hub without a Konstruktor release, a breaking one (a new major) only with one.
+pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:4-vanilla";
 
 /// What the plugin engine is registered as: its app identifier, which the token the hub
 /// is approved with is pinned to.
@@ -857,7 +859,8 @@ impl PluginEngineBlock {
 }
 
 /// The app version an image of an arkitekt app is, from its tag: a release's flavour is
-/// tagged `<version>-<flavour>`. `0.0.0` for a tag that is not a version (a channel).
+/// tagged `<version>-<flavour>`, its major's channel `<major>-<flavour>` (read as the
+/// major's first version). `0.0.0` for a tag that is not a version (a branch's channel).
 pub fn image_version(image: &str) -> String {
     let reference = image.split('@').next().unwrap_or(image);
     let name_starts = reference.rfind('/').map_or(0, |slash| slash + 1);
@@ -865,6 +868,12 @@ pub fn image_version(image: &str) -> String {
         .rsplit_once(':')
         .map(|(_, tag)| tag.split('-').next().unwrap_or(tag).to_string())
         .filter(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        // A major's channel (`4-vanilla`) is that major's first version: still a version.
+        .map(|version| match version.matches('.').count() {
+            0 => format!("{version}.0.0"),
+            1 => format!("{version}.0"),
+            _ => version,
+        })
         .unwrap_or_else(|| "0.0.0".to_string())
 }
 
