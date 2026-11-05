@@ -80,8 +80,9 @@ pub struct CreateArgs {
     /// otherwise.
     #[arg(long, value_parser = crate::parse_reach)]
     pub reach: Option<hosts::ReachPresetId>,
-    /// none · coordination · manual. By default the hub asks the coordination server for
-    /// a key to join the organization's mesh.
+    /// none · coordination · manual · local. By default the hub asks the coordination
+    /// server for a key to join the organization's mesh. `local`, with `--server local`
+    /// only: the hub runs a mesh of its own beside its own Lok, and joins it.
     #[arg(long, default_value = "coordination", value_parser = crate::parse_mesh_mode)]
     pub mesh: MeshMode,
     /// Reach the hub over the mesh only: no port is opened on this machine and no
@@ -95,6 +96,16 @@ pub struct CreateArgs {
     /// The mesh's control server, for `--mesh manual`. Left out, Tailscale's own.
     #[arg(long)]
     pub mesh_coord_url: Option<String>,
+    /// For `--mesh local`: the address nodes reach its control server at, which this
+    /// machine and its containers must both reach. Left out, the docker bridge's.
+    #[arg(long)]
+    pub mesh_address: Option<String>,
+    /// For `--mesh local`: the published port of its control server. Left out, a free one.
+    #[arg(long)]
+    pub mesh_port: Option<u16>,
+    /// For `--mesh local`: the published UDP port of its STUN server. Left out, a free one.
+    #[arg(long)]
+    pub mesh_stun_port: Option<u16>,
     /// A dev hub: check every service's source out into `mounts/` and mount it into the
     /// containers, so they run the code on this machine. Needs git.
     #[arg(long)]
@@ -426,6 +437,9 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         mesh_mode: args.mesh.clone(),
         mesh_auth_key: mesh_key,
         mesh_coord_url: args.mesh_coord_url.clone(),
+        mesh_address: args.mesh_address.clone(),
+        mesh_port: args.mesh_port,
+        mesh_stun_port: args.mesh_stun_port,
         mesh_only: args.mesh_only,
         start: !args.no_start,
         plugin_engine: !args.no_plugin_engine,
@@ -834,6 +848,7 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
                 MeshMode::Coordination => "asks the coordination server for a key".into(),
                 MeshMode::Manual => "joins with the key you supplied".into(),
                 MeshMode::None => "none".into(),
+                MeshMode::Local => "runs one of its own, and joins it".into(),
             },
         ),
         (

@@ -665,6 +665,15 @@ pub fn build_compose(
         );
     }
 
+    // --- the mesh a self-contained hub runs itself ------------------------------
+    if let Some(mesh) = config.running_local_mesh() {
+        insert(
+            &mut services,
+            &mesh.host,
+            crate::generate::local_mesh::ionskale_service(mesh),
+        );
+    }
+
     // --- what a coordination server runs beside Lok ---------------------------
     if let (Some(coord), Some(lok)) = (config.running_coord(), lok) {
         use crate::generate::coord;
@@ -783,6 +792,13 @@ pub fn build_compose(
         if share_socket {
             environment.push(("TS_SOCKET", s(TAILSCALE_SOCKET)));
         }
+        if config.running_local_mesh().is_some() {
+            environment.extend(
+                crate::generate::local_mesh::sidecar_environment()
+                    .into_iter()
+                    .map(|(key, value)| (key, s(&value))),
+            );
+        }
         let mut sidecar_volumes = vec![
             s(&format!("{}:{}", mesh.volume_name, MESH_STATE_DIR)),
             s("/dev/net/tun:/dev/net/tun"),
@@ -791,6 +807,13 @@ pub fn build_compose(
             sidecar_volumes.push(s(&format!(
                 "{TAILSCALE_SOCKET_VOLUME}:{TAILSCALE_SOCKET_DIR}"
             )));
+        }
+        if config.running_local_mesh().is_some() {
+            sidecar_volumes.extend(
+                crate::generate::local_mesh::sidecar_volumes()
+                    .iter()
+                    .map(|volume| s(volume)),
+            );
         }
 
         // A member of the sidecar's namespace has no name of its own on the network, so
@@ -923,6 +946,18 @@ pub fn build_compose(
         // The node identity has to survive `docker compose down`, or every restart rejoins
         // the tailnet as a new machine — and the pre-auth key is single-use.
         insert(&mut volumes, &mesh.volume_name, empty_map());
+    }
+    if config.running_local_mesh().is_some() {
+        insert(
+            &mut volumes,
+            crate::config::local_mesh::DATA_VOLUME,
+            empty_map(),
+        );
+        insert(
+            &mut volumes,
+            crate::config::local_mesh::KEYS_VOLUME,
+            empty_map(),
+        );
     }
     if let Some(ollama) = config.running_ollama() {
         insert(&mut volumes, &ollama.volume_name, empty_map());

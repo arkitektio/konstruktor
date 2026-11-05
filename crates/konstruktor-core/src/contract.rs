@@ -1048,6 +1048,18 @@ pub async fn prepare_databases(
     crate::backup::wait_for_database(dir, config, "database", &|_| {})
         .await
         .map_err(|error| error.to_string())?;
+    // A hub on a mesh of its own: Lok makes the organization's tailnet and the hub's key
+    // while it is prepared, so the mesh's control server answers first.
+    if let Some(mesh) = config.running_local_mesh() {
+        let up = vec![
+            "compose".to_string(),
+            "up".to_string(),
+            "-d".to_string(),
+            mesh.host.clone(),
+        ];
+        crate::compose::run_streamed(dir, up, on_line).await?;
+        wait_for_local_mesh(mesh).await?;
+    }
     // What each is prepared with is its image's to say. The coordination server is not one
     // of the hub's services, so it is asked here, for this.
     let mut said = described(dir, config).await;
@@ -1105,6 +1117,35 @@ pub async fn prepare_databases(
         return Err(failed.join("\n\n"));
     }
     Ok(done)
+}
+
+/// Until the local mesh's control server answers its health check, at its published port.
+/// Its certificate is the hub's own CA's, which nothing here needs to trust to ask that.
+async fn wait_for_local_mesh(
+    mesh: &crate::config::local_mesh::LocalMeshBlock,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("https://127.0.0.1:{}/healthz", mesh.https_port);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match client.get(&url).send().await {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            outcome if std::time::Instant::now() > deadline => {
+                return Err(format!(
+                    "The hub's mesh control server did not answer at {url}: {}",
+                    match outcome {
+                        Ok(response) => format!("HTTP {}", response.status()),
+                        Err(error) => error.to_string(),
+                    }
+                ));
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+        }
+    }
 }
 
 /// What the hub tells the service `id` about itself (`arkitekt_service.contract.facts.Facts`): the one

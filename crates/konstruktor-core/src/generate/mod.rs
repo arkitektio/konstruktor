@@ -1,6 +1,7 @@
 pub mod caddy;
 pub mod compose;
 pub mod coord;
+pub mod local_mesh;
 pub mod lok;
 pub mod service;
 pub mod write;
@@ -73,6 +74,9 @@ pub fn generate_hub_files(
             serde_json::to_string_pretty(&access).expect("the access document is plain data");
         access.push('\n');
         files.insert(lok::ACCESS_FILE.to_string(), access);
+    }
+    if let Some(mesh) = config.running_local_mesh() {
+        files.extend(local_mesh::files(mesh));
     }
 
     // --- what a coordination server runs beside Lok ---------------------------

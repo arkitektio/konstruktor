@@ -511,8 +511,9 @@ pub fn parse_mesh_mode(value: &str) -> Result<MeshMode, String> {
         "none" => Ok(MeshMode::None),
         "coordination" => Ok(MeshMode::Coordination),
         "manual" => Ok(MeshMode::Manual),
+        "local" => Ok(MeshMode::Local),
         other => Err(format!(
-            "unknown mesh mode `{other}` — expected none, coordination or manual"
+            "unknown mesh mode `{other}` — expected none, coordination, manual or local"
         )),
     }
 }

@@ -520,3 +520,74 @@ fn the_access_document_prefers_localhost_among_the_advertised_addresses() {
     let access = build_access(&lan, lan.running_lok().unwrap());
     assert_eq!(access["fakts_url"], format!("http://192.168.1.5:{PORT}"));
 }
+
+/// A hub on a mesh of its own (`--mesh local`). What has to line up is spread over four
+/// files, and each mismatch fails silently at runtime: the sidecar would wait for a key
+/// nobody writes, or Lok would mint one nobody reads, or the apps would get no mesh alias
+/// to reach the services by.
+#[test]
+fn a_hub_on_a_mesh_of_its_own_joins_with_the_key_lok_writes() {
+    use konstruktor_core::config::local_mesh::{
+        build_local_mesh_block, hub_sidecar, LocalMeshOptions, HUB_KEY_FILE, KEYS_DIR, KEYS_VOLUME,
+    };
+
+    let mut config = default_hub();
+    let local = build_local_mesh_block(
+        &LocalMeshOptions {
+            image: "jhnnsrs/ionskale:latest".into(),
+            address: "172.17.0.1".into(),
+            https_port: 41443,
+            stun_port: 41478,
+        },
+        2026,
+    )
+    .unwrap();
+    config.mesh = Some(hub_sidecar("lab", &local));
+    config.local_mesh = Some(local);
+    let files = files_of(&config);
+
+    // Lok mints the hub's key into the file the sidecar logs in with.
+    let lok = yaml(&files, "configs/lok.yaml");
+    let ionscale = &lok["ionscale"];
+    assert_eq!(
+        ionscale["hub_key_files"]["lab"].as_str(),
+        Some(HUB_KEY_FILE)
+    );
+    assert_eq!(
+        ionscale["server_url"].as_str(),
+        Some("https://ionskale:443")
+    );
+    assert_eq!(
+        files["mesh.env"],
+        format!("TS_AUTHKEY=file:{HUB_KEY_FILE}\n")
+    );
+
+    // Both mount the volume the file is on; the sidecar joins the control server Lok
+    // hands apps, and trusts the CA it is signed by.
+    let compose = yaml(&files, "docker-compose.yaml");
+    let services = &compose["services"];
+    let keys = format!("{KEYS_VOLUME}:{KEYS_DIR}");
+    assert!(strings(&services["lok"]["volumes"]).contains(&keys));
+    assert!(strings(&services["tailscale"]["volumes"]).contains(&format!("{keys}:ro")));
+    let sidecar = &services["tailscale"]["environment"];
+    assert_eq!(
+        sidecar["TS_EXTRA_ARGS"].as_str(),
+        Some(format!("--login-server={}", ionscale["coord_url"].as_str().unwrap()).as_str())
+    );
+    assert!(sidecar["SSL_CERT_FILE"].as_str().is_some());
+    assert!(services["ionskale"].is_mapping());
+
+    // Apps logging in with a mandate key may join, and find every service on the mesh.
+    for mandate in lok["mandate_keys"].as_sequence().unwrap() {
+        assert_eq!(mandate["allow_mesh"].as_bool(), Some(true));
+    }
+    let hub = preconfigured_hub(&config, config.running_lok().unwrap(), &support::said());
+    assert!(hub.request_auth_key);
+    for instance in hub.instances.iter().filter(|i| i.name != "lok") {
+        assert!(
+            instance.aliases.iter().any(|alias| alias.kind == "mesh"),
+            "{} has no mesh alias",
+            instance.name
+        );
+    }
+}

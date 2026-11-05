@@ -76,6 +76,17 @@ class Endpoint:
 
 
 @dataclass(frozen=True)
+class Mesh:
+    """The mesh a hub runs itself (``mesh=True``): where a node joins it, and what it trusts."""
+
+    #: The control server, e.g. ``https://172.17.0.1:41443``.
+    coord_url: str
+    #: The CA its certificate is signed by, PEM: what a node is told to trust
+    #: (``ARKITEKT_MESH_CA_FILE``).
+    ca_file: Path
+
+
+@dataclass(frozen=True)
 class Access:
     """How to get into a hub: what its ``secrets/access.json`` says."""
 
@@ -97,6 +108,8 @@ class Access:
     #: each app its own.
     mandate_keys: tuple[str, ...]
     services: Mapping[str, Service]
+    #: The mesh the hub runs itself, if it runs one.
+    mesh: Mesh | None = None
 
     @classmethod
     def read(cls, directory: Path) -> "Access":
@@ -112,6 +125,11 @@ class Access:
             users=tuple(Account(**user) for user in access["users"]),
             mandate_keys=tuple(access["mandate_keys"]),
             services={name: Service(name=name, **service) for name, service in access["services"].items()},
+            mesh=(
+                Mesh(coord_url=access["mesh"]["coord_url"], ca_file=directory / access["mesh"]["ca_file"])
+                if access.get("mesh")
+                else None
+            ),
         )
 
 
@@ -258,6 +276,11 @@ class Hub(Deployment):
     def services(self) -> Mapping[str, Service]:
         """The hub's services as they are reached through the gateway, by name."""
         return self.access.services
+
+    @property
+    def mesh(self) -> Mesh | None:
+        """The mesh the hub runs itself (``mesh=True``), or ``None``."""
+        return self.access.mesh
 
     def mandate_key(self, app: str) -> str:
         """The mandate key of the app called ``app``: the same one every time.
@@ -420,6 +443,7 @@ def testing_hub(
     mandate_keys: int = 1,
     plugin_engine: bool = False,
     tls: bool = False,
+    mesh: bool = False,
     images: Mapping[str, str] | None = None,
     debug: Sequence[str] = (),
     mounts: Mapping[str, str | os.PathLike[str]] | None = None,
@@ -459,6 +483,11 @@ def testing_hub(
             hub's address is then plain HTTP, which an app reaches without the
             certificate the coordination server only hands it after it is in, and
             no two test hubs contend for the one HTTPS port.
+        mesh: Run a mesh of its own beside the hub's Lok and put the hub on it.
+            Every service is then also reachable over the mesh, and an app logging
+            in with a mandate key gets a key to join it. Its control server is
+            published at the docker bridge's address, which this machine and its
+            containers both reach; :attr:`Hub.mesh` says where, and which CA to trust.
         images: Images to run instead of the ones a new hub gets, by service.
         debug: Services to run with their development server.
         mounts: Source trees to run instead of what an image holds, by service.
@@ -480,6 +509,7 @@ def testing_hub(
             mandate_keys=mandate_keys,
             plugin_engine=plugin_engine,
             tls=tls,
+            mesh=mesh,
             images=images,
             debug=debug,
             mounts=mounts,
@@ -569,6 +599,7 @@ __all__ = [
     "Hub",
     "HubNotCreatedError",
     "KonstruktorError",
+    "Mesh",
     "NoMandateKeyLeftError",
     "Service",
     "local_hub",

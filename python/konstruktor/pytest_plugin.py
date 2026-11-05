@@ -170,6 +170,7 @@ def konstruktor_hub(
         user_password: str | None = None,
         http_port: int | None = None,
         tls: bool = False,
+        mesh: bool = False,
         name: str | None = None,
     ) -> Hub:
         hub = testing_hub(
@@ -178,6 +179,7 @@ def konstruktor_hub(
             service_images=service_images,
             http_port=http_port,
             tls=tls,
+            mesh=mesh,
             organization=organization,
             user=user,
             user_password=user_password,

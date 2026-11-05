@@ -1133,6 +1133,10 @@ pub struct HubConfig {
     /// Present only on a hub that joined a mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshBlock>,
+    /// The mesh a self-contained hub runs itself (`--mesh local`), which its [`Self::mesh`]
+    /// sidecar joins. See [`crate::config::local_mesh`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_mesh: Option<crate::config::local_mesh::LocalMeshBlock>,
     pub minio: MinioBlock,
     pub rekuest_server: String,
     /// The image takt runs, once something pinned it (a rollback, an advanced pin). Unset,
@@ -1502,6 +1506,14 @@ impl HubConfig {
         self.lok.as_ref().filter(|lok| lok.enabled)
     }
 
+    /// The mesh this hub runs itself: only beside a Lok of its own that is not a
+    /// coordination server's (which has a mesh of its own kind, [`crate::config::coord`]).
+    pub fn running_local_mesh(&self) -> Option<&crate::config::local_mesh::LocalMeshBlock> {
+        self.local_mesh
+            .as_ref()
+            .filter(|_| self.running_lok().is_some() && self.coord.is_none())
+    }
+
     /// The Ollama this stack runs, if it runs one. Only while Alpaka does: it is Alpaka's
     /// provider, and a hub that took Alpaka out keeps the block (and the models volume)
     /// for when it comes back, but not the container.
@@ -1615,6 +1627,9 @@ impl HubConfig {
         if let Some(lok) = self.running_lok() {
             images.push((lok.host.clone(), lok.image.clone()));
         }
+        if let Some(mesh) = self.running_local_mesh() {
+            images.push((mesh.host.clone(), mesh.image.clone()));
+        }
         if let Some(coord) = self.running_coord() {
             images.push((coord.kontrol.host.clone(), coord.kontrol.image.clone()));
             if let Some(mesh) = &coord.mesh {
@@ -1674,6 +1689,10 @@ impl HubConfig {
         }
         if let Some(lok) = self.lok.as_mut().filter(|l| l.host == service) {
             lok.image = image.to_string();
+            return;
+        }
+        if let Some(mesh) = self.local_mesh.as_mut().filter(|m| m.host == service) {
+            mesh.image = image.to_string();
             return;
         }
         if let Some(coord) = self.coord.as_mut() {
@@ -2230,6 +2249,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
             internal_port: 6379,
         },
         mesh: options.mesh.as_ref().map(build_mesh_block),
+        local_mesh: None,
         // Added when the hub is authorized; a profile that never was has nothing to log
         // in as.
         reporter: None,

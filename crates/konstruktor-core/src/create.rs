@@ -34,6 +34,9 @@ pub enum MeshMode {
     Coordination,
     /// Use a key the user already holds.
     Manual,
+    /// Run a mesh of its own beside its own Lok, and join it: a self-contained hub only.
+    /// See [`crate::config::local_mesh`].
+    Local,
 }
 
 /// Everything a front end has to collect. Deliberately flat and serde-friendly: the
@@ -73,6 +76,16 @@ pub struct HubAnswers {
     pub mesh_auth_key: Option<String>,
     #[serde(default)]
     pub mesh_coord_url: Option<String>,
+    /// For a local mesh: the address its nodes reach its control server at. Left out, the
+    /// docker bridge's, which this machine and its containers both reach.
+    #[serde(default)]
+    pub mesh_address: Option<String>,
+    /// For a local mesh: the published ports of its control server and of STUN. Left out,
+    /// free ones.
+    #[serde(default)]
+    pub mesh_port: Option<u16>,
+    #[serde(default)]
+    pub mesh_stun_port: Option<u16>,
     /// Reach the hub over the mesh and nothing else: no port is published on the host,
     /// `hosts` is ignored, and the manifest advertises the tailnet node and the gateway's
     /// name on the docker network. Needs a `mesh_mode` other than `none`.
@@ -294,6 +307,13 @@ pub async fn create_hub(
     if self_contained {
         validate_self_contained(answers)?;
     }
+    if answers.mesh_mode == MeshMode::Local && !self_contained {
+        return Err(CreateError::Answers(
+            "Only a hub that runs its own coordination server (`--server local`) runs a mesh \
+             of its own; any other joins its coordination server's."
+                .into(),
+        ));
+    }
     if answers.mesh_only && answers.mesh_mode == MeshMode::None {
         return Err(CreateError::Answers(
             "A mesh-only hub needs a mesh — choose a way to join one, or advertise \
@@ -388,6 +408,11 @@ pub async fn create_hub(
         storage: answers.storage,
         ..Default::default()
     });
+    // A mesh of its own, which its sidecar joins with the key Lok mints for it. Before the
+    // images, so `--image ionskale=…` reaches it.
+    if answers.mesh_mode == MeshMode::Local {
+        add_local_mesh(&mut config, answers).await?;
+    }
     // The plugin engine, with the socket of the engine on this machine. Before the images,
     // so `--image plugin_engine=…` reaches it; connecting asks for its client.
     let engine = crate::engine_probe::engine();
@@ -603,13 +628,78 @@ pub(crate) fn apply_images(
     Ok(())
 }
 
+/// The hub's own mesh: ionskale at the docker bridge's address (or the one asked for), and
+/// the sidecar that puts the gateway on it.
+async fn add_local_mesh(config: &mut HubConfig, answers: &HubAnswers) -> Result<(), CreateError> {
+    use crate::config::local_mesh::{build_local_mesh_block, hub_sidecar, LocalMeshOptions};
+
+    let address = match answers
+        .mesh_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        Some(address) => address.to_string(),
+        None => docker_bridge_address().await.ok_or_else(|| {
+            CreateError::Answers(
+                "A local mesh is reached at the docker bridge's address, and this machine \
+                 has none (`docker0`). Name an address its containers reach with \
+                 `--mesh-address`."
+                    .into(),
+            )
+        })?,
+    };
+    let https_port = match answers.mesh_port {
+        Some(port) => port,
+        None => free_port(false)?,
+    };
+    let stun_port = match answers.mesh_stun_port {
+        Some(port) => port,
+        None => free_port(true)?,
+    };
+    let local = build_local_mesh_block(
+        &LocalMeshOptions {
+            image: crate::config::coord::IONSKALE_IMAGE.to_string(),
+            address,
+            https_port,
+            stun_port,
+        },
+        crate::tls::current_year(),
+    )
+    .map_err(CreateError::Answers)?;
+    config.mesh = Some(hub_sidecar(&answers.identifier, &local));
+    config.local_mesh = Some(local);
+    Ok(())
+}
+
+/// The address of `docker0`, if this machine has one.
+async fn docker_bridge_address() -> Option<String> {
+    crate::hosts::bindings()
+        .await
+        .ok()?
+        .into_iter()
+        .find(|binding| binding.name == "docker0" && !binding.bind.contains(':'))
+        .map(|binding| binding.bind)
+}
+
+/// A port nothing listens on right now, TCP or UDP.
+fn free_port(udp: bool) -> Result<u16, CreateError> {
+    let port = if udp {
+        std::net::UdpSocket::bind(("0.0.0.0", 0)).and_then(|socket| socket.local_addr())
+    } else {
+        std::net::TcpListener::bind(("0.0.0.0", 0)).and_then(|listener| listener.local_addr())
+    };
+    port.map(|address| address.port())
+        .map_err(|e| CreateError::Answers(format!("no free port for the local mesh: {e}")))
+}
+
 /// What a self-contained hub cannot be, said before anything is written.
 fn validate_self_contained(answers: &HubAnswers) -> Result<(), CreateError> {
-    if answers.mesh_mode != MeshMode::None || answers.mesh_only {
+    if !matches!(answers.mesh_mode, MeshMode::None | MeshMode::Local) || answers.mesh_only {
         return Err(CreateError::Answers(
-            "A hub that runs its own coordination server has no mesh unless it is given one, \
-             and giving it one is not available yet. Create it with `--mesh none`; it is \
-             reached at this machine's addresses."
+            "A hub that runs its own coordination server has no mesh but one of its own \
+             (`--mesh local`), and is reached at this machine's addresses too. Create it \
+             with `--mesh none` or `--mesh local`."
                 .into(),
         ));
     }

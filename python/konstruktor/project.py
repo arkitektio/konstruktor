@@ -86,6 +86,10 @@ class KonstruktorProject(BaseModel):
     #: pointed at the HTTPS address, and trusts the certificate only once the
     #: coordination server has handed it over -- off, the hub is plain HTTP only.
     tls: bool = True
+    #: Run a mesh of its own beside the hub's Lok and put the hub on it
+    #: (``--mesh local``): every service then also has an alias on the mesh, and an
+    #: app logging in with a mandate key gets a key to join it.
+    mesh: bool = False
     #: Images to run instead of the ones a new hub gets, by compose service:
     #: ``{"rekuest": "jhnnsrs/rekuest:1.2.3"}``.
     images: dict[str, str] = Field(default_factory=dict)
@@ -168,6 +172,8 @@ class KonstruktorProject(BaseModel):
             args.append("--no-plugin-engine")
         if not self.tls:
             args.append("--plain-http")
+        if self.mesh:
+            args += ["--mesh", "local"]
         for service, image in self.images.items():
             args += ["--image", f"{service}={image}"]
         for service in self.debug:

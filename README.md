@@ -381,9 +381,17 @@ This needs a coordination server that knows the `discovery_follows_request` sett
 `docker` alias kind. `konstruktor wait` says so, rather than waiting, when the Lok image
 it started is too old.
 
-**What it does not have.** A mesh is opt-in on such a hub, and opting in is not available
-yet: it is reached at this machine's addresses. Changing its services means creating it
-again — they are part of what its coordination server was set up with.
+**A mesh of its own.** `--mesh local` runs a mesh control server (ionskale) beside its Lok
+and puts the hub on it, so its services are also reachable the way a hub that is only on a
+mesh is: Lok mints the hub's node key while it is prepared and writes it where the sidecar
+reads it, every service gets a mesh alias, and an app logging in with a mandate key gets a
+key to join. The control server is published at the docker bridge's address
+(`--mesh-address` to name another), under a CA of the hub's own (`configs/ionskale/tls/ca.pem`,
+named in `secrets/access.json` under `mesh`), which a node is told to trust. It needs a Lok
+that knows `ionscale.hub_key_files`.
+
+**What it does not have.** Changing its services means creating it again — they are part of
+what its coordination server was set up with.
 
 From Python, the `konstruktor` package wraps exactly this and nothing more — see
 [`python/README.md`](python/README.md).

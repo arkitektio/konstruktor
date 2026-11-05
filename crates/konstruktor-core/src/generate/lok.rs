@@ -66,8 +66,10 @@ pub fn preconfigured_hub(
             node_id: config.device_id.clone(),
             hosts: lok.advertised_hosts.clone(),
             reachable_hosts: Vec::new(),
-            request_auth_key: false,
-            mesh_alias: false,
+            // On a mesh of its own, the hub asks Lok for its node's key and for an alias
+            // on that mesh for every service, as a hub asks a coordination server.
+            request_auth_key: config.running_local_mesh().is_some(),
+            mesh_alias: config.running_local_mesh().is_some(),
             internal_host: Some(config.gateway.host.clone()),
             expiration_seconds: None,
             // What each service is registered with — its scopes, its roles — is what its
@@ -190,7 +192,7 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
     let hub = serde_norway::to_value(preconfigured_hub(config, lok, said))
         .expect("a hub manifest is plain data");
 
-    map(vec![
+    let mut entries = vec![
         (
             "django",
             map(vec![
@@ -304,6 +306,11 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
                             ("user", s(&mandate.user)),
                             ("organization", s(&organization.identifier)),
                             ("hub", s(&lok.hub_identifier)),
+                            // An app logging in with it joins the hub's mesh.
+                            (
+                                "allow_mesh",
+                                Value::from(config.running_local_mesh().is_some()),
+                            ),
                         ])
                     })
                     .collect(),
@@ -319,7 +326,14 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
                 ("preconfigured_hub", hub),
             ])]),
         ),
-    ])
+    ];
+    if let Some(mesh) = config.running_local_mesh() {
+        entries.push((
+            "ionscale",
+            crate::generate::local_mesh::lok_ionscale(mesh, &lok.hub_identifier),
+        ));
+    }
+    map(entries)
 }
 
 /// Lok's compose service. A service like the others — same command, same dependencies —
@@ -330,6 +344,18 @@ pub fn lok_compose_service(
     lok: &LokBlock,
     said: &crate::contract::Said,
 ) -> Value {
+    let mut volumes = vec![s(&format!(
+        "./configs/{}.yaml:/workspace/config.yaml",
+        lok.host
+    ))];
+    // Where it writes the key of the hub's own node, while it is prepared.
+    if config.running_local_mesh().is_some() {
+        volumes.push(s(&format!(
+            "{}:{}",
+            crate::config::local_mesh::KEYS_VOLUME,
+            crate::config::local_mesh::KEYS_DIR
+        )));
+    }
     let mut entries = vec![("image", s(&lok.image))];
     // Started as its image says, like any service.
     if let Some(command) = said.get(&lok.host).and_then(|said| said.command(false)) {
@@ -348,13 +374,7 @@ pub fn lok_compose_service(
             )),
         ),
         ("stop_grace_period", s("2s")),
-        (
-            "volumes",
-            list(vec![s(&format!(
-                "./configs/{}.yaml:/workspace/config.yaml",
-                lok.host
-            ))]),
-        ),
+        ("volumes", list(volumes)),
         (
             "deploy",
             map(vec![(
@@ -450,7 +470,7 @@ pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
         }
     }
 
-    serde_json::json!({
+    let mut access = serde_json::json!({
         "version": 1,
         "gateway_url": gateway,
         // What an app is pointed at. Its well-known is served from the gateway's root.
@@ -469,5 +489,10 @@ pub fn build_access(config: &HubConfig, lok: &LokBlock) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "mandate_keys": lok.mandate_keys.iter().map(|m| m.key.clone()).collect::<Vec<_>>(),
         "services": services,
-    })
+    });
+    // Where an app's node joins the hub's own mesh, and the CA it trusts there.
+    if let Some(mesh) = config.running_local_mesh() {
+        access["mesh"] = crate::generate::local_mesh::access(mesh);
+    }
+    access
 }
