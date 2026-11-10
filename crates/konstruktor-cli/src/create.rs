@@ -190,8 +190,8 @@ pub struct CreateArgs {
     pub no_start: bool,
     /// Leave the plugin engine out: the app that runs, on this machine, the apps the
     /// organization installs through Kabinet. Without it nothing can be installed here.
-    /// It is only added beside Kabinet and Rekuest, and it is handed this machine's
-    /// container engine socket.
+    /// It is only added beside Kabinet and Rekuest, it is handed this machine's container
+    /// engine socket, and it is approved together with the hub — no second authorization.
     #[arg(long)]
     pub no_plugin_engine: bool,
     /// Do not open a browser for the authorization.
@@ -521,13 +521,18 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         }
         None => {}
     }
-    // A plugin engine beside it, when it runs what an engine serves: an app approved on its
-    // own, so a step of its own too.
+    // The plugin engine was asked for with the hub and runs once approved with it. Only
+    // when it was left out, or not approved, does one have to be attached beside it.
     let serves_apps = created.config.service(ServiceId::Kabinet).enabled
         && created.config.service(ServiceId::Rekuest).enabled;
-    if !self_contained && serves_apps && !args.no_plugin_engine {
+    // Read back: connecting rewrote the profile, and switched the engine on if approved.
+    let connected = konstruktor_core::credentials::read_credentials(&created.path).is_some();
+    let runs_engine = konstruktor_core::profile::read_profile(&created.path)
+        .map(|profile| profile.config.running_plugin_engine().is_some())
+        .unwrap_or(false);
+    if !self_contained && serves_apps && connected && !runs_engine {
         ui::step(&format!(
-            "Kabinet installs apps through a plugin engine beside the hub: {}",
+            "Kabinet installs apps through a plugin engine, and this hub runs none: {}",
             ui::bold(&format!(
                 "konstruktor engine create --hub {}",
                 created.path.to_string_lossy()

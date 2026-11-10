@@ -416,16 +416,19 @@ pub async fn create_hub(
     // The plugin engine, with the socket of the engine on this machine. Before the images,
     // so `--image plugin_engine=…` reaches it; connecting asks for its client.
     let engine = crate::engine_probe::engine();
-    // Only a self-contained hub runs a plugin engine of its own, which its own coordination
-    // server is told of as it is set up. Beside any other hub the engine is an app, attached
-    // and approved on its own ([`crate::apps`]).
-    if self_contained {
-        add_plugin_engine(
-            &mut config,
-            answers,
-            engine.kind.container_socket(),
-            docker::host_socket(&engine).await,
-        );
+    add_plugin_engine(
+        &mut config,
+        answers,
+        engine.kind.container_socket(),
+        docker::host_socket(&engine).await,
+    );
+    // Run once the coordination server approved it with the hub, in the same authorization
+    // the hub is accepted in — no second window. A self-contained hub's own coordination
+    // server is told of it as it is set up.
+    if !self_contained {
+        if let Some(engine) = config.plugin_engine.as_mut() {
+            engine.enabled = false;
+        }
     }
 
     // Before the authorization and before anything is generated: the images are part of
@@ -433,6 +436,27 @@ pub async fn create_hub(
     let defaults = images_this_hub_runs(&config, &answers.default_images);
     apply_images(&mut config, &defaults)?;
     apply_images(&mut config, &answers.images)?;
+    // The engine is an app: what it is approved with is what its release asks for, read
+    // for the image it runs. Unread, it is asked for with what Konstruktor last knew.
+    if let Some(engine) = config.plugin_engine.as_mut() {
+        match crate::apps::plugin_engine_release(&engine.image).await {
+            Ok((reference, release)) => {
+                let (scopes, requirements) =
+                    crate::apps::plugin_engine_asks(&release, &engine.image);
+                engine.scopes = scopes;
+                engine.requirements = requirements;
+                on(CreateEvent::Log {
+                    line: format!("The plugin engine asks for what {reference} says."),
+                });
+            }
+            Err(error) => on(CreateEvent::Log {
+                line: format!(
+                    "The plugin engine's release could not be read ({error}); it is asked \
+                     for with the scopes this konstruktor knows."
+                ),
+            }),
+        }
+    }
     // A service outside the catalogue has no image but the one it is given.
     let imageless = config.imageless_services();
     if !imageless.is_empty() {
@@ -937,6 +961,12 @@ pub fn confirm_plugin_engine(
     envelope: &crate::connect::authorize::HubEnvelope,
 ) -> Option<String> {
     let engine = config.wanted_plugin_engine()?;
+    // Approved already, by an earlier grant: connecting into one more organization does not
+    // ask for it again ([`connect`]), and must not take a running engine away for not
+    // approving what it never asked.
+    if engine.enabled {
+        return None;
+    }
     if envelope.approves_client(&engine.host, &engine.mandate_key) {
         if let Some(engine) = config.plugin_engine.as_mut() {
             engine.enabled = true;
@@ -945,9 +975,10 @@ pub fn confirm_plugin_engine(
     }
     config.plugin_engine = None;
     Some(
-        "The coordination server did not approve the plugin engine with the hub — it \
-         predates hubs asking for clients of their own — so this hub runs without one, and \
-         apps installed through Kabinet have nowhere to run here."
+        "The coordination server did not approve the plugin engine with the hub — it may \
+         predate hubs asking for clients of their own — so this hub runs without one, and \
+         apps installed through Kabinet have nowhere to run here until one is attached \
+         beside it (konstruktor engine create --hub <this hub>)."
             .to_string(),
     )
 }
@@ -1536,7 +1567,7 @@ pub async fn connect(
         .map_err(CreateError::Answers)?;
 
     on(CreateEvent::Building);
-    let request = build_hub_request(
+    let mut request = build_hub_request(
         &config,
         &HubManifestOptions {
             identifier: answers.identifier.trim().to_string(),
@@ -1558,6 +1589,11 @@ pub async fn connect(
             described: said.clone(),
         },
     );
+    // An engine an earlier grant approved runs already: connecting into one more
+    // organization does not ask for it again ([`confirm_plugin_engine`] leaves it be).
+    if config.running_plugin_engine().is_some() {
+        request.hub.clients.clear();
+    }
 
     let grant = authorize::start(&answers.coord_server, &request).await?;
     on(CreateEvent::Staged {

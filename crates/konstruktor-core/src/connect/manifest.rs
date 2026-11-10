@@ -428,9 +428,7 @@ pub fn plain_fallback(alias: StagingAlias) -> StagingAlias {
 /// when it wants one — before it runs, which it does once approved. Approving the hub then
 /// approves the engine, with the token the engine's environment already holds.
 pub fn client_requests(config: &HubConfig, device_id: Option<&str>) -> Vec<ClientRequest> {
-    use crate::config::hub::{
-        PLUGIN_ENGINE_IDENTIFIER, PLUGIN_ENGINE_REQUIREMENTS, PLUGIN_ENGINE_SCOPES,
-    };
+    use crate::config::hub::PLUGIN_ENGINE_IDENTIFIER;
     config
         .wanted_plugin_engine()
         .map(|engine| ClientRequest {
@@ -442,14 +440,8 @@ pub fn client_requests(config: &HubConfig, device_id: Option<&str>) -> Vec<Clien
             manifest: ClientManifest {
                 identifier: PLUGIN_ENGINE_IDENTIFIER.to_string(),
                 version: engine.version(),
-                scopes: PLUGIN_ENGINE_SCOPES.iter().map(|s| s.to_string()).collect(),
-                requirements: PLUGIN_ENGINE_REQUIREMENTS
-                    .iter()
-                    .map(|(key, service)| ClientRequirement {
-                        key: key.to_string(),
-                        service: service.to_string(),
-                    })
-                    .collect(),
+                scopes: engine.scopes(),
+                requirements: engine.requirements(),
                 device_id: device_id.map(str::to_string),
             },
             mandate_key: engine.mandate_key.clone(),

@@ -618,3 +618,36 @@ async fn an_app_on_the_mesh_stays_the_node_it_is_through_an_update() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&hub).ok();
 }
+
+/// A hub approved with its own engine refuses a second one beside it; the engine is told
+/// apart from other apps by its repository, at any release of it.
+#[test]
+fn the_plugin_engine_is_known_by_its_repository() {
+    assert!(apps::is_plugin_engine(apps::PLUGIN_ENGINE_RELEASE));
+    assert!(apps::is_plugin_engine(
+        "ghcr.io/arkitektio/plugin_engine:4.0.0"
+    ));
+    assert!(apps::is_plugin_engine(
+        " ghcr.io/arkitektio/plugin_engine@sha256:abc "
+    ));
+    assert!(!apps::is_plugin_engine(
+        "ghcr.io/arkitektio/plugin_engine_extra:1.0.0"
+    ));
+    assert!(!apps::is_plugin_engine("ghcr.io/org/some-app"));
+}
+
+/// The release the hub's engine channel runs, and what it asks for: scopes the services
+/// declare, not ones they dropped. Needs the network (`-- --ignored`).
+#[tokio::test]
+#[ignore]
+async fn the_engine_channels_release_asks_for_current_scopes() {
+    let image = konstruktor_core::config::hub::PLUGIN_ENGINE_IMAGE;
+    let (reference, release) = apps::plugin_engine_release(image)
+        .await
+        .expect("the engine's channel has a release");
+    assert!(reference.contains(":4."), "{reference}");
+    let (scopes, requirements) = apps::plugin_engine_asks(&release, image);
+    assert!(scopes.iter().any(|s| s == "rekuest_agent"), "{scopes:?}");
+    assert!(!scopes.iter().any(|s| s == "rekuest_call"), "{scopes:?}");
+    assert!(requirements.iter().any(|r| r.key == "kabinet"));
+}

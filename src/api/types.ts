@@ -588,6 +588,11 @@ export type HubConfigView = {
    * became apps beside a hub: the id an engine attached in its place takes.
    */
   former_plugin_engine?: string | null;
+  /**
+   * The plugin engine this hub runs itself, approved with the hub. `enabled` is false until
+   * the coordination server approved it.
+   */
+  plugin_engine?: { enabled: boolean; host: string; image: string } | null;
 };
 
 /**

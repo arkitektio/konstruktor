@@ -73,6 +73,21 @@ pub const RELEASE_MEDIA_TYPE: &str = "application/vnd.arkitekt.release.v1+json";
 /// Where the plugin engine is released.
 pub const PLUGIN_ENGINE_RELEASE: &str = "ghcr.io/arkitektio/plugin_engine";
 
+/// Whether `release` names the plugin engine's repository, at any release of it.
+pub fn is_plugin_engine(release: &str) -> bool {
+    let release = release.trim();
+    release == PLUGIN_ENGINE_RELEASE
+        || release
+            .strip_prefix(PLUGIN_ENGINE_RELEASE)
+            .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('@'))
+}
+
+/// Whether the hub in `hub` runs a plugin engine of its own, approved with it.
+pub fn hub_runs_plugin_engine(hub: &Path) -> bool {
+    crate::profile::read_profile(hub)
+        .is_ok_and(|profile| profile.config.running_plugin_engine().is_some())
+}
+
 // --- what a release says -----------------------------------------------------------------
 
 /// An app's release, as its registry repository carries it: as much of arkitekt-spec's
@@ -249,6 +264,60 @@ pub async fn release(reference: &str) -> Result<(String, Release), CreateError> 
     let release: Release = serde_json::from_slice(&blob)
         .map_err(|error| unreadable(format!("its release cannot be read ({error})")))?;
     Ok((resolved, release))
+}
+
+/// The release of the plugin engine that `image` runs: the newest of its major, as the
+/// major's channel (`4-vanilla`) moves with every release of it. What the hub asks to be
+/// approved with is what that release's manifest says, as for any other app.
+pub async fn plugin_engine_release(image: &str) -> Result<(String, Release), CreateError> {
+    let version = crate::config::hub::image_version(image);
+    let major = version.split('.').next().unwrap_or_default().to_string();
+    let tags = tags(PLUGIN_ENGINE_RELEASE).await.map_err(|error| {
+        CreateError::Answers(format!(
+            "{PLUGIN_ENGINE_RELEASE} could not be read: {error}"
+        ))
+    })?;
+    let in_major: Vec<String> = tags
+        .into_iter()
+        .filter(|tag| tag.split('.').next() == Some(major.as_str()))
+        .collect();
+    let newest = newest_release(&in_major).ok_or_else(|| {
+        CreateError::Answers(format!(
+            "{PLUGIN_ENGINE_RELEASE} has no {major}.x release for {image}"
+        ))
+    })?;
+    release(&format!("{PLUGIN_ENGINE_RELEASE}:{newest}")).await
+}
+
+/// What the engine `image` runs asks for, from its release: the manifest's scopes, and the
+/// requirements of the flavour the image is (`4-vanilla` → `vanilla`), or the first.
+pub fn plugin_engine_asks(release: &Release, image: &str) -> (Vec<String>, Vec<ClientRequirement>) {
+    let tag = image
+        .split('@')
+        .next()
+        .and_then(|reference| reference.rsplit_once(':'))
+        .map(|(_, tag)| tag)
+        .unwrap_or_default();
+    let flavour_name = tag.split_once('-').map(|(_, flavour)| flavour);
+    let flavour = release
+        .flavours
+        .iter()
+        .find(|flavour| Some(flavour.name.as_str()) == flavour_name)
+        .or_else(|| release.flavours.first());
+    let requirements = flavour
+        .map(|flavour| {
+            flavour
+                .inspection
+                .requirements
+                .iter()
+                .map(|requirement| ClientRequirement {
+                    key: requirement.key.clone(),
+                    service: requirement.service.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (release.manifest.scopes.clone(), requirements)
 }
 
 /// The tags of `repository`, from its registry.
@@ -827,6 +896,16 @@ pub async fn attach_app(
         .map(str::trim)
         .filter(|h| !h.is_empty())
         .map(PathBuf::from);
+    // A hub approved with an engine of its own runs one already: a second one beside it
+    // would start the organization's apps twice.
+    if let Some(hub) = hub.as_deref() {
+        if is_plugin_engine(&answers.release) && hub_runs_plugin_engine(hub) {
+            return Err(CreateError::Answers(format!(
+                "{} runs a plugin engine of its own, approved with the hub — it needs no other.",
+                hub.display()
+            )));
+        }
+    }
     let hub_network = hub.as_deref().map(hub_network_of).transpose()?;
     let hub_grants = hub
         .as_deref()

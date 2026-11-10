@@ -770,11 +770,13 @@ pub const PLUGIN_ENGINE_IMAGE: &str = "ghcr.io/arkitektio/plugin_engine:4-vanill
 /// is approved with is pinned to.
 pub const PLUGIN_ENGINE_IDENTIFIER: &str = "plugin_engine";
 
-/// The scopes the plugin engine is approved with: what its Kabinet, Lok (unlok) and Rekuest
-/// clients ask for (the engine names none of its own, its manifest is what its clients'
-/// operations need). The services declare theirs and lok makes its own, so a hub has to run
-/// releases that do; lok never makes a pin name `openid`.
-pub const PLUGIN_ENGINE_SCOPES: [&str; 12] = [
+/// The scopes the plugin engine is approved with when its release could not be read: what
+/// the 4.0.5 release's manifest asks for. The engine is an app like any other, so what it is
+/// approved with is what its release says ([`PluginEngineBlock::scopes`], read when the hub
+/// is created); this is only the fallback, and goes stale as the engine moves on. The
+/// services declare theirs and lok makes its own, so a hub has to run releases that do; lok
+/// never makes a pin name `openid`.
+pub const PLUGIN_ENGINE_SCOPES: [&str; 11] = [
     "kabinet_approve",
     "kabinet_deploy",
     "kabinet_read",
@@ -784,7 +786,6 @@ pub const PLUGIN_ENGINE_SCOPES: [&str; 12] = [
     "lok_read",
     "lok_services",
     "rekuest_agent",
-    "rekuest_call",
     "rekuest_read",
     "rekuest_write",
 ];
@@ -834,6 +835,15 @@ pub struct PluginEngineBlock {
     pub container_socket: String,
     /// Where the engine keeps its state across restarts.
     pub volume_name: String,
+    /// What the engine's release asks for, as its manifest says — read from the registry
+    /// when the hub is created, and asked for with the hub. Empty when it could not be read,
+    /// and in a profile from before: then [`PLUGIN_ENGINE_SCOPES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// The services the release's flavour requires, as its manifest says. Empty as above:
+    /// then [`PLUGIN_ENGINE_REQUIREMENTS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<crate::connect::manifest::ClientRequirement>,
 }
 
 impl PluginEngineBlock {
@@ -847,7 +857,38 @@ impl PluginEngineBlock {
             host_socket,
             container_socket: container_socket.to_string(),
             volume_name: "plugin_engine_state".into(),
+            scopes: Vec::new(),
+            requirements: Vec::new(),
         }
+    }
+
+    /// The scopes the engine is asked for with: its release's, or the fallback. Never
+    /// `openid`, which lok makes no pin name.
+    pub fn scopes(&self) -> Vec<String> {
+        if self.scopes.is_empty() {
+            return PLUGIN_ENGINE_SCOPES.iter().map(|s| s.to_string()).collect();
+        }
+        self.scopes
+            .iter()
+            .filter(|scope| scope.as_str() != "openid")
+            .cloned()
+            .collect()
+    }
+
+    /// The services the engine requires: its release's, or the fallback.
+    pub fn requirements(&self) -> Vec<crate::connect::manifest::ClientRequirement> {
+        if self.requirements.is_empty() {
+            return PLUGIN_ENGINE_REQUIREMENTS
+                .iter()
+                .map(
+                    |(key, service)| crate::connect::manifest::ClientRequirement {
+                        key: key.to_string(),
+                        service: service.to_string(),
+                    },
+                )
+                .collect();
+        }
+        self.requirements.clone()
     }
 
     /// The version of the engine the image is, from its tag (`1.0.1-vanilla` → `1.0.1`),

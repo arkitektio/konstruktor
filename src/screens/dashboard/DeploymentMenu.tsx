@@ -283,17 +283,21 @@ export const DeploymentMenu = ({
                 <ShieldCheck />
                 {organizations.length > 0 ? "Connect to an organization…" : "Connect…"}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  const params = new URLSearchParams({ hub: deployment.path });
-                  const former = status?.profile.config.former_plugin_engine;
-                  if (former) params.set("identifier", former);
-                  navigate(`/new/engine?${params.toString()}`);
-                }}
-              >
-                <Boxes />
-                Attach a plugin engine…
-              </DropdownMenuItem>
+              {/* A hub approved with its own engine runs it already: a second one beside
+                  it would start the same apps twice. */}
+              {!status?.profile.config.plugin_engine?.enabled && (
+                <DropdownMenuItem
+                  onSelect={() => {
+                    const params = new URLSearchParams({ hub: deployment.path });
+                    const former = status?.profile.config.former_plugin_engine;
+                    if (former) params.set("identifier", former);
+                    navigate(`/new/engine?${params.toString()}`);
+                  }}
+                >
+                  <Boxes />
+                  Attach a plugin engine…
+                </DropdownMenuItem>
+              )}
               {organizations.map((organization) => (
                 <DropdownMenuItem
                   key={organization}

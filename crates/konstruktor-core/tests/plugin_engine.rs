@@ -202,7 +202,7 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
     );
     assert_eq!(client.manifest.identifier, PLUGIN_ENGINE_IDENTIFIER);
     assert_eq!(client.manifest.version, "4.0.0");
-    // What its Kabinet, Lok and Rekuest clients ask for, and nothing generic.
+    // Its release unread: what the 4.0.5 release's manifest asks for, and nothing generic.
     assert_eq!(
         client.manifest.scopes,
         [
@@ -215,7 +215,6 @@ fn the_hub_asks_to_be_approved_with_its_engine() {
             "lok_read",
             "lok_services",
             "rekuest_agent",
-            "rekuest_call",
             "rekuest_read",
             "rekuest_write"
         ]
@@ -427,13 +426,30 @@ fn an_engine_the_server_never_approved_is_left_out_and_says_so() {
         serde_json::json!({}),
         serde_json::json!({"plugin_engine": {"mandate": "1", "key_sha256": sha256_hex("another-secret")}}),
     ] {
+        // As `create_hub` leaves it on a hub accepted elsewhere: wanted, not yet running.
         let mut config = with_engine(remote(kabinet_hub()));
+        config.plugin_engine.as_mut().unwrap().enabled = false;
         let warning = confirm_plugin_engine(&mut config, &envelope(answer));
 
         assert!(warning.is_some_and(|w| w.contains("did not approve the plugin engine")));
         assert!(config.plugin_engine.is_none());
         assert!(engine_of(&config).is_null());
     }
+}
+
+/// Connecting into one more organization does not ask for an engine an earlier grant
+/// approved, so that grant says nothing of it — which must not take the engine away.
+#[test]
+fn an_approved_engine_outlives_a_grant_that_does_not_mention_it() {
+    let mut config = with_engine(remote(kabinet_hub()));
+    assert!(config.running_plugin_engine().is_some());
+
+    assert_eq!(
+        confirm_plugin_engine(&mut config, &envelope(serde_json::json!({}))),
+        None
+    );
+    assert!(config.running_plugin_engine().is_some());
+    assert!(!engine_of(&config).is_null());
 }
 
 #[test]
@@ -445,4 +461,52 @@ fn an_envelope_from_before_client_requests_still_reads() {
     .unwrap();
     assert!(old.client_requests.is_empty());
     assert!(!old.approves_client("plugin_engine", "anything"));
+}
+
+/// The engine is an app: once its release was read, the hub asks for it with what that
+/// release's manifest says — never `openid`, which lok makes no pin name.
+#[test]
+fn the_hub_asks_for_its_engine_with_what_the_release_says() {
+    let mut config = with_engine(remote(kabinet_hub()));
+    let engine = config.plugin_engine.as_mut().unwrap();
+    engine.scopes = vec![
+        "openid".into(),
+        "rekuest_root_call".into(),
+        "kabinet_read".into(),
+    ];
+    engine.requirements = vec![konstruktor_core::connect::manifest::ClientRequirement {
+        key: "rekuest".into(),
+        service: "live.arkitekt.rekuest".into(),
+    }];
+
+    let request = build_hub_request(&config, &request_options());
+    let client = &request.hub.clients[0];
+    assert_eq!(
+        client.manifest.scopes,
+        ["rekuest_root_call", "kabinet_read"]
+    );
+    assert_eq!(client.manifest.requirements.len(), 1);
+    assert_eq!(client.manifest.requirements[0].key, "rekuest");
+}
+
+/// What the release asks for is read off the flavour the image is: `4-vanilla` is vanilla.
+#[test]
+fn the_engine_asks_for_what_its_flavour_requires() {
+    let release: konstruktor_core::apps::Release = serde_json::from_value(serde_json::json!({
+        "manifest": {"identifier": "plugin_engine", "version": "4.0.5",
+                     "scopes": ["openid", "rekuest_agent"]},
+        "flavours": [
+            {"name": "gpu", "image": "x@sha256:1",
+             "inspection": {"requirements": [{"key": "a", "service": "live.arkitekt.a"}]}},
+            {"name": "vanilla", "image": "x@sha256:2",
+             "inspection": {"requirements": [{"key": "rekuest", "service": "live.arkitekt.rekuest"}]}}
+        ]
+    }))
+    .unwrap();
+    let (scopes, requirements) = konstruktor_core::apps::plugin_engine_asks(
+        &release,
+        "ghcr.io/arkitektio/plugin_engine:4-vanilla",
+    );
+    assert_eq!(scopes, ["openid", "rekuest_agent"]);
+    assert_eq!(requirements[0].key, "rekuest");
 }
