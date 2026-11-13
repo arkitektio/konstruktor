@@ -166,6 +166,19 @@ if [ "$RUN_AFTER" -eq 1 ] && [ -r /dev/tty ] && [ -t 1 ]; then
     INTERACTIVE=1
 fi
 
+# The wizard gets the terminal by its own name (/dev/ttys003), not by the /dev/tty alias.
+# macOS cannot watch /dev/tty for input — kqueue refuses it — so a prompt handed that one
+# dies with "Failed to initialize input reader" before it has asked anything. Stdout is the
+# terminal here (checked just above), so it is the one to ask for the name.
+TTY_DEV="/dev/tty"
+if [ "$INTERACTIVE" -eq 1 ]; then
+    { real_tty="$(tty <&3 2>/dev/null)" || real_tty=""; } 3<&1
+    case "$real_tty" in
+        /dev/tty) ;;
+        /dev/*) [ -r "$real_tty" ] && TTY_DEV="$real_tty" ;;
+    esac
+fi
+
 # Yes unless told otherwise: a bare Enter takes the default.
 confirm() {
     printf '  %s [Y/n] ' "$1" >&2
@@ -300,6 +313,6 @@ printf '\n'
 say "Creating $HUB_ID in $HUB_DIR"
 # `hub create` makes the folder itself, so there is nothing to mkdir or cd into here.
 if [ "$HAS_TEMPLATES" -eq 1 ]; then
-    exec "$BIN" hub create --template "$TEMPLATE" --identifier "$HUB_ID" "$HUB_DIR" < /dev/tty
+    exec "$BIN" hub create --template "$TEMPLATE" --identifier "$HUB_ID" "$HUB_DIR" < "$TTY_DEV"
 fi
-exec "$BIN" hub create --identifier "$HUB_ID" "$HUB_DIR" < /dev/tty
+exec "$BIN" hub create --identifier "$HUB_ID" "$HUB_DIR" < "$TTY_DEV"

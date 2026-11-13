@@ -519,6 +519,28 @@ mod mesh {
         assert!(compose["services"]["tailscale"].get("ports").is_none());
         assert!(compose["services"]["gateway"].get("ports").is_none());
     }
+
+    /// Mesh-only closes the host, not Docker: containers on the hub's own network — the
+    /// plugin engine, the apps it starts — still reach the gateway by its name there,
+    /// without being on the mesh. That name is the internal alias every manifest carries.
+    #[test]
+    fn a_mesh_only_hub_still_answers_inside_docker() {
+        let mut config = meshed();
+        config.gateway.exposed_http_port = None;
+        config.gateway.exposed_https_port = None;
+        config.mesh.as_mut().unwrap().mesh_only = true;
+
+        let compose = compose(&config);
+        let sidecar = &compose["services"]["tailscale"];
+        assert_eq!(
+            sidecar["networks"][config.internal_network.as_str()]["aliases"],
+            serde_norway::from_str::<Value>("[gateway]").unwrap(),
+        );
+        assert_eq!(
+            compose["services"]["gateway"]["network_mode"].as_str(),
+            Some("service:tailscale"),
+        );
+    }
 }
 
 /// The dashboard joins the images a profile declares to the containers Docker reports, on

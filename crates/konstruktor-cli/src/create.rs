@@ -87,7 +87,8 @@ pub struct CreateArgs {
     pub mesh: MeshMode,
     /// Reach the hub over the mesh only: no port is opened on this machine and no
     /// address on its networks is advertised — just the tailnet node, and the gateway's
-    /// name on the docker network for plugin apps. Every client has to be on the mesh.
+    /// name on the docker network, so the plugin engine and the apps it starts still reach
+    /// it directly. Every other client has to be on the mesh.
     #[arg(long)]
     pub mesh_only: bool,
     /// A pre-authorized key, for `--mesh manual`. Prefer KONSTRUKTOR_MESH_KEY.
@@ -868,7 +869,8 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
         (
             "advertised".into(),
             if answers.mesh_only {
-                "the mesh only — no ports opened here".into()
+                "the mesh, and inside Docker for the hub's own containers — no ports opened here"
+                    .into()
             } else {
                 answers
                     .hosts
@@ -879,6 +881,17 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
             },
         ),
     ];
+    if answers.services.contains(&ServiceId::Kabinet) && answers.services.contains(&ServiceId::Rekuest)
+    {
+        rows.push((
+            "plugin engine".into(),
+            if answers.plugin_engine {
+                "installed, approved with the hub".into()
+            } else {
+                "left out — nothing can be installed here".into()
+            },
+        ));
+    }
     if let Some(template) = template {
         let at = rows
             .iter()
@@ -890,9 +903,10 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
     ui::say("");
     if answers.mesh_only {
         ui::warn(
-            "Mesh-only: every request goes through the mesh. Clients and apps on this \
-             network that are not on the mesh cannot reach the hub, and relayed tailnet \
-             traffic is slower than a direct connection.",
+            "Mesh-only: every request from outside Docker goes through the mesh. Clients and \
+             apps on this network that are not on the mesh cannot reach the hub, and relayed \
+             tailnet traffic is slower than a direct connection. Containers on the hub's \
+             Docker network still reach it directly, by the gateway's name.",
         );
         ui::say("");
     }
@@ -941,6 +955,20 @@ async fn wizard(args: &mut CreateArgs) -> Result<()> {
             .collect(),
     );
 
+    // --- the plugin engine --------------------------------------------------------
+    // Only beside what it needs (`HubConfig::wanted_plugin_engine`): Kabinet, whose
+    // backend it is, and Rekuest, where it offers its actions.
+    let services = services_from(args)?;
+    if services.contains(&ServiceId::Kabinet) && services.contains(&ServiceId::Rekuest) {
+        args.no_plugin_engine = !Confirm::new("Install the plugin engine too?")
+            .with_help_message(
+                "runs the apps your organization installs through Kabinet, as containers on \
+                 this machine; approved together with the hub",
+            )
+            .with_default(!args.no_plugin_engine)
+            .prompt()?;
+    }
+
     // --- storage ----------------------------------------------------------------
     let storage_choices = vec![
         "Docker volumes — fast; the engine keeps the data",
@@ -975,7 +1003,11 @@ async fn wizard(args: &mut CreateArgs) -> Result<()> {
         };
     }
     args.mesh_only = args.mesh != MeshMode::None
-        && Confirm::new("Mesh only? No ports are opened here, and only mesh clients can connect")
+        && Confirm::new("Mesh only?")
+            .with_help_message(
+                "no ports are opened here: clients connect over the mesh, and containers on \
+                 the hub's Docker network (the plugin engine, the apps it starts) by its name there",
+            )
             .with_default(args.mesh_only)
             .prompt()?;
 

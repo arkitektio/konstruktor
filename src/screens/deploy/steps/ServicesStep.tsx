@@ -9,7 +9,7 @@ import { ErrorDisplay } from "../../../components/Error";
 import { cn } from "../../../utils";
 import * as api from "../../../api";
 import type { ServiceId, ServiceMeta } from "../../../api";
-import { emptyOverride, type ServiceOverride } from "../hub-form";
+import { canRunPluginEngine, emptyOverride, type ServiceOverride } from "../hub-form";
 import { AdvancedFields, StepFrame } from "../../wizard/StepFrame";
 import { ExperimentalBadge, ServiceRow, ServiceSections } from "../ServiceRows";
 
@@ -51,6 +51,7 @@ export const ServicesStep = () => {
   const rekuestServer = (useWatch({ name: "rekuestServer" }) as string) ?? "local";
   const overrides = (useWatch({ name: "serviceOptions" }) ??
     {}) as Partial<Record<ServiceId, ServiceOverride>>;
+  const pluginEngine = (useWatch({ name: "pluginEngine" }) as boolean | undefined) ?? true;
   const { git } = useCommunication();
   const hasGit = git?.cli ?? false;
   const [services, setServices] = useState<ServiceMeta[]>([]);
@@ -208,6 +209,27 @@ export const ServicesStep = () => {
           )}
         </div>
       </div>
+
+      {canRunPluginEngine({ services: field.value ?? [], rekuestServer }) && (
+        <label className="mt-4 flex items-start gap-3 cursor-pointer max-w-xl">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={pluginEngine}
+            onChange={(e) =>
+              setValue("pluginEngine", e.target.checked, { shouldValidate: true })
+            }
+          />
+          <div>
+            <div className="font-medium text-sm">Install the plugin engine too</div>
+            <div className="text-sm text-muted-foreground mt-0.5">
+              Runs the apps your organization installs through Kabinet, as containers
+              on this machine. It is approved together with the hub; without it,
+              nothing can be installed here.
+            </div>
+          </div>
+        </label>
+      )}
 
       {fieldState.error && (
         <div className="max-w-xl mt-3">

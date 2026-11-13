@@ -48,6 +48,11 @@ export type HubForm = {
    */
   meshOnly: boolean;
   /**
+   * Install the plugin engine beside the hub, approved with it. Asked on the services
+   * step, and only where it can run ({@link canRunPluginEngine}).
+   */
+  pluginEngine: boolean;
+  /**
    * What was asked of individual services under the gear on the services step: whether
    * each runs from a checkout of its source rather than its published image, and on
    * which branch. Only the services somebody touched are in here.
@@ -83,6 +88,16 @@ export type ServiceOverride = {
 };
 
 /** What an untouched service carries, so the gear never reads `undefined`. */
+/**
+ * Whether this hub can run the plugin engine: beside Kabinet, whose backend it is, and a
+ * Rekuest of its own, where it offers its actions — the core's `wanted_plugin_engine`.
+ */
+export const canRunPluginEngine = (
+  values: Pick<HubForm, "services" | "rekuestServer">
+): boolean =>
+  (values.services ?? []).includes("kabinet") &&
+  (values.rekuestServer ?? "local").trim() === "local";
+
 export const emptyOverride: ServiceOverride = {
   fromSource: false,
   branch: "",

@@ -114,7 +114,7 @@ put back. `konstruktor status` on an app says when a newer release is out.
 
 The [plugin engine](https://github.com/arkitektio/plugin_engine), which starts the apps an
 organization installs through Kabinet, comes with every new hub that runs Kabinet and Rekuest
-(`--no-plugin-engine` leaves it out). The hub asks for it as a client of its own when it is
+(`--no-plugin-engine` leaves it out; the wizards ask, with yes as the answer). The hub asks for it as a client of its own when it is
 connected, so whoever approves the hub approves the engine in the same step — no second
 authorization — and it starts once approved. A self-contained hub's own coordination server is
 told of it as it is set up. Connecting the hub into one more organization leaves a running
@@ -591,8 +591,9 @@ connect --mesh-key fresh`, or the checkbox on the Connect screen). Alternatively
 can be pasted, together with the control server it belongs to.
 
 *Mesh only* goes one step further: no port is opened on this machine and nothing on its networks is
-advertised — only the mesh node and, for plugin apps beside the stack, the gateway's name inside
-Docker. Every client then has to be on the mesh.
+advertised — only the mesh node and the gateway's name inside Docker. Containers on the hub's own
+Docker network (the plugin engine and the apps it starts) still connect directly by that name;
+every other client has to be on the mesh.
 
 A hub without a mesh generates exactly what it generated before the mesh existed: no `mesh` block in
 `hub_config.yaml`, no sidecar, no extra volume.

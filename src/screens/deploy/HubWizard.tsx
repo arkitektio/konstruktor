@@ -51,6 +51,7 @@ import {
   HubForm,
   ServiceOverride,
   baseUrl,
+  canRunPluginEngine,
   coordinationServerSchema,
   serviceAnswer,
   withKnownServer,
@@ -116,6 +117,10 @@ const HubSummary = () => {
         },
         { label: "Services", value: (values.services ?? []).join(", ") || "none" },
         {
+          label: "Plugin engine",
+          value: pluginEngineSummary(values),
+        },
+        {
           label: "Ports",
           value: values.meshOnly
             ? "none opened — mesh only"
@@ -125,7 +130,7 @@ const HubSummary = () => {
         {
           label: "Advertised at",
           value: values.meshOnly
-            ? "the mesh, and inside Docker for plugin apps"
+            ? "the mesh, and inside Docker for the hub's own containers"
             : advertisedAt(values.hosts ?? []),
         },
         {
@@ -165,6 +170,17 @@ const rekuestSummary = (server: string): string => {
   if (value === "local" || value === "") return "runs here";
   if (value === "none") return "none — nothing signs provenance";
   return value;
+};
+
+/**
+ * Whether the plugin engine comes with the hub. Empty where it cannot: without Kabinet,
+ * or with a Rekuest that is not this hub's own.
+ */
+const pluginEngineSummary = (values: HubForm): string => {
+  if (!canRunPluginEngine(values)) return "";
+  return values.pluginEngine
+    ? "installed, approved with the hub"
+    : "left out — nothing can be installed here";
 };
 
 /**
@@ -265,6 +281,7 @@ const toAnswers = (values: HubForm): HubAnswers => ({
   mesh_auth_key: values.meshAuthKey || null,
   mesh_coord_url: values.meshCoordUrl || null,
   mesh_only: values.meshMode !== "none" && !!values.meshOnly,
+  plugin_engine: values.pluginEngine ?? true,
   // Started as soon as it is written, as `konstruktor hub create` does: a mesh key expires
   // fifteen minutes after it was issued, and a hub that waits to be started may never
   // join. The start is the core's, with the same guard and reporter fallback as `up`.
@@ -327,6 +344,7 @@ export const HubWizard = () => {
     meshAuthKey: "",
     meshCoordUrl: "",
     meshOnly: false,
+    pluginEngine: true,
     serviceOptions: {},
     storage: "docker-volumes",
   };

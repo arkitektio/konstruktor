@@ -242,6 +242,11 @@ export type HubAnswers = {
    * ignored, and only the tailnet node and the in-network gateway are advertised.
    */
   mesh_only?: boolean;
+  /**
+   * Run the plugin engine beside the hub, approved with it. Only takes effect beside
+   * Kabinet and Rekuest; the core's default is on.
+   */
+  plugin_engine?: boolean;
   start: boolean;
   /**
    * Every service's source, checked out and mounted into its container. The CLI's
