@@ -861,14 +861,6 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
         ),
         ("identifier".into(), answers.identifier.clone()),
         (
-            "telemetry".into(),
-            match answers.telemetry.as_deref() {
-                None => "off: nothing is sent anywhere".into(),
-                Some("local") => "its own Jaeger, in this stack".into(),
-                Some(url) => format!("sent to {url}"),
-            },
-        ),
-        (
             "mesh".into(),
             match answers.mesh_mode {
                 MeshMode::Coordination => "asks the coordination server for a key".into(),
@@ -910,6 +902,16 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
                 "installed, approved with the hub".into()
             } else {
                 "left out — nothing can be installed here".into()
+            },
+        ));
+    }
+    // Only a hub that was asked to send telemetry hears about it.
+    if let Some(telemetry) = answers.telemetry.as_deref() {
+        rows.push((
+            "telemetry".into(),
+            match telemetry {
+                "local" => "its own Jaeger, in this stack".into(),
+                url => format!("sent to {url}"),
             },
         ));
     }
