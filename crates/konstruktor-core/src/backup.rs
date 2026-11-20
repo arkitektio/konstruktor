@@ -535,6 +535,9 @@ pub(crate) fn images_of(config: &HubConfig) -> (Vec<ServiceImage>, Vec<InfraImag
     if let Some(ollama) = config.running_ollama() {
         infra.push((ollama.host.clone(), ollama.image.clone()));
     }
+    if let Some(telemetry) = config.running_telemetry() {
+        infra.push((telemetry.host.clone(), telemetry.image.clone()));
+    }
     (services, infra)
 }
 

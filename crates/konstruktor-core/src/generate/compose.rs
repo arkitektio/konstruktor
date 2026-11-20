@@ -739,6 +739,23 @@ pub fn build_compose(
         );
     }
 
+    // --- the collector, when this hub runs its own ----------------------------
+    //
+    // Beyond upstream too, and only when the operator asked for it. Its page is published
+    // on the loopback address alone: it shows every operation of the hub to whoever opens
+    // it, so reaching it from elsewhere is a tunnel the operator opens knowingly.
+    if let Some(telemetry) = config.running_telemetry() {
+        let mut service = vec![("image", s(&telemetry.image))];
+        if let Some(port) = telemetry.exposed_ui_port {
+            service.push((
+                "ports",
+                list(vec![s(&format!("127.0.0.1:{port}:{}", telemetry.ui_port))]),
+            ));
+        }
+        service.push(("restart", s("unless-stopped")));
+        insert(&mut services, &telemetry.host, map(service));
+    }
+
     // --- Lovekit's media server, while Lovekit runs ---------------------------
     //
     // Beyond upstream, like the model provider above: its generator has no LiveKit, and

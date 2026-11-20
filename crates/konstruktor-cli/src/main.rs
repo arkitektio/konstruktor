@@ -5,6 +5,7 @@ mod connect;
 mod coord;
 mod create;
 mod engine;
+mod features;
 mod inspect_cmd;
 mod job_cmd;
 mod manage;
@@ -76,6 +77,7 @@ Change a hub:
   hub connect      Connect it to an organization, or again: addresses, mesh key
   hub disconnect   Disconnect it from one of its organizations
   hub services     List, add or remove its services
+  hub features     Switch hub-wide features on or off: telemetry, Ollama
   update           Update the services whose images changed upstream
   rollback         Return to the images it ran before the last update
   freeze           Have `update` leave it on the builds it runs
@@ -328,6 +330,12 @@ enum HubCommand {
     /// List a hub's services, add some, or take some out.
     #[command(subcommand)]
     Services(services::ServicesCommand),
+    /// List what is switched on for the hub as a whole, switch some on, or off.
+    ///
+    /// A feature is a capability of the whole hub — telemetry, a model server — where
+    /// `config` sets one service's own settings and `hub services` its services.
+    #[command(subcommand)]
+    Features(features::FeaturesCommand),
     /// Write every generated file again from the hub's profile.
     ///
     /// The compose file, the gateway and the service configs: what brings a hub created
@@ -443,6 +451,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Hub(HubCommand::Disconnect(args)) => connect::disconnect(args).await,
         Command::Hub(HubCommand::Templates) => create::templates(json),
         Command::Hub(HubCommand::Services(command)) => services::run(command, json).await,
+        Command::Hub(HubCommand::Features(command)) => features::run(command, json).await,
         Command::Hub(HubCommand::Regenerate(args)) => compose_cmd::regenerate_hub(args).await,
         Command::App(AppCommand::Attach(args)) => apps::run(*args).await,
         Command::App(AppCommand::Update(args)) => apps::update(*args).await,

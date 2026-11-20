@@ -37,7 +37,7 @@ impl ServiceId {
 /// runs beside one service in particular. A service cannot take one of these names, or the
 /// two would be one entry in the compose file. What runs beside a service under a name
 /// made from its own (`rekuest-takt`) needs no entry: a service's name holds no hyphen.
-const RESERVED_NAMES: [&str; 13] = [
+const RESERVED_NAMES: [&str; 14] = [
     "db",
     "daten",
     "redis",
@@ -49,6 +49,7 @@ const RESERVED_NAMES: [&str; 13] = [
     "tailscale",
     "reporter",
     "ollama",
+    "jaeger",
     "livekit",
     "plugin_engine",
 ];
@@ -545,6 +546,7 @@ mod tests {
             "reporter",
             "plugin_engine",
             "ollama",
+            "jaeger",
             "livekit",
         ] {
             let refused = ServiceId::parse(taken).unwrap_err();

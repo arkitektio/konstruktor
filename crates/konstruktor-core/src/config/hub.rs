@@ -128,12 +128,12 @@ pub struct Kinded {
 }
 
 impl Kinded {
-    fn local() -> Self {
+    pub(crate) fn local() -> Self {
         Self {
             kind: "local".into(),
         }
     }
-    fn global() -> Self {
+    pub(crate) fn global() -> Self {
         Self {
             kind: "global".into(),
         }
@@ -626,6 +626,97 @@ impl OllamaBlock {
             url,
             ..Self::local()
         }
+    }
+}
+
+/// Where the hub's services send their traces and metrics, once somebody asked for that.
+///
+/// Absent, nothing is sent anywhere: telemetry is off unless the hub's operator turned it
+/// on, and it only ever goes to the collector named here — one in this stack, or one the
+/// operator already runs. Every service is told the endpoint as a peer of the hub
+/// ([`crate::contract::facts`]) and writes its own `telemetry` block from it.
+///
+/// Omitted entirely when absent, like [`OllamaBlock`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelemetryBlock {
+    /// Run the collector in this stack. False means [`Self::endpoint`] points somewhere
+    /// else and nothing is added to the compose file.
+    pub enabled: bool,
+    /// Where OTLP over HTTP is sent. Derived from the host and port when we run it.
+    pub endpoint: String,
+    /// The compose service name, when we run it.
+    pub host: String,
+    pub image: String,
+    /// The port the collector takes OTLP over HTTP on.
+    pub internal_port: u16,
+    /// The port its own page answers on, inside the stack.
+    pub ui_port: u16,
+    /// The port of this machine that page is published on — on the loopback address only:
+    /// traces name every operation and database statement of the hub, and the page asks
+    /// nobody who they are. `None` publishes nothing.
+    pub exposed_ui_port: Option<u16>,
+}
+
+impl TelemetryBlock {
+    /// What `--telemetry` and `hub features add telemetry` take for "run one here".
+    pub const LOCAL: &'static str = "local";
+    /// The name the collector goes by among a service's peers, in its facts.
+    pub const PEER: &'static str = "telemetry";
+    /// The offer a peer makes that takes OTLP over HTTP.
+    pub const OTLP: &'static str = "otlp";
+
+    /// A Jaeger in this stack, reached over the internal network by service name. It
+    /// keeps traces in memory: enough to see where time goes, gone when it restarts, and
+    /// nothing to back up.
+    pub fn local() -> Self {
+        let (host, port) = ("jaeger", 4318);
+        Self {
+            enabled: true,
+            endpoint: format!("http://{host}:{port}"),
+            host: host.into(),
+            image: "jaegertracing/jaeger:2.13.0".into(),
+            internal_port: port,
+            ui_port: 16686,
+            exposed_ui_port: Some(16686),
+        }
+    }
+
+    /// A collector that already exists. A bare host is taken as plain HTTP.
+    pub fn remote(url: &str) -> Self {
+        let trimmed = url.trim().trim_end_matches('/');
+        let endpoint = if trimmed.contains("://") {
+            trimmed.to_string()
+        } else {
+            format!("http://{trimmed}")
+        };
+        Self {
+            enabled: false,
+            endpoint,
+            exposed_ui_port: None,
+            ..Self::local()
+        }
+    }
+
+    /// `local`, or the address of one that exists. `None` for nothing at all.
+    pub fn asked(value: &str) -> Option<Self> {
+        match value.trim() {
+            "" => None,
+            Self::LOCAL => Some(Self::local()),
+            url => Some(Self::remote(url)),
+        }
+    }
+
+    /// Whether metrics can be sent as well as traces. The Jaeger this stack runs takes
+    /// traces only; a collector the operator named is taken to accept both.
+    pub fn takes_metrics(&self) -> bool {
+        !self.enabled
+    }
+
+    /// Where the page of the collector this stack runs is opened, on this machine.
+    pub fn ui_url(&self) -> Option<String> {
+        self.exposed_ui_port
+            .filter(|_| self.enabled)
+            .map(|port| format!("http://localhost:{port}"))
     }
 }
 
@@ -1173,6 +1264,9 @@ pub struct HubConfig {
     /// Present only when the hub runs its own Ollama. See [`OllamaBlock`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_ollama: Option<OllamaBlock>,
+    /// Present only when the hub's operator turned telemetry on. See [`TelemetryBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryBlock>,
     /// Present only on a self-contained hub and on a coordination server. See [`LokBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lok: Option<LokBlock>,
@@ -1573,6 +1667,11 @@ impl HubConfig {
             .filter(|o| o.enabled && self.service(ServiceId::Alpaka).enabled)
     }
 
+    /// The collector this stack runs, if it runs one.
+    pub fn running_telemetry(&self) -> Option<&TelemetryBlock> {
+        self.telemetry.as_ref().filter(|t| t.enabled)
+    }
+
     /// Switch a service on in an existing profile. Its block is reused as it stands — the
     /// instance key, Django secret and secrets it had before are what its data was written
     /// with — and only an image it never had is seeded, from the catalogue. Rekuest is
@@ -1671,6 +1770,9 @@ impl HubConfig {
         if let Some(ollama) = self.running_ollama() {
             images.push((ollama.host.clone(), ollama.image.clone()));
         }
+        if let Some(telemetry) = self.running_telemetry() {
+            images.push((telemetry.host.clone(), telemetry.image.clone()));
+        }
         if let Some(livekit) = self.running_livekit() {
             images.push((livekit.host.clone(), livekit.image.clone()));
         }
@@ -1735,6 +1837,10 @@ impl HubConfig {
         }
         if let Some(ollama) = self.local_ollama.as_mut().filter(|o| o.host == service) {
             ollama.image = image.to_string();
+            return;
+        }
+        if let Some(telemetry) = self.telemetry.as_mut().filter(|t| t.host == service) {
+            telemetry.image = image.to_string();
             return;
         }
         if let Some(lok) = self.lok.as_mut().filter(|l| l.host == service) {
@@ -2092,6 +2198,9 @@ pub struct HubConfigOptions {
     pub service_options: BTreeMap<ServiceId, ServiceOptions>,
     /// Where the database and object storage live. See [`StorageMode`].
     pub storage: StorageMode,
+    /// Where the services send traces and metrics: `local` runs a collector in this
+    /// stack, anything else is the address of one. Left out, nothing is sent anywhere.
+    pub telemetry: Option<String>,
 }
 
 /// What a front end can say about a single service, beyond whether it runs at all.
@@ -2164,6 +2273,7 @@ impl Default for HubConfigOptions {
             dev_hub: false,
             service_options: BTreeMap::new(),
             storage: StorageMode::default(),
+            telemetry: None,
         }
     }
 }
@@ -2290,6 +2400,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
         global_description: blank(options.global_description.as_deref()),
         internal_network: generate_name(),
         local_ollama: None,
+        telemetry: options.telemetry.as_deref().and_then(TelemetryBlock::asked),
         lok: None,
         coord: None,
         local_redis: RedisBlock {

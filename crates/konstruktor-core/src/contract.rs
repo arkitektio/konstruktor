@@ -1340,6 +1340,22 @@ pub fn facts(
     if let Some(ollama) = &config.local_ollama {
         peers.push(("ollama".to_string(), map(vec![("url", s(&ollama.url))])));
     }
+    // Where traces and metrics go, on a hub whose operator turned that on: every service
+    // is told, and a release that reads it writes its own `telemetry` block from it.
+    if let Some(telemetry) = &config.telemetry {
+        use crate::config::hub::TelemetryBlock;
+        let mut entry = vec![
+            ("url", s(&telemetry.endpoint)),
+            (
+                "offers",
+                map(vec![(TelemetryBlock::OTLP, s(&telemetry.endpoint))]),
+            ),
+        ];
+        if !telemetry.takes_metrics() {
+            entry.push(("settings", map(vec![("metrics", s("false"))])));
+        }
+        peers.push((TelemetryBlock::PEER.to_string(), map(entry)));
+    }
     if let Some(livekit) = config.running_livekit() {
         peers.push((
             "livekit".to_string(),

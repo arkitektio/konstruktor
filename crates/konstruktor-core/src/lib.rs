@@ -15,6 +15,7 @@ pub mod destroy;
 pub mod docker;
 pub mod engine;
 pub mod engine_probe;
+pub mod features;
 pub mod freeze;
 pub mod gateway_check;
 pub mod generate;

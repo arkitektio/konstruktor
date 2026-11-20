@@ -132,6 +132,12 @@ pub struct CreateArgs {
     /// anything else is the address of one that already exists.
     #[arg(long, value_name = "local|URL")]
     pub ollama: Option<String>,
+    /// Have every service send its traces to a collector: `local` runs a Jaeger in this
+    /// stack, with its page on this machine only; anything else is the address of a
+    /// collector that already exists (OTLP over HTTP). Left out, nothing is sent anywhere
+    /// — `konstruktor hub features add telemetry` turns it on later.
+    #[arg(long, value_name = "local|URL")]
+    pub telemetry: Option<String>,
     /// A repository Kabinet offers apps from, e.g. `jhnnsrs/ome:main`. Repeatable;
     /// replaces the ones Kabinet starts with.
     #[arg(long = "repository", value_name = "OWNER/REPO:BRANCH")]
@@ -447,6 +453,12 @@ pub async fn run(mut args: CreateArgs, json: bool) -> Result<()> {
         dev_hub: args.dev,
         dev_branch: args.dev_branch.clone(),
         storage: args.storage,
+        telemetry: args
+            .telemetry
+            .as_deref()
+            .map(str::trim)
+            .filter(|asked| !asked.is_empty())
+            .map(str::to_string),
         // `--dev` and these are a union, as in the wizard: `--dev` for every service,
         // `--from-source` for the ones named.
         service_options,
@@ -849,6 +861,14 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
         ),
         ("identifier".into(), answers.identifier.clone()),
         (
+            "telemetry".into(),
+            match answers.telemetry.as_deref() {
+                None => "off: nothing is sent anywhere".into(),
+                Some("local") => "its own Jaeger, in this stack".into(),
+                Some(url) => format!("sent to {url}"),
+            },
+        ),
+        (
             "mesh".into(),
             match answers.mesh_mode {
                 MeshMode::Coordination => "asks the coordination server for a key".into(),
@@ -881,7 +901,8 @@ fn summarise(answers: &HubAnswers, template: Option<&str>) {
             },
         ),
     ];
-    if answers.services.contains(&ServiceId::Kabinet) && answers.services.contains(&ServiceId::Rekuest)
+    if answers.services.contains(&ServiceId::Kabinet)
+        && answers.services.contains(&ServiceId::Rekuest)
     {
         rows.push((
             "plugin engine".into(),

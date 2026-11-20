@@ -333,6 +333,15 @@ pub fn build_lok_config(config: &HubConfig, lok: &LokBlock, said: &crate::contra
             crate::generate::local_mesh::lok_ionscale(mesh, &lok.hub_identifier),
         ));
     }
+    // Where the hub's services send their traces, Lok sends its own: it is told here, as
+    // its config is this installer's to write and not its image's.
+    if let Some(telemetry) = &config.telemetry {
+        let mut block = vec![("endpoint", s(&telemetry.endpoint))];
+        if !telemetry.takes_metrics() {
+            block.push(("metrics", Value::from(false)));
+        }
+        entries.push(("telemetry", map(block)));
+    }
     map(entries)
 }
 

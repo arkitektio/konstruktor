@@ -118,6 +118,11 @@ pub struct HubAnswers {
     /// (the default, and the fast one) or bind mounts in the deployment folder.
     #[serde(default)]
     pub storage: StorageMode,
+    /// Where the hub's services send traces and metrics: `local` runs a collector in this
+    /// stack, anything else is the address of one that exists. Left out, telemetry is off
+    /// — `hub features add telemetry` turns it on later.
+    #[serde(default)]
+    pub telemetry: Option<String>,
     /// Images to run instead of the ones a new hub is seeded with, by compose service —
     /// `rekuest` → `jhnnsrs/rekuest:1.2.3`. For pinning what a test suite runs against,
     /// so an upstream `latest` that moved cannot fail a build it has nothing to do with.
@@ -406,8 +411,13 @@ pub async fn create_hub(
         dev_hub: answers.dev_hub,
         service_options: answers.service_options.clone(),
         storage: answers.storage,
+        telemetry: answers.telemetry.clone(),
         ..Default::default()
     });
+    // The page of a collector run here: its usual port, unless this machine has it taken.
+    if let Some(telemetry) = config.telemetry.as_mut().filter(|t| t.enabled) {
+        telemetry.exposed_ui_port = Some(crate::features::free_page_port(telemetry.ui_port));
+    }
     // A mesh of its own, which its sidecar joins with the key Lok mints for it. Before the
     // images, so `--image ionskale=…` reaches it.
     if answers.mesh_mode == MeshMode::Local {
