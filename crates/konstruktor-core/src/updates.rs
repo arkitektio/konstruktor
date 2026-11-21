@@ -792,7 +792,7 @@ async fn running(dir: &std::path::Path) -> bool {
 }
 
 /// The label release pipelines put a version under.
-const VERSION_LABEL: &str = "org.opencontainers.image.version";
+use crate::contract::VERSION_LABEL;
 
 /// The version of the build `service`'s container was created from, if it has a container
 /// and the image says.
@@ -1912,6 +1912,28 @@ async fn apply_on(
         .await
         .map_err(UpdateError::Health)?;
         report.health = Some(health);
+    }
+
+    // --- tell the coordination server what runs now ------------------------------------
+    // It keeps each service's version, and tells an app when one is outside what the app
+    // was written for. The reporter says it within its interval anyway; restarted, it says
+    // it now. An update cannot authorize the hub again: that takes a person.
+    if was_running && !report.updated.is_empty() {
+        if let Some(reporter) = config.reporter.as_ref().filter(|r| r.enabled) {
+            step("Reporting the new versions to the coordination server".into());
+            let restart = vec![
+                "compose".to_string(),
+                "restart".to_string(),
+                reporter.host.clone(),
+            ];
+            if let Err(error) = crate::compose::run_streamed(dir, restart, &line).await {
+                warn(format!(
+                    "The health reporter could not be restarted ({}). The coordination server \
+                     learns the new versions at its next report.",
+                    last_lines(&error)
+                ));
+            }
+        }
     }
 
     Ok(report)

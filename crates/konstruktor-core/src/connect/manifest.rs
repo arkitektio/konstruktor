@@ -517,7 +517,11 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
                 description: summary.clone(),
                 manifest: ServiceManifest {
                     identifier: said.identifier.clone(),
-                    version: "1.0.0".to_string(),
+                    // The release its image is; the reporter corrects it once it runs.
+                    version: said
+                        .version
+                        .clone()
+                        .unwrap_or_else(|| crate::contract::NO_VERSION.to_string()),
                     description: summary,
                     logo: None,
                     roles: declared_roles(&said.needs.roles),
@@ -569,7 +573,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             description: Some("Object storage for the hub's services".to_string()),
             manifest: ServiceManifest {
                 identifier: S3_MANIFEST.to_string(),
-                version: "1.0.0".to_string(),
+                version: crate::contract::NO_VERSION.to_string(),
                 description: Some("Local S3 / RustFS object storage datalayer".to_string()),
                 logo: None,
                 roles: Vec::new(),
@@ -600,7 +604,7 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
             description: Some("The media server Lovekit's rooms are hosted on".to_string()),
             manifest: ServiceManifest {
                 identifier: LIVEKIT_MANIFEST.to_string(),
-                version: "1.0.0".to_string(),
+                version: crate::contract::NO_VERSION.to_string(),
                 description: Some("LiveKit media server for live audio and video".to_string()),
                 logo: None,
                 roles: Vec::new(),
@@ -830,6 +834,19 @@ mod tests {
             .collect();
         assert!(scopes.contains(&"mikro_read"), "{scopes:?}");
         assert!(mikro.manifest.challenge_key.is_some());
+        // An image of no release is of no version; a release's is its own.
+        assert_eq!(mikro.manifest.version, crate::contract::NO_VERSION);
+        let mut released = described();
+        for said in released.described.values_mut() {
+            said.version = Some("15.9.1".to_string());
+        }
+        let request = build_hub_request(&config, &released);
+        assert!(request
+            .hub
+            .instances
+            .iter()
+            .any(|i| i.manifest.identifier == "live.arkitekt.mikro"
+                && i.manifest.version == "15.9.1"));
 
         let nothing_said = build_hub_request(&config, &HubManifestOptions::default());
         assert!(nothing_said

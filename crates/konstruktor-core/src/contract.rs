@@ -338,6 +338,10 @@ impl Sidecar {
 pub struct Description {
     pub contract: u32,
     pub name: String,
+    /// The release the image is, from its [`VERSION_LABEL`]: not part of what the image
+    /// describes, read beside it. `None` for a build of no release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// What it is, in a line.
     #[serde(default)]
     pub summary: String,
@@ -392,8 +396,21 @@ pub const LABEL: &str = "live.arkitekt.service";
 /// service's. `None` for an image without the label, one that can be found neither here nor
 /// in its registry, or one that speaks a contract this build does not.
 pub async fn describe(image: &str) -> Option<Description> {
-    read(&labelled(image).await?)
+    let labels = labels(image).await?;
+    let mut said = read(labels.get(LABEL)?)?;
+    said.version = labels
+        .get(VERSION_LABEL)
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty());
+    Some(said)
 }
+
+/// The label a release build names its version in.
+pub const VERSION_LABEL: &str = "org.opencontainers.image.version";
+
+/// What a service runs when its image names no release (a source build), as the
+/// coordination server reads it: a local build, of no known version.
+pub const NO_VERSION: &str = "0+local";
 
 /// The description `image` carries as its label, as it was stamped. `None` for an image
 /// without one, or one that can neither be found here nor read from its registry.
@@ -402,13 +419,22 @@ pub async fn describe(image: &str) -> Option<Description> {
 /// tag (`rekuest:9`) pulled before its releases were stamped is older than what the
 /// registry holds under it now, and what is published there says what the tag is.
 pub async fn labelled(image: &str) -> Option<String> {
-    if let Some(said) = crate::oci::local_labels(image)
+    labels(image).await?.remove(LABEL)
+}
+
+/// The labels of the copy of `image` that carries the description: this machine's, else
+/// the registry's.
+async fn labels(image: &str) -> Option<BTreeMap<String, String>> {
+    if let Some(local) = crate::oci::local_labels(image)
         .await
-        .and_then(|mut labels| labels.remove(LABEL))
+        .filter(|labels| labels.contains_key(LABEL))
     {
-        return Some(said);
+        return Some(local);
     }
-    crate::oci::remote_labels(image).await.ok()?.remove(LABEL)
+    crate::oci::remote_labels(image)
+        .await
+        .ok()
+        .filter(|labels| labels.contains_key(LABEL))
 }
 
 fn read(text: &str) -> Option<Description> {
