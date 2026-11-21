@@ -231,8 +231,13 @@ pub fn build_caddyfile(
     // its own, as the reference deployment serves it: every LiveKit SDK takes a bare
     // `ws(s)://host:port` and appends `/rtc` itself. Plain HTTP whatever the hub's own site
     // does; see `LivekitBlock` for why the media ports cannot come through here at all.
+    //
+    // `/ht` is the path a client probes every alias at before it takes it. LiveKit has no
+    // such route and answers 404 there, so the probe is handed its root, which says whether
+    // it is up.
     if let Some(livekit) = &sites.livekit {
         let _ = write!(out, "\n:{} {{\n", livekit.listen_port);
+        out.push_str("\trewrite /ht /\n");
         let _ = write!(
             out,
             "\treverse_proxy {}:{}\n",
@@ -243,6 +248,7 @@ pub fn build_caddyfile(
         if let (Some(port), Some(tls)) = (livekit.tls_listen_port, &sites.tls) {
             let _ = write!(out, "\n:{port} {{\n");
             let _ = write!(out, "\ttls {} {}\n", tls.cert_file, tls.key_file);
+            out.push_str("\trewrite /ht /\n");
             let _ = write!(
                 out,
                 "\treverse_proxy {}:{}\n",

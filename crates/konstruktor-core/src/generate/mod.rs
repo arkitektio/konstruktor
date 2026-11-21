@@ -119,7 +119,10 @@ pub fn generate_hub_files(
     if let Some(livekit) = config.running_livekit() {
         files.insert(
             format!("configs/{}.yaml", livekit.host),
-            dump(&compose::build_livekit_config(livekit)),
+            dump(&compose::build_livekit_config(
+                livekit,
+                config.mesh.as_ref().is_some_and(|mesh| mesh.enabled),
+            )),
         );
     }
 
@@ -177,7 +180,12 @@ pub fn generate_hub_files(
                 livekit: config.running_livekit().map(|livekit| caddy::LivekitSite {
                     listen_port: livekit.signal_port,
                     tls_listen_port: config.served_certificate().map(|_| livekit.signal_tls_port),
-                    upstream_host: &livekit.host,
+                    // In the sidecar's network with the gateway on a hub with a mesh.
+                    upstream_host: if config.mesh.as_ref().is_some_and(|mesh| mesh.enabled) {
+                        "localhost"
+                    } else {
+                        &livekit.host
+                    },
                     upstream_port: crate::config::hub::LIVEKIT_INTERNAL_PORT,
                 }),
                 tls: config.served_certificate().map(|_| caddy::GatewayTls {

@@ -736,6 +736,13 @@ impl TelemetryBlock {
 /// ICE on [`Self::rtc_tcp_port`] and [`Self::rtc_udp_port`], which are published as they
 /// are (LiveKit announces the port it listens on, so the two must match). The address it
 /// announces is [`Self::node_ip`].
+///
+/// **On a hub with a mesh** LiveKit runs in the mesh sidecar's network, beside the gateway,
+/// so the tailnet interface is one of its own and a client on the mesh, which relays its
+/// media through its node, reaches it at the hub's tailnet address
+/// (`generate::compose::build_livekit_config`). Tried on a hub without a
+/// [`Self::node_ip`]; what LiveKit offers on the tailnet when it is also told to announce
+/// a LAN address has not been.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivekitBlock {
     /// The compose service name, which is also how Lovekit reaches its API.
@@ -791,9 +798,11 @@ impl LivekitBlock {
         }
     }
 
-    /// The URL Lovekit calls LiveKit's API on, inside the stack's network.
-    pub fn api_url(&self) -> String {
-        format!("http://{}:{LIVEKIT_INTERNAL_PORT}", self.host)
+    /// The URL Lovekit calls LiveKit's API on, inside the stack's network: at LiveKit's own
+    /// name, or at the mesh sidecar's on a hub with a mesh, whose network LiveKit shares
+    /// ([`HubConfig::livekit_network_host`]).
+    pub fn api_url(&self, network_host: &str) -> String {
+        format!("http://{network_host}:{LIVEKIT_INTERNAL_PORT}")
     }
 }
 
@@ -1543,6 +1552,15 @@ impl HubConfig {
     /// Whether `id` is one of this hub's services and part of its stack.
     pub fn runs(&self, id: ServiceId) -> bool {
         self.get(id).is_some_and(ServiceBlock::runs)
+    }
+
+    /// The name LiveKit's API answers at inside the stack's network: its own, or the mesh
+    /// sidecar's when the hub has a mesh and LiveKit shares the sidecar's network.
+    pub fn livekit_network_host<'a>(&'a self, livekit: &'a LivekitBlock) -> &'a str {
+        match self.mesh.as_ref().filter(|mesh| mesh.enabled) {
+            Some(mesh) => &mesh.host,
+            None => &livekit.host,
+        }
     }
 
     /// The LiveKit this stack runs, if it runs one: only while Lovekit does, like

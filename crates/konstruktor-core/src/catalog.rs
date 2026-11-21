@@ -270,8 +270,9 @@ const KNOWN: [Known; 12] = [
         purpose: "Broadcasts and live streams — from people and from apps, such as \
                   a microscope's camera — carried by a LiveKit media server that \
                   runs alongside it. Media flows directly on ports 2757/tcp and \
-                  2758/udp, so it works on this machine's network, not across the \
-                  internet or the mesh. Experimental.",
+                  2758/udp, so it works on this machine's network, and over the \
+                  hub's mesh for clients that relay through it, not across the \
+                  internet. Experimental.",
         default: false,
         experimental: true,
         image: "jhnnsrs/lovekit:5",

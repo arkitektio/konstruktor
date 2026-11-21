@@ -399,6 +399,18 @@ fn gateway_networks(config: &HubConfig) -> Value {
         .collect())
 }
 
+/// The two ports LiveKit's media flows on, as whoever owns its network publishes them: none
+/// on a mesh-only hub.
+fn livekit_media_ports(config: &HubConfig, livekit: &LivekitBlock) -> Vec<Value> {
+    if publishes_nothing(config) {
+        return Vec::new();
+    }
+    vec![
+        s(&format!("{0}:{0}", livekit.rtc_tcp_port)),
+        s(&format!("{0}:{0}/udp", livekit.rtc_udp_port)),
+    ]
+}
+
 fn publishes_nothing(config: &HubConfig) -> bool {
     config
         .mesh
@@ -413,12 +425,19 @@ fn publishes_nothing(config: &HubConfig) -> bool {
 /// announce that, which is the one address the media ports are not reachable on. It
 /// announces [`LivekitBlock::node_ip`] instead — or, without one, the container's own
 /// address, which only this machine can reach.
-pub fn build_livekit_config(livekit: &LivekitBlock) -> Value {
+///
+/// `on_mesh`: LiveKit shares the mesh sidecar's network. Left to itself it offers no
+/// candidate on a tailnet (CGNAT) address; told to take every address, it offers the
+/// sidecar's tailnet one beside the others, which is the one media reaches over the mesh.
+pub fn build_livekit_config(livekit: &LivekitBlock, on_mesh: bool) -> Value {
     let mut rtc = vec![
         ("tcp_port", Value::from(livekit.rtc_tcp_port)),
         ("udp_port", Value::from(livekit.rtc_udp_port)),
         ("use_external_ip", Value::from(false)),
     ];
+    if on_mesh {
+        rtc.push(("ips", map(vec![("includes", list(vec![s("0.0.0.0/0")]))])));
+    }
     if let Some(ip) = livekit.node_ip.as_deref().filter(|ip| !ip.is_empty()) {
         rtc.push(("node_ip", s(ip)));
     }
@@ -437,19 +456,34 @@ pub fn build_livekit_config(livekit: &LivekitBlock) -> Value {
 /// Those are published as they are — LiveKit announces the port it listens on, so the two
 /// sides of the mapping must match — and by this container rather than the gateway: the
 /// media never passes through it. A mesh-only hub publishes nothing, here as elsewhere.
+///
+/// On a hub with a mesh LiveKit moves into the sidecar's network, as the gateway does: the
+/// tailnet interface is then its own, which is what lets media reach it over the mesh. Its
+/// ports are the sidecar's to publish there ([`livekit_media_ports`]).
 fn livekit_service(config: &HubConfig, livekit: &LivekitBlock) -> Value {
     let mut service = vec![
         ("image", s(&livekit.image)),
         ("command", list(vec![s("--config"), s(LIVEKIT_CONFIG_PATH)])),
     ];
-    if !publishes_nothing(config) {
-        service.push((
-            "ports",
-            list(vec![
-                s(&format!("{0}:{0}", livekit.rtc_tcp_port)),
-                s(&format!("{0}:{0}/udp", livekit.rtc_udp_port)),
-            ]),
-        ));
+    if let Some(mesh) = config.mesh.as_ref().filter(|mesh| mesh.enabled) {
+        service.extend([
+            ("network_mode", s(&format!("service:{}", mesh.host))),
+            // Healthy, not just started: LiveKit reads its interfaces once, when it starts,
+            // and the tailnet one is there only once the sidecar has joined. `restart`, for
+            // the gateway's reason: a recreated sidecar takes the network with it.
+            (
+                "depends_on",
+                map(vec![(
+                    mesh.host.as_str(),
+                    map(vec![
+                        ("condition", s("service_healthy")),
+                        ("restart", Value::from(true)),
+                    ]),
+                )]),
+            ),
+        ]);
+    } else {
+        service.push(("ports", list(livekit_media_ports(config, livekit))));
     }
     service.extend([
         ("stop_grace_period", s("2s")),
@@ -790,6 +824,11 @@ pub fn build_compose(
     }
 
     let mesh = config.mesh.as_ref().filter(|m| m.enabled);
+    // LiveKit shares the sidecar's network on a hub with a mesh: its media ports are
+    // published there, beside the gateway's.
+    if let Some(livekit) = livekit.filter(|_| mesh.is_some()) {
+        ports.extend(livekit_media_ports(config, livekit));
+    }
     let reporter = config.reporter.as_ref().filter(|r| r.enabled);
     // The sidecar's LocalAPI socket, shared so the reporter can say what the tailnet
     // calls this node. Only when there is a reporter to read it.
@@ -857,6 +896,21 @@ pub fn build_compose(
         // A mesh-only hub publishes nothing, and an empty `ports:` is noise.
         if !ports.is_empty() {
             sidecar.push(("ports", list(ports.clone())));
+        }
+        // On the tailnet once it has an address there: what LiveKit waits for.
+        if livekit.is_some() {
+            sidecar.push((
+                "healthcheck",
+                map(vec![
+                    (
+                        "test",
+                        list(vec![s("CMD"), s("tailscale"), s("ip"), s("-4")]),
+                    ),
+                    ("interval", s("2s")),
+                    ("timeout", s("5s")),
+                    ("retries", Value::from(60)),
+                ]),
+            ));
         }
         sidecar.extend([
             ("networks", networks),

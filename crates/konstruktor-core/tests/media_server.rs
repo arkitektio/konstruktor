@@ -101,7 +101,7 @@ fn a_hub_with_lovekit_runs_a_media_server() {
     assert!(strings(&compose["services"]["gateway"]["ports"]).contains(&"2756:2756".into()));
     let caddyfile = &files["configs/Caddyfile"];
     assert!(
-        caddyfile.contains(":2756 {\n\treverse_proxy livekit:7880\n}"),
+        caddyfile.contains(":2756 {\n\trewrite /ht /\n\treverse_proxy livekit:7880\n}"),
         "{caddyfile}"
     );
 }
@@ -147,6 +147,62 @@ fn a_mesh_only_hub_publishes_none_of_the_media_ports() {
 
 /// The two that are services like any other: a config each, a route each, and the object
 /// store for each, since each declares a bucket.
+/// On a hub with a mesh the media server lives in the sidecar's network, beside the
+/// gateway: the tailnet interface is its own there, so media reaches it over the mesh. Its
+/// ports are the sidecar's to publish, and everything that names it names the sidecar.
+#[test]
+fn on_a_mesh_the_media_server_shares_the_sidecars_network() {
+    let config = hub(
+        vec![ServiceId::Rekuest, ServiceId::Lovekit],
+        Some(MeshOptions {
+            hostname: "media-test".into(),
+            auth_key: "tskey-auth-fixture".into(),
+            coord_url: None,
+            login: None,
+        }),
+    );
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
+
+    let compose = yaml(&files, "docker-compose.yaml");
+    let livekit = &compose["services"]["livekit"];
+    assert_eq!(livekit["network_mode"].as_str(), Some("service:tailscale"));
+    // It starts once the sidecar is on the tailnet: it reads its interfaces only then.
+    assert_eq!(
+        livekit["depends_on"]["tailscale"]["condition"].as_str(),
+        Some("service_healthy")
+    );
+    assert!(compose["services"]["tailscale"]["healthcheck"]["test"].is_sequence());
+    // And offers the tailnet address among its candidates, which it would not by default.
+    let media = yaml(&files, "configs/livekit.yaml");
+    assert_eq!(strings(&media["rtc"]["ips"]["includes"]), ["0.0.0.0/0"]);
+    assert!(
+        livekit.get("ports").is_none(),
+        "a member of another's network publishes nothing itself"
+    );
+    let published = strings(&compose["services"]["tailscale"]["ports"]);
+    for port in ["2756:2756", "2757:2757", "2758:2758/udp"] {
+        assert!(
+            published.contains(&port.to_string()),
+            "{port} in {published:?}"
+        );
+    }
+
+    // The gateway is in that network too, and Lovekit reaches the API at the sidecar's name.
+    assert!(files["configs/Caddyfile"].contains("reverse_proxy localhost:7880"));
+    // A client probes an alias at /ht before it takes it; LiveKit answers at its root.
+    assert!(files["configs/Caddyfile"].contains("rewrite /ht /"));
+    let lovekit = konstruktor_core::contract::facts(
+        &config,
+        ServiceId::Lovekit,
+        &IssuedIdentity::default(),
+        &support::said(),
+    );
+    assert_eq!(
+        lovekit["peers"]["livekit"]["url"].as_str(),
+        Some("http://tailscale:7880")
+    );
+}
+
 #[test]
 fn dokuments_and_lokate_are_generated_like_any_service() {
     let files = generate_hub_files(

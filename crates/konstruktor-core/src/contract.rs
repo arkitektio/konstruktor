@@ -1360,7 +1360,10 @@ pub fn facts(
         peers.push((
             "livekit".to_string(),
             map(vec![
-                ("url", s(&livekit.api_url())),
+                (
+                    "url",
+                    s(&livekit.api_url(config.livekit_network_host(livekit))),
+                ),
                 (
                     "settings",
                     map(vec![

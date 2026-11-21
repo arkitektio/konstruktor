@@ -392,8 +392,8 @@ pub const LIVEKIT_MANIFEST: &str = "io.livekit.livekit";
 ///
 /// The port is the same on every alias. On this machine's networks it is published as it
 /// is; on the tailnet and inside the stack's network nothing is mapped, and the gateway
-/// listens on that very port. No challenge: there is no health route of ours behind it,
-/// and LiveKit's own answer at the root is not one the coordination server knows to ask.
+/// listens on that very port. No challenge of its own is named: a client probes the
+/// default path, which the gateway hands to LiveKit's root (`generate::caddy`).
 fn livekit_alias(
     alias: StagingAlias,
     livekit: &crate::config::hub::LivekitBlock,
@@ -587,7 +587,8 @@ pub fn build_hub_request(config: &HubConfig, options: &HubManifestOptions) -> Hu
     // Lovekit's media server, as an instance of its own: an app connects a room to it
     // directly, with a token Lovekit hands out, so it has to know where it is. On the mesh
     // as well as on this machine's networks — the signalling is the gateway's there too,
-    // and a client on the mesh relays its media through the node it reaches it by.
+    // and a client on the mesh relays its media through the node it reaches it by, to
+    // LiveKit in the sidecar's network (`generate::compose::livekit_service`).
     if let Some(livekit) = config.running_livekit() {
         let aliases = aliases_at("")
             .into_iter()

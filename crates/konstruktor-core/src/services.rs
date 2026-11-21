@@ -244,7 +244,8 @@ pub fn plan(
         } else {
             "Lovekit brings a LiveKit media server with it, which opens ports 2756/tcp, \
              2757/tcp and 2758/udp on this machine. Media flows on them directly, so it \
-             works on this machine's network, not across the internet."
+             works on this machine's network, and over the hub's mesh for clients that \
+             relay through it, not across the internet."
                 .to_string()
         });
     }
