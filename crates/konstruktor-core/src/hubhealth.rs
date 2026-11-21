@@ -13,6 +13,7 @@
 //! the one the state came from means the hub was authorized again, and the state is
 //! re-seeded from it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -219,31 +220,56 @@ pub struct MeshReport {
     pub ipv4: Option<String>,
 }
 
-/// What `/f/hubhealth/` takes. `instances` is left out until the grant says which
-/// instance token belongs to which service — today each entry carries only the token.
+/// One service of the hub, as its health route answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceReport {
+    pub healthy: bool,
+    /// The release it says it runs ([`VERSION_HEADER`]). `None` for a build that names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// The header a service names its running release in, on its health answer.
+pub const VERSION_HEADER: &str = "Arkitekt-Service-Version";
+
+/// What `/f/hubhealth/` takes. `instances` is keyed by the service's name in the hub.
 #[derive(Debug, Clone, Serialize)]
 pub struct HealthReport {
     pub healthy: bool,
     pub version: String,
+    pub instances: BTreeMap<String, InstanceReport>,
     /// `null` on a hub without a mesh.
     pub mesh: Option<MeshReport>,
 }
 
-/// Every enabled service answers its health check through the gateway. `routes` are the
-/// services' health routes there, as `<host>/<health path>`.
-pub async fn services_healthy(client: &reqwest::Client, gateway: &str, routes: &[String]) -> bool {
-    for route in routes {
+/// Each service's health check, asked through the gateway. `routes` are the services'
+/// names with their health routes there, as `<host>/<health path>`.
+pub async fn services_health(
+    client: &reqwest::Client,
+    gateway: &str,
+    routes: &[(String, String)],
+) -> BTreeMap<String, InstanceReport> {
+    let mut instances = BTreeMap::new();
+    for (name, route) in routes {
         let url = format!("{}/{route}?format=json", gateway.trim_end_matches('/'));
-        let ok = client
-            .get(&url)
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success());
-        if !ok {
-            return false;
-        }
+        let report = match client.get(&url).send().await {
+            Ok(response) => InstanceReport {
+                healthy: response.status().is_success(),
+                version: response
+                    .headers()
+                    .get(VERSION_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty()),
+            },
+            Err(_) => InstanceReport {
+                healthy: false,
+                version: None,
+            },
+        };
+        instances.insert(name.clone(), report);
     }
-    true
+    instances
 }
 
 /// The tailnet node as `tailscale status --json` describes it, reduced to what the
@@ -460,20 +486,27 @@ async fn report_once(
         .ok_or(ReportError::NoTokenEndpoint)?;
     let endpoint = health_endpoint(&well_known).ok_or(ReportError::NoTokenEndpoint)?;
 
-    let hosts: Vec<String> = crate::profile::read_profile(&config.seed_dir)
+    let hosts: Vec<(String, String)> = crate::profile::read_profile(&config.seed_dir)
         .map(|p| {
             p.config
                 .enabled_services()
                 .into_iter()
                 .map(|id| p.config.service(id))
-                .map(|block| format!("{}/{}", block.host, block.health_path()))
+                .map(|block| {
+                    (
+                        block.host.clone(),
+                        format!("{}/{}", block.host, block.health_path()),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
 
+    let instances = services_health(client, &config.gateway, &hosts).await;
     let report = HealthReport {
-        healthy: !hosts.is_empty() && services_healthy(client, &config.gateway, &hosts).await,
+        healthy: !instances.is_empty() && instances.values().all(|i| i.healthy),
         version: config.version.clone(),
+        instances,
         mesh: mesh_status(&config.tailscale_socket).await,
     };
 
@@ -650,18 +683,34 @@ mod tests {
     }
 
     /// The report body is the contract: `healthy` required, `mesh` null without a sidecar,
-    /// and no `instances` until the grant can name them.
+    /// `instances` by name, a version only where the service said one.
     #[test]
     fn the_report_has_the_shape_the_server_takes() {
+        let instance = |version: Option<&str>| InstanceReport {
+            healthy: true,
+            version: version.map(str::to_string),
+        };
         let body = serde_json::to_value(HealthReport {
             healthy: true,
             version: "1.2.3".into(),
+            instances: BTreeMap::from([
+                ("mikro".to_string(), instance(Some("12.1.0"))),
+                ("rekuest".to_string(), instance(None)),
+            ]),
             mesh: None,
         })
         .unwrap();
         assert_eq!(
             body,
-            serde_json::json!({"healthy": true, "version": "1.2.3", "mesh": null})
+            serde_json::json!({
+                "healthy": true,
+                "version": "1.2.3",
+                "instances": {
+                    "mikro": {"healthy": true, "version": "12.1.0"},
+                    "rekuest": {"healthy": true},
+                },
+                "mesh": null,
+            })
         );
     }
 }

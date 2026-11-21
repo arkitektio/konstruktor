@@ -136,6 +136,7 @@ async fn a_report_is_sent_as_the_hub_and_says_when_to_come_back() {
         &HealthReport {
             healthy: true,
             version: "0.5.1".into(),
+            instances: Default::default(),
             mesh: Some(MeshReport {
                 connected: true,
                 hostname: Some("myhub.iac.mesh.arkitekt.live".into()),
@@ -171,6 +172,7 @@ async fn an_expired_access_token_is_unauthorized_not_a_server_error() {
         &HealthReport {
             healthy: true,
             version: "0.5.1".into(),
+            instances: Default::default(),
             mesh: None,
         },
     )
