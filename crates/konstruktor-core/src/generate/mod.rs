@@ -122,6 +122,7 @@ pub fn generate_hub_files(
             dump(&compose::build_livekit_config(
                 livekit,
                 config.mesh.as_ref().is_some_and(|mesh| mesh.enabled),
+                &compose::lovekit_webhook_url(config.service(crate::catalog::ServiceId::Lovekit)),
             )),
         );
     }

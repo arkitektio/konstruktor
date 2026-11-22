@@ -64,6 +64,20 @@ fn a_hub_with_lovekit_runs_a_media_server() {
         livekit.api_secret.len() >= 32,
         "LiveKit refuses a shorter one"
     );
+    // It tells Lovekit about calls and streams, signing with that same pair, at Lovekit's
+    // own route inside the stack.
+    assert_eq!(
+        media["webhook"]["api_key"].as_str(),
+        Some(livekit.api_key.as_str())
+    );
+    let lovekit_block = config.service(ServiceId::Lovekit);
+    assert_eq!(
+        strings(&media["webhook"]["urls"]),
+        [format!(
+            "http://{0}:{1}/{0}/livekit/webhook",
+            lovekit_block.host, lovekit_block.internal_port
+        )]
+    );
 
     // Lovekit signs its tokens with that pair, and calls the API inside the stack.
     let lovekit = konstruktor_core::contract::facts(

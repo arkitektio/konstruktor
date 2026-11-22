@@ -429,7 +429,11 @@ fn publishes_nothing(config: &HubConfig) -> bool {
 /// `on_mesh`: LiveKit shares the mesh sidecar's network. Left to itself it offers no
 /// candidate on a tailnet (CGNAT) address; told to take every address, it offers the
 /// sidecar's tailnet one beside the others, which is the one media reaches over the mesh.
-pub fn build_livekit_config(livekit: &LivekitBlock, on_mesh: bool) -> Value {
+///
+/// `webhook_url`: where LiveKit posts its room, participant and track changes — Lovekit,
+/// inside the stack ([`lovekit_webhook_url`]). Each post is signed with the one key pair,
+/// which Lovekit verifies with, so calls end and streams go live without anyone polling.
+pub fn build_livekit_config(livekit: &LivekitBlock, on_mesh: bool, webhook_url: &str) -> Value {
     let mut rtc = vec![
         ("tcp_port", Value::from(livekit.rtc_tcp_port)),
         ("udp_port", Value::from(livekit.rtc_udp_port)),
@@ -448,7 +452,23 @@ pub fn build_livekit_config(livekit: &LivekitBlock, on_mesh: bool) -> Value {
             "keys",
             map(vec![(livekit.api_key.as_str(), s(&livekit.api_secret))]),
         ),
+        (
+            "webhook",
+            map(vec![
+                ("api_key", s(&livekit.api_key)),
+                ("urls", list(vec![s(webhook_url)])),
+            ]),
+        ),
     ])
+}
+
+/// Where Lovekit takes LiveKit's webhooks: its own route, behind its script name, on its
+/// port inside the stack — LiveKit reaches it by name, mesh sidecar's network or not.
+pub fn lovekit_webhook_url(lovekit: &ServiceBlock) -> String {
+    format!(
+        "http://{0}:{1}/{0}/livekit/webhook",
+        lovekit.host, lovekit.internal_port
+    )
 }
 
 /// LiveKit: someone else's image, its config, and the two ports its media flows on.

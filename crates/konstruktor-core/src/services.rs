@@ -602,7 +602,8 @@ pub fn changed_configs(
 /// The running containers that have to be restarted to read a config that changed under
 /// them: the gateway for the Caddyfile (routes came and went), a service — and whatever
 /// reads it besides it, Rekuest's takt — for its own config (the services Rekuest
-/// hooks into, the inline trust bundle). A service just added or removed is not among them:
+/// hooks into, the inline trust bundle), and LiveKit for its own (the address it announces,
+/// where it sends Lovekit its webhooks). A service just added or removed is not among them:
 /// `up` starts the one and removes the other.
 pub fn services_to_restart(
     config: &HubConfig,
@@ -623,6 +624,14 @@ pub fn services_to_restart(
         let Some(host) = file.strip_suffix(".yaml") else {
             continue;
         };
+        // LiveKit is no service of the catalogue's, but reads a file all the same; it
+        // comes and goes with Lovekit, which `up` handles.
+        if let Some(livekit) = config.running_livekit().filter(|l| l.host == host) {
+            if !plan.added.contains(&ServiceId::Lovekit) {
+                push(livekit.host.clone());
+            }
+            continue;
+        }
         let Some(id) = config.service_at(host).filter(|id| config.runs(*id)) else {
             continue;
         };
@@ -1177,6 +1186,28 @@ mod tests {
         assert_eq!(
             services_to_restart(&config, &changed, &removed),
             ["gateway"]
+        );
+    }
+
+    /// LiveKit reads a file konstruktor writes, so a hub that keeps Lovekit restarts it when
+    /// that file changes (an address moved, the webhook block arrived with an update); one
+    /// that just gained Lovekit starts it with `up` instead.
+    #[test]
+    fn a_changed_livekit_config_restarts_livekit() {
+        let mut config = hub();
+        let added = plan(&config, &change(&[ServiceId::Lovekit], &[])).unwrap();
+        apply_plan(&mut config, &added);
+        config.provide(&support::said());
+        let host = config
+            .running_livekit()
+            .expect("Lovekit brings it")
+            .host
+            .clone();
+        let changed = vec![format!("{host}.yaml")];
+        assert!(services_to_restart(&config, &changed, &added).is_empty());
+        assert_eq!(
+            services_to_restart(&config, &changed, &ServicePlan::default()),
+            [host]
         );
     }
 
