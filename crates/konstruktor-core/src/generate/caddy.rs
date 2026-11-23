@@ -84,7 +84,8 @@ pub struct CaddyService<'a> {
 }
 
 /// The container that serves a service's agent endpoints (`/<service>/agent*`, and
-/// `/<service>/agi*`, as the endpoint used to be called and released agents still ask for).
+/// `/<service>/agi*`, as the endpoint used to be called and released agents still ask for),
+/// and its caller sessions (`/<service>/session`: an app window's socket to it).
 #[derive(Debug, Clone)]
 pub struct AgentUpstream {
     pub host: String,
@@ -96,7 +97,7 @@ pub struct AgentUpstream {
 fn agent_route(out: &mut String, service: &str, upstream: &AgentUpstream) {
     let _ = write!(
         out,
-        "\t@{service}_agent path /{service}/agent /{service}/agent/* /{service}/agi /{service}/agi/*\n"
+        "\t@{service}_agent path /{service}/agent /{service}/agent/* /{service}/agi /{service}/agi/* /{service}/session\n"
     );
     let _ = write!(out, "\thandle @{service}_agent {OPEN_BRACE_BARE}\n");
     let _ = write!(

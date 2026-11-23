@@ -31,7 +31,7 @@ http:// {
 		respond 404
 	}
 
-	@rekuest_agent path /rekuest/agent /rekuest/agent/* /rekuest/agi /rekuest/agi/*
+	@rekuest_agent path /rekuest/agent /rekuest/agent/* /rekuest/agi /rekuest/agi/* /rekuest/session
 	handle @rekuest_agent {
 		reverse_proxy rekuest-takt:8080
 	}
