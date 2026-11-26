@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "konstruktor"
-version = "0.44.0"
+version = "0.45.0"
 dependencies = [
  "dirs",
  "konstruktor-core",
@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "konstruktor-cli"
-version = "0.44.0"
+version = "0.45.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "konstruktor-core"
-version = "0.44.0"
+version = "0.45.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
