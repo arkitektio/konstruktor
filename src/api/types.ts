@@ -804,3 +804,36 @@ export type RestoreReport = {
   left_running: boolean;
   warnings: string[];
 };
+
+// --- scheduled jobs (konstruktor_core::schedule) ---------------------------------------------
+
+export type SchedulerMode = "container" | "host" | "off";
+
+export type ScheduledJob = {
+  service: string;
+  job: string;
+  /** What the service's image suggests, if anything. */
+  suggested: string | null;
+  /** What runs: the operator's choice, else the suggestion. */
+  schedule: string | null;
+  enabled: boolean;
+  long_running: boolean;
+  running: boolean;
+  last: JobRun | null;
+  /** When it next runs by itself; null while it is off or nothing wakes the hub. */
+  next: string | null;
+};
+
+export type JobRun = {
+  trigger: "schedule" | "manual";
+  started: string;
+  finished?: string;
+  outcome: "running" | "succeeded" | "failed" | "nothing_owed";
+  owed?: number;
+  tail?: string[];
+};
+
+export type ScheduleOverview = {
+  mode: SchedulerMode;
+  jobs: ScheduledJob[];
+};

@@ -296,6 +296,120 @@ pub fn planned(
     out
 }
 
+// --- one view of it all --------------------------------------------------------------------
+
+/// One job that can run by itself, as a screen shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobView {
+    #[serde(flatten)]
+    pub plan: Planned,
+    pub running: bool,
+    pub last: Option<Run>,
+    /// When it next runs by itself: none while it is off or nothing wakes the hub.
+    pub next: Option<DateTime<Utc>>,
+}
+
+/// A hub's scheduled jobs and what wakes them.
+#[derive(Debug, Clone, Serialize)]
+pub struct Overview {
+    pub mode: crate::config::hub::SchedulerMode,
+    pub jobs: Vec<JobView>,
+}
+
+/// Everything a screen shows about the hub's scheduled jobs.
+pub async fn overview(dir: &Path) -> Result<Overview, crate::profile::ProfileError> {
+    use crate::config::hub::SchedulerMode;
+
+    let config = crate::profile::read_profile(dir)?.config;
+    let described = contract::described(dir, &config).await;
+    let state = read_state(dir);
+    let running = running_jobs(dir);
+    let mode = config.scheduler_mode();
+    let now = chrono::Local::now();
+    let jobs = planned(&config, &described)
+        .into_iter()
+        .map(|plan| {
+            let id = key(&plan.service, &plan.job);
+            let next = (plan.enabled && mode != SchedulerMode::Off)
+                .then(|| plan.schedule.as_deref()?.parse::<Schedule>().ok())
+                .flatten()
+                .map(|schedule| schedule.next_after(&now).with_timezone(&Utc));
+            JobView {
+                running: running.contains(&id),
+                last: state.runs.get(&id).cloned(),
+                next,
+                plan,
+            }
+        })
+        .collect();
+    Ok(Overview { mode, jobs })
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChoiceError {
+    #[error(transparent)]
+    Profile(#[from] crate::profile::ProfileError),
+    #[error("`{0}` is not a service of this hub whose image describes itself")]
+    NoSuchService(String),
+    #[error("`{0}` offers no job `{1}`")]
+    NoSuchJob(String, String),
+    #[error("`{0}` suggests no schedule for `{1}`: say when, e.g. `daily 03:00`")]
+    NoSchedule(String, String),
+    #[error(transparent)]
+    NotASchedule(#[from] NotASchedule),
+}
+
+/// Turn a job's running by itself on or off, and move it when `at` is given; the job as it
+/// is scheduled now, or none when it has no schedule at all. A choice that only repeats
+/// what the image suggests is not kept in the profile.
+pub async fn choose(
+    dir: &Path,
+    service: &str,
+    name: &str,
+    enabled: bool,
+    at: Option<&str>,
+) -> Result<Option<Planned>, ChoiceError> {
+    let mut held = crate::profile::read_profile(dir)?;
+    let description = contract::description_of(dir, &held.config, service)
+        .await
+        .ok_or_else(|| ChoiceError::NoSuchService(service.to_string()))?;
+    let job = description
+        .jobs
+        .get(name)
+        .ok_or_else(|| ChoiceError::NoSuchJob(service.to_string(), name.to_string()))?;
+    if let Some(at) = at {
+        at.parse::<Schedule>()?;
+    }
+    let jobs = held
+        .config
+        .schedules
+        .entry(service.to_string())
+        .or_default();
+    let choice = jobs.entry(name.to_string()).or_default();
+    choice.enabled = enabled;
+    if let Some(at) = at {
+        choice.at = Some(at.to_string());
+    }
+    if enabled && choice.at.is_none() && job.schedule.is_none() {
+        return Err(ChoiceError::NoSchedule(
+            service.to_string(),
+            name.to_string(),
+        ));
+    }
+    if choice.enabled == job.schedule.is_some() && choice.at.is_none() {
+        jobs.remove(name);
+    }
+    if jobs.is_empty() {
+        held.config.schedules.remove(service);
+    }
+    crate::profile::write_profile(dir, &held)?;
+    let mut described = BTreeMap::new();
+    described.insert(service.to_string(), description);
+    Ok(planned(&held.config, &described)
+        .into_iter()
+        .find(|plan| plan.job == name))
+}
+
 // --- what the jobs did ---------------------------------------------------------------------
 
 /// Why a run happened.
@@ -622,14 +736,39 @@ pub struct Ticked {
     pub detail: Option<String>,
 }
 
+/// Who called [`tick`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waker {
+    /// The `scheduler` container.
+    Container,
+    /// A host timer.
+    Host,
+    /// A person: runs whatever the profile's mode.
+    Manual,
+}
+
 /// Run every job that is due now, one after the other, and say what was done with each.
 /// With `dry_run` nothing is run: each says what it would do.
+///
+/// A container or a host timer only runs the jobs when it is what the profile says wakes
+/// them: one left behind by another choice does nothing, so no job runs twice.
 pub async fn tick(
     dir: &Path,
+    waker: Waker,
     dry_run: bool,
     on_line: &(dyn Fn(crate::compose::ComposeLine) + Send + Sync),
 ) -> Result<Vec<Ticked>, crate::profile::ProfileError> {
+    use crate::config::hub::SchedulerMode;
+
     let config = crate::profile::read_profile(dir)?.config;
+    let ours = match waker {
+        Waker::Manual => true,
+        Waker::Container => config.scheduler_mode() == SchedulerMode::Container,
+        Waker::Host => config.scheduler_mode() == SchedulerMode::Host,
+    };
+    if !ours {
+        return Ok(Vec::new());
+    }
     let described = contract::described(dir, &config).await;
     let now = chrono::Local::now();
     let paused = updating(dir, now.with_timezone(&Utc));
@@ -705,6 +844,189 @@ pub async fn tick(
         }
     }
     Ok(out)
+}
+
+/// What setting the scheduler's mode did, for the operator.
+#[derive(Debug, Clone, Default)]
+pub struct ModeChanged {
+    pub said: Vec<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModeError {
+    #[error(transparent)]
+    Profile(#[from] crate::profile::ProfileError),
+    #[error("{0}")]
+    Host(String),
+    #[error("{0}")]
+    Compose(String),
+}
+
+/// The folder's owner, as `uid:gid`, and the group of the engine's socket: who the
+/// scheduler container runs as. Unset where the host has no such thing.
+#[cfg(unix)]
+fn owner_and_socket(dir: &Path, socket: &str) -> (Option<String>, Option<u32>) {
+    use std::os::unix::fs::MetadataExt;
+    let owner = std::fs::metadata(dir)
+        .ok()
+        .map(|meta| format!("{}:{}", meta.uid(), meta.gid()));
+    let group = std::fs::metadata(socket).ok().map(|meta| meta.gid());
+    (owner, group)
+}
+
+#[cfg(not(unix))]
+fn owner_and_socket(_dir: &Path, _socket: &str) -> (Option<String>, Option<u32>) {
+    (None, None)
+}
+
+/// `block` as the container needs it for the hub at `dir`: the folder's path, its owner,
+/// and the group of the engine's socket. What a new hub starts with, too.
+pub fn container_block(
+    dir: &Path,
+    mut block: crate::config::hub::SchedulerBlock,
+) -> crate::config::hub::SchedulerBlock {
+    let dir = crate::paths::canonical(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let (user, group) = owner_and_socket(&dir, &block.socket);
+    block.mode = crate::config::hub::SchedulerMode::Container;
+    block.path = Some(dir.display().to_string());
+    block.user = user;
+    block.socket_group = group;
+    block
+}
+
+/// Make `mode` what wakes the hub's jobs: take away what woke them before (the container,
+/// or the host's timer), write the profile and the hub's files, and set up the new one.
+/// `exe` is the Konstruktor a host timer calls.
+pub async fn set_mode(
+    dir: &Path,
+    mode: crate::config::hub::SchedulerMode,
+    exe: &Path,
+    on_line: &(dyn Fn(crate::compose::ComposeLine) + Send + Sync),
+) -> Result<ModeChanged, ModeError> {
+    use crate::config::hub::{SchedulerBlock, SchedulerMode};
+
+    let mut changed = ModeChanged::default();
+    let dir = crate::paths::canonical(dir).map_err(|error| ModeError::Host(error.to_string()))?;
+    let mut config = crate::profile::read_profile(&dir)?.config;
+    if let Some(reason) = crate::migrate::behind(&dir, &config) {
+        return Err(crate::profile::ProfileError::Layout(reason).into());
+    }
+    let before = config.scheduler_mode();
+    let host_timer =
+        || crate::schedule_host::for_this_host(&config.uid, &dir, exe).map_err(ModeError::Host);
+
+    if before == SchedulerMode::Host && mode != SchedulerMode::Host {
+        let timer = host_timer()?;
+        crate::schedule_host::uninstall(&timer).map_err(ModeError::Host)?;
+        changed
+            .said
+            .push(format!("Removed the {}.", timer.describe));
+    }
+    if before == SchedulerMode::Container && mode != SchedulerMode::Container {
+        if let Some(scheduler) = config.running_scheduler_container() {
+            let args = ["compose", "rm", "--stop", "--force", &scheduler.host]
+                .map(String::from)
+                .to_vec();
+            // Not running is already removed.
+            let _ = crate::compose::run_streamed(&dir, args, on_line).await;
+            changed
+                .said
+                .push(format!("Removed the `{}` container.", scheduler.host));
+        }
+    }
+
+    let mut block = config
+        .scheduler
+        .clone()
+        .unwrap_or_else(|| SchedulerBlock::new(mode));
+    block.mode = mode;
+    if mode == SchedulerMode::Container {
+        block = container_block(&dir, block);
+    }
+    config.scheduler = Some(block.clone());
+    crate::profile::rewrite(&dir, config.clone(), &[])?;
+
+    match mode {
+        SchedulerMode::Container => {
+            if crate::compose::is_up(&dir).await {
+                crate::compose::run_streamed(
+                    &dir,
+                    crate::compose::up_service(&block.host),
+                    on_line,
+                )
+                .await
+                .map_err(ModeError::Compose)?;
+                changed
+                    .said
+                    .push(format!("Started the `{}` container.", block.host));
+            } else {
+                changed.said.push(format!(
+                    "The `{}` container starts with the hub.",
+                    block.host
+                ));
+            }
+            changed.said.push(
+                "It reaches the Docker engine through its socket, which is as much as root on this machine; choose `host` to keep the socket out of the hub.".into(),
+            );
+        }
+        SchedulerMode::Host => {
+            let timer = host_timer()?;
+            crate::schedule_host::install(&timer).map_err(ModeError::Host)?;
+            changed
+                .said
+                .push(format!("Installed the {}.", timer.describe));
+            if let Some(note) = timer.note {
+                changed.said.push(note);
+            }
+        }
+        SchedulerMode::Off => changed
+            .said
+            .push("Nothing runs a job by itself now; `konstruktor job run` still does.".into()),
+    }
+    Ok(changed)
+}
+
+/// Where a hub's one scheduler process holds its lock.
+pub const SERVE_LOCK_FILENAME: &str = "hub_scheduler.lock";
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServeError {
+    #[error("another scheduler already wakes this hub's jobs")]
+    Busy,
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Wake the hub's jobs once a minute, for as long as this runs: what the `scheduler`
+/// container does. One per hub: a second is refused, not left to race the first.
+pub async fn serve(
+    dir: &Path,
+    on_line: &(dyn Fn(crate::compose::ComposeLine) + Send + Sync),
+    on_ticked: &(dyn Fn(&[Ticked]) + Send + Sync),
+) -> Result<(), ServeError> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(SERVE_LOCK_FILENAME))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err(ServeError::Busy),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+    }
+    loop {
+        match tick(dir, Waker::Container, false, on_line).await {
+            Ok(done) => on_ticked(&done),
+            // A profile that cannot be read now may be mid-write: the next minute reads it again.
+            Err(error) => on_line(crate::compose::ComposeLine {
+                line: format!("could not read the hub: {error}"),
+                stderr: true,
+            }),
+        }
+        let now = Utc::now();
+        let to_next_minute = 60 - u64::from(now.second()).min(59);
+        tokio::time::sleep(std::time::Duration::from_secs(to_next_minute)).await;
+    }
 }
 
 #[cfg(test)]

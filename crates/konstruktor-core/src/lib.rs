@@ -43,6 +43,7 @@ pub mod report;
 pub mod restore;
 pub mod rollback;
 pub mod schedule;
+pub mod schedule_host;
 pub mod secrets;
 pub mod selfupdate;
 pub mod services;

@@ -4,12 +4,9 @@
 //! when, is the operator's, kept in the profile. `tick` is what runs them — whatever wakes
 //! the hub calls it — and does what is due, one job after the other.
 
-use std::collections::BTreeMap;
-
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
-use konstruktor_core::schedule::{self, Schedule, ScheduleChoice};
-use konstruktor_core::{contract, profile};
+use konstruktor_core::schedule;
 
 use crate::manage::Target;
 use crate::ui;
@@ -27,6 +24,34 @@ pub enum ScheduleCommand {
     /// What wakes the hub calls this, every minute or so; it does nothing for a job that is
     /// not due, already ran in its window, or while an update runs.
     Tick(TickArgs),
+    /// Choose what wakes the jobs: the `scheduler` container, the host's own timer, or nothing.
+    Mode(ModeArgs),
+    /// Wake the jobs each minute, for as long as this runs: what the `scheduler` container runs.
+    #[command(hide = true)]
+    Serve(InArgs),
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum ModeChoice {
+    /// A `scheduler` container in the hub's stack, up when the hub is (the default).
+    Container,
+    /// A timer of this machine's own (systemd, launchd, Task Scheduler).
+    Host,
+    /// Nothing: jobs run only when asked for with `job run`.
+    Off,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum WakerChoice {
+    Container,
+    Host,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ModeArgs {
+    pub mode: ModeChoice,
+    #[command(flatten)]
+    pub target: InArgs,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -55,6 +80,10 @@ pub struct TickArgs {
     /// Say what would run, and run nothing.
     #[arg(long)]
     pub dry_run: bool,
+    /// Who is waking the hub. A container or a host timer runs only the jobs it is chosen
+    /// for (`schedule mode`); left out, this is a person, and runs what is due regardless.
+    #[arg(long, value_name = "WHO")]
+    pub waker: Option<WakerChoice>,
     #[command(flatten)]
     pub target: InArgs,
 }
@@ -65,7 +94,54 @@ pub async fn run(command: ScheduleCommand, json: bool) -> Result<()> {
         ScheduleCommand::On(args) => change(args, true).await,
         ScheduleCommand::Off(args) => change(args, false).await,
         ScheduleCommand::Tick(args) => tick(args, json).await,
+        ScheduleCommand::Mode(args) => mode(args).await,
+        ScheduleCommand::Serve(args) => serve(args).await,
     }
+}
+
+async fn mode(args: ModeArgs) -> Result<()> {
+    use konstruktor_core::config::hub::SchedulerMode;
+
+    let dir = Target::named(args.target.in_deployment).resolve()?;
+    let mode = match args.mode {
+        ModeChoice::Container => SchedulerMode::Container,
+        ModeChoice::Host => SchedulerMode::Host,
+        ModeChoice::Off => SchedulerMode::Off,
+    };
+    let exe = std::env::current_exe()?;
+    let print = |line: konstruktor_core::compose::ComposeLine| ui::say(&format!("  {}", line.line));
+    let changed = schedule::set_mode(&dir, mode, &exe, &print).await?;
+    for said in &changed.said {
+        ui::ok(said);
+    }
+    Ok(())
+}
+
+async fn serve(args: InArgs) -> Result<()> {
+    let dir = Target::named(args.in_deployment).resolve()?;
+    let print = |line: konstruktor_core::compose::ComposeLine| println!("{}", line.line);
+    let report = |done: &[schedule::Ticked]| {
+        for ticked in done {
+            if matches!(
+                ticked.what.as_str(),
+                "ran" | "nothing_owed" | "failed" | "busy"
+            ) {
+                println!(
+                    "{}/{}: {}{}",
+                    ticked.service,
+                    ticked.job,
+                    ticked.what,
+                    ticked
+                        .detail
+                        .as_deref()
+                        .map(|detail| format!(" ({})", detail.trim()))
+                        .unwrap_or_default()
+                );
+            }
+        }
+    };
+    schedule::serve(&dir, &print, &report).await?;
+    Ok(())
 }
 
 fn when(time: chrono::DateTime<chrono::Utc>) -> String {
@@ -75,30 +151,16 @@ fn when(time: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 async fn list(args: InArgs, json: bool) -> Result<()> {
-    let dir = Target::named(args.in_deployment).resolve()?;
-    let config = profile::read_profile(&dir)?.config;
-    let described = contract::described(&dir, &config).await;
-    let planned = schedule::planned(&config, &described);
-    let state = schedule::read_state(&dir);
-    let running = schedule::running_jobs(&dir);
+    use konstruktor_core::config::hub::SchedulerMode;
 
+    let dir = Target::named(args.in_deployment).resolve()?;
+    let overview = schedule::overview(&dir).await?;
     if json {
-        let rows: Vec<_> = planned
-            .iter()
-            .map(|plan| {
-                let id = format!("{}/{}", plan.service, plan.job);
-                serde_json::json!({
-                    "plan": plan,
-                    "running": running.contains(&id),
-                    "last": state.runs.get(&id),
-                })
-            })
-            .collect();
-        return ui::emit_json(&rows);
+        return ui::emit_json(&overview);
     }
 
     ui::say("");
-    if planned.is_empty() {
+    if overview.jobs.is_empty() {
         ui::say(&format!(
             "  {}",
             ui::dim("No service of this hub offers a job to run by itself.")
@@ -106,11 +168,11 @@ async fn list(args: InArgs, json: bool) -> Result<()> {
         ui::say("");
         return Ok(());
     }
-    let now = chrono::Local::now();
-    let rows: Vec<(String, String)> = planned
+    let rows: Vec<(String, String)> = overview
+        .jobs
         .iter()
-        .map(|plan| {
-            let id = format!("{}/{}", plan.service, plan.job);
+        .map(|view| {
+            let plan = &view.plan;
             let mut about = format!(
                 "{} {}",
                 if plan.enabled { "on " } else { "off" },
@@ -124,103 +186,60 @@ async fn list(args: InArgs, json: bool) -> Result<()> {
             if plan.long_running {
                 about.push_str(&ui::dim(" · long-running"));
             }
-            if running.contains(&id) {
+            if view.running {
                 about.push_str(" · running now");
-            } else if let Some(run) = state.runs.get(&id) {
+            } else if let Some(run) = &view.last {
                 about.push_str(&format!(
                     " · last {} {}",
                     when(run.started),
                     match run.outcome {
-                        schedule::Outcome::Succeeded => "ok".to_string(),
-                        schedule::Outcome::Failed => "failed".to_string(),
-                        schedule::Outcome::NothingOwed => "nothing owed".to_string(),
-                        schedule::Outcome::Running => "did not finish".to_string(),
+                        schedule::Outcome::Succeeded => "ok",
+                        schedule::Outcome::Failed => "failed",
+                        schedule::Outcome::NothingOwed => "nothing owed",
+                        schedule::Outcome::Running => "did not finish",
                     }
                 ));
             }
-            if plan.enabled {
-                if let Some(Ok(parsed)) = plan.schedule.as_deref().map(str::parse::<Schedule>) {
-                    about.push_str(&ui::dim(&format!(
-                        " · next {}",
-                        when(parsed.next_after(&now).with_timezone(&chrono::Utc))
-                    )));
-                }
+            if let Some(next) = view.next {
+                about.push_str(&ui::dim(&format!(" · next {}", when(next))));
             }
-            (id, about)
+            (format!("{}/{}", plan.service, plan.job), about)
         })
         .collect();
     ui::table(&rows);
     ui::say("");
-    ui::say(&ui::dim(
-        "  Jobs run when `konstruktor schedule tick` is called: from a timer, or by hand.",
-    ));
+    ui::say(&ui::dim(match overview.mode {
+        SchedulerMode::Container => "  The `scheduler` container wakes them.",
+        SchedulerMode::Host => "  This machine's timer wakes them.",
+        SchedulerMode::Off => {
+            "  Nothing wakes them yet: `konstruktor schedule mode container` (or `host`) does."
+        }
+    }));
     ui::say("");
     Ok(())
 }
 
 async fn change(args: ChangeArgs, enabled: bool) -> Result<()> {
     let dir = Target::named(args.target.in_deployment).resolve()?;
-    let mut held = profile::read_profile(&dir)?;
-    let description = contract::description_of(&dir, &held.config, &args.service)
+    let plan = schedule::choose(&dir, &args.service, &args.job, enabled, args.at.as_deref())
         .await
-        .ok_or_else(|| {
-            anyhow!(
-                "`{}` is not a service of this hub whose image describes itself",
-                args.service
-            )
-        })?;
-    let Some(job) = description.jobs.get(&args.job) else {
-        bail!("`{}` offers no job `{}`", args.service, args.job);
-    };
-    if let Some(at) = &args.at {
-        at.parse::<Schedule>().map_err(|error| anyhow!("{error}"))?;
-    } else if enabled && job.schedule.is_none() {
-        let previous = held
-            .config
-            .schedules
-            .get(&args.service)
-            .and_then(|jobs| jobs.get(&args.job))
-            .and_then(|choice| choice.at.clone());
-        if previous.is_none() {
-            bail!(
-                "`{}` suggests no schedule for `{}`: say when with `--at`, e.g. `--at \"daily 03:00\"`",
+        .map_err(|error| anyhow!("{error}"))?;
+    match plan {
+        Some(plan) if plan.enabled => {
+            ui::ok(&format!(
+                "{} in {} runs by itself: {}",
+                args.job,
                 args.service,
-                args.job
-            );
+                plan.schedule.as_deref().unwrap_or_default()
+            ));
+            if plan.long_running {
+                ui::warn("It may take hours; the hub serves meanwhile, and a window's end stops it if it takes a deadline.");
+            }
         }
-    }
-    let jobs: &mut BTreeMap<String, ScheduleChoice> = held
-        .config
-        .schedules
-        .entry(args.service.clone())
-        .or_default();
-    let choice = jobs.entry(args.job.clone()).or_default();
-    choice.enabled = enabled;
-    if args.at.is_some() {
-        choice.at = args.at.clone();
-    }
-    // A choice that says only what the image already says is not kept.
-    if choice.enabled == job.schedule.is_some() && choice.at.is_none() {
-        jobs.remove(&args.job);
-    }
-    if jobs.is_empty() {
-        held.config.schedules.remove(&args.service);
-    }
-    profile::write_profile(&dir, &held)?;
-    let schedule = args.at.or_else(|| job.schedule.clone()).unwrap_or_default();
-    if enabled {
-        ui::ok(&format!(
-            "{} in {} runs by itself: {schedule}",
-            args.job, args.service
-        ));
-        if job.long_running {
-            ui::warn("It may take hours; the hub serves meanwhile, and a window's end stops it if it takes a deadline.");
-        }
-    } else {
-        ui::ok(&format!(
+        _ => ui::ok(&format!(
             "{} in {} no longer runs by itself",
             args.job, args.service
-        ));
+        )),
     }
     Ok(())
 }
@@ -232,7 +251,12 @@ async fn tick(args: TickArgs, json: bool) -> Result<()> {
             ui::say(&format!("  {}", line.line));
         }
     };
-    let done = schedule::tick(&dir, args.dry_run, &print).await?;
+    let waker = match args.waker {
+        None => schedule::Waker::Manual,
+        Some(WakerChoice::Container) => schedule::Waker::Container,
+        Some(WakerChoice::Host) => schedule::Waker::Host,
+    };
+    let done = schedule::tick(&dir, waker, args.dry_run, &print).await?;
     if json {
         return ui::emit_json(&done);
     }

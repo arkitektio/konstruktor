@@ -541,6 +541,15 @@ pub async fn create_hub(
     // Now that the mesh name is known too: every address a browser may POST from.
     config.csrf_trusted_origins = Some(trusted_origins(&config, &host_names(&hosts)));
 
+    // A new hub's jobs are woken by its `scheduler` container unless the operator chooses
+    // otherwise (`konstruktor schedule mode`).
+    if config.scheduler.is_none() {
+        config.scheduler = Some(crate::schedule::container_block(
+            &dir,
+            crate::config::hub::SchedulerBlock::new(crate::config::hub::SchedulerMode::Container),
+        ));
+    }
+
     // --- write --------------------------------------------------------------
     let files = generate_hub_files(&config, &IssuedIdentity::default(), &said);
     for name in files.keys() {

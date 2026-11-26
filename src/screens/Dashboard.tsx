@@ -20,6 +20,7 @@ import { EngineDashboard } from "./EngineDashboard";
 import { GatewayCheck, useGatewayCheck } from "./dashboard/GatewayCheck";
 import { InfrastructureRow } from "./dashboard/InfrastructureRow";
 import { InfrastructureUpdates } from "./dashboard/InfrastructureUpdates";
+import { JobsSection } from "./dashboard/JobsSection";
 import { LifecycleRail } from "./dashboard/LifecycleRail";
 import { ServiceCard } from "./dashboard/ServiceCard";
 import { UpdatesCard } from "./dashboard/UpdatesCard";
@@ -466,6 +467,8 @@ export const Dashboard = ({ deployment }: { deployment: DeploymentRecord }) => {
             </div>
           </div>
         )}
+
+        <JobsSection path={deployment.path} />
 
         {stackUp && (
           <div>

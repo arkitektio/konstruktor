@@ -860,6 +860,74 @@ impl Default for ReporterBlock {
     }
 }
 
+/// The image the `scheduler` container runs: this Konstruktor's CLI beside the Docker CLI
+/// and its compose plugin, since a job is run as `compose run` (see `docker/scheduler.Dockerfile`).
+pub const SCHEDULER_IMAGE: &str = "jhnnsrs/konstruktor-scheduler:latest";
+
+/// What wakes a hub's scheduled jobs ([`crate::schedule`]): exactly one of them, so that a
+/// timer left behind by another choice never runs a job twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerMode {
+    /// A `scheduler` container in the hub's stack: up when the hub is. Needs the Docker socket.
+    Container,
+    /// A timer of the host's own (systemd, launchd, Task Scheduler) calling the CLI.
+    Host,
+    /// Nothing runs a job by itself.
+    #[default]
+    Off,
+}
+
+/// How a hub's scheduled jobs are woken. See [`SchedulerMode`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerBlock {
+    pub mode: SchedulerMode,
+    /// The compose service name of the container.
+    #[serde(default = "scheduler_host")]
+    pub host: String,
+    #[serde(default = "scheduler_image")]
+    pub image: String,
+    /// The hub's folder, absolute, as the host sees it: the container mounts it at the same
+    /// path, because the compose file's own bind mounts are resolved against the folder
+    /// compose runs in and then mounted by the host's engine. Written when the mode is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// `uid:gid` the container runs as, so the files it writes in the folder stay the
+    /// operator's. Unset on a host without them (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// The group that owns the engine's socket, given to the container to reach it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_group: Option<u32>,
+    /// Where the engine's socket is on the host.
+    #[serde(default = "scheduler_socket")]
+    pub socket: String,
+}
+
+fn scheduler_host() -> String {
+    "scheduler".into()
+}
+fn scheduler_image() -> String {
+    SCHEDULER_IMAGE.into()
+}
+fn scheduler_socket() -> String {
+    "/var/run/docker.sock".into()
+}
+
+impl SchedulerBlock {
+    pub fn new(mode: SchedulerMode) -> Self {
+        Self {
+            mode,
+            host: scheduler_host(),
+            image: scheduler_image(),
+            path: None,
+            user: None,
+            socket_group: None,
+            socket: scheduler_socket(),
+        }
+    }
+}
+
 /// The image of the plugin engine: the channel of its major, which every 4.x release moves
 /// (`arkitekt plugin release` tags it). Like every other image here, a hub runs the build
 /// its lock pinned the channel to, and only `update` looks again: an engine fix reaches a
@@ -1304,6 +1372,9 @@ pub struct HubConfig {
     /// Present once the hub is authorized. See [`ReporterBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reporter: Option<ReporterBlock>,
+    /// How the jobs the hub runs by itself are woken. Absent is off. See [`SchedulerBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<SchedulerBlock>,
     /// Present on a hub that runs the apps its organization installs. See
     /// [`PluginEngineBlock`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1759,6 +1830,20 @@ impl HubConfig {
     /// `daten`, while `generate::compose` writes it under the literal key `db`. The pairs
     /// below mirror `build_compose` key for key, and `stack_images_match_the_compose_file`
     /// in `tests/generate.rs` fails if the two ever drift apart.
+    /// The scheduler container, on a hub whose jobs a container wakes.
+    pub fn running_scheduler_container(&self) -> Option<&SchedulerBlock> {
+        self.scheduler
+            .as_ref()
+            .filter(|scheduler| scheduler.mode == SchedulerMode::Container)
+    }
+
+    /// What wakes the hub's jobs: off unless the profile says.
+    pub fn scheduler_mode(&self) -> SchedulerMode {
+        self.scheduler
+            .as_ref()
+            .map_or(SchedulerMode::Off, |scheduler| scheduler.mode)
+    }
+
     pub fn stack_images(&self) -> Vec<(String, String)> {
         let mut images: Vec<(String, String)> = self
             .enabled_services()
@@ -2385,6 +2470,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
 
         coord_server: options.coord_server.clone(),
         csrf_trusted_origins: options.csrf_trusted_origins.clone(),
+        scheduler: None,
         schedules: BTreeMap::new(),
         db: DbBlock {
             enabled: true,

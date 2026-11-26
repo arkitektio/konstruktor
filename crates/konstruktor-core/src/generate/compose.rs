@@ -1012,6 +1012,46 @@ pub fn build_compose(
         );
     }
 
+    // --- the scheduler -----------------------------------------------------------
+    // Wakes the jobs the hub runs by itself (`schedule serve`), each run as `compose run`
+    // through the host's engine. The folder is mounted at its own path: the compose file's
+    // bind mounts are resolved against the folder compose runs in and then mounted by the
+    // host's engine, so any other path would mount nothing. As the operator's user, so the
+    // lock and record files it writes stay theirs; with the socket's group, to reach it.
+    if let Some(scheduler) = config.running_scheduler_container() {
+        if let Some(path) = scheduler.path.as_deref() {
+            let mut fields = vec![
+                ("image", s(&scheduler.image)),
+                (
+                    "command",
+                    list(vec![s("schedule"), s("serve"), s("--in"), s(path)]),
+                ),
+                ("working_dir", s(path)),
+                (
+                    "volumes",
+                    list(vec![
+                        s(&format!("{path}:{path}")),
+                        s(&format!("{0}:{0}", scheduler.socket)),
+                        // The hub's local time: schedules are written in it.
+                        s("/etc/localtime:/etc/localtime:ro"),
+                    ]),
+                ),
+                // A job's container may outlive a restart of this one; it is the job's
+                // lock, not this process, that keeps two runs apart.
+                ("restart", s("unless-stopped")),
+            ];
+            if let Some(user) = &scheduler.user {
+                fields.push(("user", s(user)));
+                // No home for the user in the image; the Docker CLI wants one.
+                fields.push(("environment", map(vec![("HOME", s("/tmp"))])));
+            }
+            if let Some(group) = scheduler.socket_group {
+                fields.push(("group_add", list(vec![s(&group.to_string())])));
+            }
+            insert(&mut services, &scheduler.host, map(fields));
+        }
+    }
+
     // --- the plugin engine ------------------------------------------------------
     // Runs the apps the organization installs, beside the hub: it is handed the engine's
     // socket and starts each app on the hub's network, where the app reaches the hub as

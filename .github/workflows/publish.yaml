@@ -321,6 +321,17 @@ jobs:
           tags: |
             jhnnsrs/reporter:${{ needs.version.outputs.version }}
             jhnnsrs/reporter:latest
+      # The `scheduler` container: the same binaries, with the Docker CLI and compose, since
+      # it runs each job as `compose run` (docker/scheduler.Dockerfile).
+      - uses: docker/build-push-action@v6
+        with:
+          context: image
+          file: docker/scheduler.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            jhnnsrs/konstruktor-scheduler:${{ needs.version.outputs.version }}
+            jhnnsrs/konstruktor-scheduler:latest
 
   # The Python package: the same CLI in a wheel, with the thin wrapper under `python/`
   # beside it (see `pyproject.toml`). One wheel per platform, each carrying that platform's

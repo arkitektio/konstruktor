@@ -1580,3 +1580,107 @@ mod wire_shape {
         );
     }
 }
+
+// --- scheduled jobs ---------------------------------------------------------------------------
+
+/// A hub's scheduled jobs and what wakes them. See `konstruktor_core::schedule`.
+#[tauri::command]
+pub async fn schedule_overview(
+    path: String,
+) -> Result<konstruktor_core::schedule::Overview, String> {
+    konstruktor_core::schedule::overview(std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Turn a job's running by itself on or off, or move it (`at`).
+#[tauri::command]
+pub async fn schedule_choose(
+    path: String,
+    service: String,
+    job: String,
+    enabled: bool,
+    at: Option<String>,
+) -> Result<Option<konstruktor_core::schedule::Planned>, String> {
+    konstruktor_core::schedule::choose(
+        std::path::Path::new(&path),
+        &service,
+        &job,
+        enabled,
+        at.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Choose what wakes the hub's jobs: `container`, `host` or `off`. What was done, in lines.
+#[tauri::command]
+pub async fn schedule_mode(path: String, mode: String) -> Result<Vec<String>, String> {
+    use konstruktor_core::config::hub::SchedulerMode;
+    let mode = match mode.as_str() {
+        "container" => SchedulerMode::Container,
+        "host" => SchedulerMode::Host,
+        "off" => SchedulerMode::Off,
+        other => return Err(format!("`{other}` is not a scheduler mode")),
+    };
+    // A host timer calls the CLI, not this app: the one installed beside it.
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|app| app.parent().map(|dir| dir.join(if cfg!(windows) { "konstruktor.exe" } else { "konstruktor" })))
+        .filter(|cli| cli.exists())
+        .or_else(|| which_konstruktor())
+        .ok_or("the `konstruktor` command is not installed, and a host timer calls it: install it, or choose the container")?;
+    konstruktor_core::schedule::set_mode(std::path::Path::new(&path), mode, &exe, &|_| {})
+        .await
+        .map(|changed| changed.said)
+        .map_err(|e| e.to_string())
+}
+
+/// The `konstruktor` CLI on the PATH, if there is one.
+fn which_konstruktor() -> Option<std::path::PathBuf> {
+    let name = if cfg!(windows) {
+        "konstruktor.exe"
+    } else {
+        "konstruktor"
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Run one job now, under its lock, recorded beside the scheduled runs; the run.
+#[tauri::command]
+pub async fn schedule_run_now(
+    path: String,
+    service: String,
+    job: String,
+) -> Result<konstruktor_core::schedule::Run, String> {
+    let dir = std::path::Path::new(&path);
+    let config = konstruktor_core::profile::read_profile(dir)
+        .map_err(|e| e.to_string())?
+        .config;
+    let description = konstruktor_core::contract::description_of(dir, &config, &service)
+        .await
+        .ok_or_else(|| {
+            format!("`{service}` is not a service of this hub whose image describes itself")
+        })?;
+    let declared = description
+        .jobs
+        .get(&job)
+        .ok_or_else(|| format!("`{service}` offers no job `{job}`"))?;
+    let ran = konstruktor_core::schedule::run_job(
+        dir,
+        &service,
+        &job,
+        declared,
+        konstruktor_core::schedule::Asked {
+            trigger: konstruktor_core::schedule::Trigger::Manual,
+            deadline: None,
+            extra: &[],
+        },
+        &|_| {},
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(ran.run)
+}

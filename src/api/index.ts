@@ -2,6 +2,10 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
   AdvertisedHost,
+  JobRun,
+  ScheduleOverview,
+  ScheduledJob,
+  SchedulerMode,
   AppUpdateView,
   UpdateAnswers,
   AliasProbe,
@@ -715,3 +719,26 @@ export const restoreDeployment = (
     onEvent: channel,
   });
 };
+
+// --- scheduled jobs ---------------------------------------------------------------------------
+
+/** A hub's scheduled jobs and what wakes them. */
+export const scheduleOverview = (path: string) =>
+  invoke<ScheduleOverview>("schedule_overview", { path });
+
+/** Turn a job's running by itself on or off, or move it (`at`: `daily 03:00`, …). */
+export const scheduleChoose = (
+  path: string,
+  service: string,
+  job: string,
+  enabled: boolean,
+  at?: string,
+) => invoke<ScheduledJob | null>("schedule_choose", { path, service, job, enabled, at: at ?? null });
+
+/** Choose what wakes the hub's jobs; what was done, in lines. */
+export const scheduleMode = (path: string, mode: SchedulerMode) =>
+  invoke<string[]>("schedule_mode", { path, mode });
+
+/** Run a job now, under its lock; the run once it is done. */
+export const scheduleRunNow = (path: string, service: string, job: string) =>
+  invoke<JobRun>("schedule_run_now", { path, service, job });

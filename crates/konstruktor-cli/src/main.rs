@@ -90,7 +90,7 @@ Change a hub:
   compose          Show, validate, edit or reset its compose file
   config           Show or set what a service is configured with beyond defaults
   job              List or run the jobs a service offers beside its start
-  schedule         The jobs a hub runs by itself: list, on, off, tick
+  schedule         The jobs a hub runs by itself: list, on, off, mode
   inspect          Show what a service's image says of itself
   hub regenerate   Rewrite its generated files from its profile
   check            Check that every service answers on every advertised address

@@ -191,3 +191,65 @@ fn docker_accepts_a_self_contained_project() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A hub whose jobs the `scheduler` container wakes: its folder mounted at its own path,
+/// the engine's socket, the host's local time, and the operator's user.
+#[test]
+fn docker_accepts_a_project_with_a_scheduler_container() {
+    use konstruktor_core::config::hub::{SchedulerBlock, SchedulerMode};
+
+    let mut config = support::hub(&HubConfigOptions {
+        device_id: "device".into(),
+        coord_server: "go.arkitekt.live".into(),
+        ..Default::default()
+    });
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scheduler");
+    let mut scheduler = SchedulerBlock::new(SchedulerMode::Container);
+    scheduler.path = Some(dir.display().to_string());
+    scheduler.user = Some("1000:1000".into());
+    scheduler.socket_group = Some(998);
+    config.scheduler = Some(scheduler);
+    let files = generate_hub_files(&config, &IssuedIdentity::default(), &Default::default());
+
+    let compose = files
+        .get(konstruktor_core::compose_file::COMPOSE_FILENAME)
+        .expect("a compose file");
+    let parsed: serde_norway::Value = serde_norway::from_str(compose).unwrap();
+    let service = &parsed["services"]["scheduler"];
+    let path = dir.display().to_string();
+    assert_eq!(service["working_dir"].as_str(), Some(path.as_str()));
+    assert_eq!(
+        service["command"],
+        serde_norway::from_str::<serde_norway::Value>(&format!(
+            "[schedule, serve, --in, '{path}']"
+        ))
+        .unwrap()
+    );
+    let mounts: Vec<&str> = service["volumes"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter_map(|mount| mount.as_str())
+        .collect();
+    assert!(mounts.contains(&format!("{path}:{path}").as_str()));
+    assert!(mounts.contains(&"/var/run/docker.sock:/var/run/docker.sock"));
+    assert_eq!(service["user"].as_str(), Some("1000:1000"));
+
+    if !docker_compose_available() {
+        eprintln!("skipping the compose check: no docker compose on this machine");
+        return;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    write_generated_files(&dir, &files).expect("files are written");
+    let output = konstruktor_core::docker::command()
+        .args(["compose", "config", "-q"])
+        .current_dir(&dir)
+        .output()
+        .expect("docker runs");
+    assert!(
+        output.status.success(),
+        "docker compose rejected the project with a scheduler:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
