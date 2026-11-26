@@ -9,6 +9,7 @@ mod features;
 mod inspect_cmd;
 mod job_cmd;
 mod manage;
+mod schedule_cmd;
 mod self_cmd;
 mod services;
 mod tls_cmd;
@@ -41,7 +42,8 @@ struct Cli {
     ///
     /// Global, but only the reporting commands have a document to emit — `status`,
     /// `list`, `ps`, `wait`, `doctor`, `check`, `update --check`, `rollback`,
-    /// `hub services list`, `hub templates`, `job list`, `inspect` and `hub create`,
+    /// `hub services list`, `hub templates`, `job list`, `schedule list`,
+    /// `schedule tick`, `inspect` and `hub create`,
     /// which says where the hub is and how to reach it.
     #[arg(long, global = true)]
     json: bool,
@@ -88,6 +90,7 @@ Change a hub:
   compose          Show, validate, edit or reset its compose file
   config           Show or set what a service is configured with beyond defaults
   job              List or run the jobs a service offers beside its start
+  schedule         The jobs a hub runs by itself: list, on, off, tick
   inspect          Show what a service's image says of itself
   hub regenerate   Rewrite its generated files from its profile
   check            Check that every service answers on every advertised address
@@ -246,6 +249,9 @@ enum Command {
     /// List or run the jobs a service's image offers beside its start.
     #[command(subcommand)]
     Job(job_cmd::JobCommand),
+    /// The jobs a hub runs by itself: which, when, and how they last went.
+    #[command(subcommand)]
+    Schedule(schedule_cmd::ScheduleCommand),
     /// Show what a service's image says of itself: a hub's service, or any image.
     Inspect(inspect_cmd::InspectArgs),
     /// Check that every service answers on every address the hub advertises.
@@ -496,6 +502,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Compose(command) => compose_cmd::run(command).await,
         Command::Config(command) => config_cmd::run(command).await,
         Command::Job(command) => job_cmd::run(command, json).await,
+        Command::Schedule(command) => schedule_cmd::run(command, json).await,
         Command::Inspect(args) => inspect_cmd::run(args, json).await,
         Command::SelfCmd(command) => self_cmd::run(command).await,
     }

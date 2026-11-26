@@ -1256,6 +1256,11 @@ pub struct HubConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub former_plugin_engine: Option<String>,
     pub csrf_trusted_origins: Option<Vec<String>>,
+    /// The operator's say over the jobs the services would like run by themselves, by
+    /// compose service and job ([`crate::schedule`]). A job not named here runs on its
+    /// image's schedule; one named here runs when, and whether, it says.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schedules: BTreeMap<String, BTreeMap<String, crate::schedule::ScheduleChoice>>,
     pub db: DbBlock,
     pub default_service_grace_period_seconds: u32,
     pub device_id: Option<String>,
@@ -2380,6 +2385,7 @@ pub fn build_hub_config(options: &HubConfigOptions) -> HubConfig {
 
         coord_server: options.coord_server.clone(),
         csrf_trusted_origins: options.csrf_trusted_origins.clone(),
+        schedules: BTreeMap::new(),
         db: DbBlock {
             enabled: true,
             github_repo: "https://github.com/arkitektio/daten-server".into(),

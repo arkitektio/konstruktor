@@ -42,6 +42,7 @@ pub mod remedy;
 pub mod report;
 pub mod restore;
 pub mod rollback;
+pub mod schedule;
 pub mod secrets;
 pub mod selfupdate;
 pub mod services;

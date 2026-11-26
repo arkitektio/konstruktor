@@ -2283,6 +2283,7 @@ name = "konstruktor-cli"
 version = "0.44.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dirs",
  "inquire",
@@ -2298,6 +2299,7 @@ name = "konstruktor-core"
 version = "0.44.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "dns-lookup",
  "ed25519-dalek",

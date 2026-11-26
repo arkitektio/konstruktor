@@ -8,7 +8,7 @@
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Subcommand};
 
-use konstruktor_core::{contract, profile};
+use konstruktor_core::{contract, profile, schedule};
 
 use crate::manage::Target;
 use crate::ui;
@@ -115,6 +115,12 @@ async fn list(args: ListArgs, json: bool) -> Result<()> {
                 if !job.includes.is_empty() {
                     about.push_str(&format!(" Runs: {}.", job.includes.join(", ")));
                 }
+                if job.long_running {
+                    about.push_str(" May take hours.");
+                }
+                if let Some(when) = &job.schedule {
+                    about.push_str(&format!(" Suggested schedule: {when}."));
+                }
                 (name.clone(), about.trim().to_string())
             })
             .collect();
@@ -150,19 +156,41 @@ async fn run_one(args: RunArgs) -> Result<()> {
     };
 
     ui::say("");
+    if job.long_running {
+        ui::warn(&format!(
+            "{} may take hours. The hub serves meanwhile; stopping it (Ctrl-C) loses nothing it finished.",
+            args.job
+        ));
+    }
     ui::step(&format!(
         "Running {} in {}…",
         ui::bold(&args.job),
         ui::bold(&args.service)
     ));
     let print = |line: konstruktor_core::compose::ComposeLine| ui::say(&format!("  {}", line.line));
-    konstruktor_core::compose::run_streamed(
+    // Under the job's lock, as a scheduled run is, and recorded beside them.
+    let ran = schedule::run_job(
         &dir,
-        contract::job_command(&args.service, job, &args.extra),
+        &args.service,
+        &args.job,
+        job,
+        schedule::Asked {
+            trigger: schedule::Trigger::Manual,
+            deadline: None,
+            extra: &args.extra,
+        },
         &print,
     )
     .await
-    .map_err(|said| anyhow!("`{}` failed in `{}`:\n{said}", args.job, args.service))?;
+    .map_err(|error| match error {
+        schedule::LockError::Busy { .. } => anyhow!(
+            "{error}: wait for it to finish (`konstruktor schedule list` says), then run it again"
+        ),
+        other => anyhow!("{other}"),
+    })?;
+    if let Some(said) = ran.error {
+        bail!("`{}` failed in `{}`:\n{said}", args.job, args.service);
+    }
     ui::ok(&format!("{} ran in {}", args.job, args.service));
     Ok(())
 }

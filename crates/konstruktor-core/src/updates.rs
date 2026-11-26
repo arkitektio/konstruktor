@@ -760,6 +760,10 @@ pub enum UpdateError {
     /// A service's image would not write its config for this hub ([`crate::contract`]).
     #[error(transparent)]
     Config(#[from] crate::contract::RenderError),
+    /// A job is running ([`crate::schedule`]): its container would go on writing to a
+    /// database the update stops and migrates.
+    #[error("{0}")]
+    JobRunning(String),
 }
 
 fn last_lines(output: &str) -> String {
@@ -1225,6 +1229,27 @@ async fn apply_on(
 ) -> Result<UpdateReport, UpdateError> {
     use crate::lock;
     use crate::migrate::When;
+
+    // No scheduled job starts while this runs: a service is stopped and migrated in the
+    // middle of it. Gone when this returns, however it returns.
+    let _updating = crate::schedule::mark_updating(dir);
+    // The mark first, so that nothing starts between this look and the update.
+    let busy = crate::schedule::running_jobs(dir);
+    if !busy.is_empty() {
+        return Err(UpdateError::JobRunning(format!(
+            "{} {} running, and an update stops and migrates the database {} {}. A scheduled \
+             job stops by the end of its window; run `konstruktor update` again once it has. \
+             Nothing was changed.",
+            busy.join(", "),
+            if busy.len() == 1 { "is" } else { "are" },
+            if busy.len() == 1 { "it" } else { "they" },
+            if busy.len() == 1 {
+                "writes to"
+            } else {
+                "write to"
+            },
+        )));
+    }
 
     let mut report = UpdateReport::default();
     let step = |title: String| on_event(UpdateEvent::Step { title });

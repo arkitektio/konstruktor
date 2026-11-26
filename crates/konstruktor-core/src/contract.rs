@@ -247,6 +247,21 @@ pub struct Job {
     /// service's setup.
     #[serde(default)]
     pub includes: Vec<String>,
+    /// When the service suggests it runs by itself ([`crate::schedule`]'s grammar): a
+    /// suggestion the operator turns on, off, or moves. Absent from an image that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// That a run may take hours: warned about before it is run by hand.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub long_running: bool,
+    /// What to run, like `command`, to learn what the job still owes: its last line is JSON
+    /// with an `items` count. A scheduled run that owes nothing is not started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlog: Option<Vec<String>>,
+    /// The option the job takes a deadline with (`--until`): a scheduled run is passed its
+    /// window's end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<String>,
 }
 
 /// A process that runs beside a service, as an image of its own: one the service does not
